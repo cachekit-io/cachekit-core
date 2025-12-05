@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.0.1...cachekit-core-v0.1.0) (2025-12-05)
+
+
+### Features
+
+* initial release ([bce9e9d](https://github.com/cachekit-io/cachekit-core/commit/bce9e9d67cc06d97824e5ce2ac0c97e6417f2ece))
+
 ## [Unreleased]
 
 ### Added
