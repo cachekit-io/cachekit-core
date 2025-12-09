@@ -39,11 +39,9 @@ allow = [
     "MIT",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",  # LLVM runtime exception
-    "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
     "Unicode-3.0",  # Unicode License v3 (OSI approved, permissive)
-    "CC0-1.0",  # Public domain
     "MPL-2.0",  # Mozilla Public License 2.0 (cbindgen build dependency)
     "BSL-1.0",  # Boost Software License 1.0 (xxhash-rust)
 ]
@@ -72,12 +70,8 @@ deny = []
 # Skip specific dependencies from multiple-version checks
 # These are transitive dependencies where version duplication is unavoidable
 skip = [
-    # bitflags 1.x via cbindgen → clap 3.x, bitflags 2.x via proptest/rustix
-    { crate = "bitflags@1.3.2", reason = "Transitive via cbindgen build dep" },
     # getrandom 0.2.x via ring, getrandom 0.3.x via proptest/tempfile
     { crate = "getrandom@0.2.16", reason = "Transitive via ring crypto lib" },
-    # syn 1.x via cbindgen, syn 2.x via derive macros
-    { crate = "syn@1.0.109", reason = "Transitive via cbindgen build dep" },
 ]
 
 # Skip crate trees entirely (e.g., frequently-updated foundational crates)

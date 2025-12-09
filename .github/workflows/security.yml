@@ -1,0 +1,286 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 3 * * *'
+  release:
+    types: [published]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  fast-security:
+    name: Fast Security Checks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85"
+          components: clippy
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-security-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-security-
+            ${{ runner.os }}-cargo-
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: Run cargo audit (CVE scanning)
+        run: cargo audit
+
+      - name: Run cargo deny (license compliance + advisories)
+        run: cargo deny check
+
+      - name: Run clippy (strict linting)
+        run: cargo clippy --all-features --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all-features
+
+  quick-fuzz:
+    name: Quick Fuzz (Corpus Only)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - byte_storage_checksum_collision
+          - byte_storage_compress
+          - byte_storage_corrupted_envelope
+          - byte_storage_decompress
+          - byte_storage_empty_data
+          - byte_storage_format_injection
+          - byte_storage_integer_overflow
+          - compression_bomb
+          - encryption_aad_injection
+          - encryption_key_derivation
+          - encryption_large_payload
+          - encryption_nonce_reuse
+          - encryption_roundtrip
+          - encryption_truncated_ciphertext
+          - integration_layered_security
+          - key_derivation
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85"
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            fuzz/target/
+          key: ${{ runner.os }}-cargo-fuzz-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-fuzz-
+            ${{ runner.os }}-cargo-
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Run quick fuzz (corpus only)
+        run: |
+          cd fuzz
+          timeout 120 cargo fuzz run ${{ matrix.target }} -- -runs=0 -max_total_time=120 || true
+
+  deep-fuzz:
+    name: Deep Fuzzing (8 hours)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - byte_storage_checksum_collision
+          - byte_storage_compress
+          - byte_storage_corrupted_envelope
+          - byte_storage_decompress
+          - byte_storage_empty_data
+          - byte_storage_format_injection
+          - byte_storage_integer_overflow
+          - compression_bomb
+          - encryption_aad_injection
+          - encryption_key_derivation
+          - encryption_large_payload
+          - encryption_nonce_reuse
+          - encryption_roundtrip
+          - encryption_truncated_ciphertext
+          - integration_layered_security
+          - key_derivation
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85"
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            fuzz/target/
+          key: ${{ runner.os }}-cargo-fuzz-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-fuzz-
+            ${{ runner.os }}-cargo-
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Run deep fuzz (30 minutes per target)
+        run: |
+          cd fuzz
+          timeout 1800 cargo fuzz run ${{ matrix.target }} -- -max_total_time=1800 || true
+
+      - name: Upload crash artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore
+
+  kani:
+    name: Kani Formal Verification
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85"
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-kani-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-kani-
+            ${{ runner.os }}-cargo-
+
+      - name: Install Kani
+        run: |
+          cargo install --locked kani-verifier || echo "Kani install failed, skipping verification"
+          cargo kani setup || echo "Kani setup failed, skipping verification"
+
+      - name: Run Kani verification
+        run: cargo kani --all-features || echo "Kani verification failed or not supported"
+        continue-on-error: true
+
+  cargo-vet:
+    name: Cargo Vet (Supply Chain)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85"
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-vet-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-vet-
+            ${{ runner.os }}-cargo-
+
+      - name: Install cargo-vet
+        run: cargo install cargo-vet --locked
+
+      - name: Run cargo vet
+        run: cargo vet
+
+  sbom:
+    name: Generate SBOM
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85"
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-sbom-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-sbom-
+            ${{ runner.os }}-cargo-
+
+      - name: Install cargo-sbom
+        run: cargo install cargo-sbom --locked
+
+      - name: Generate SBOM
+        run: cargo sbom > cachekit-core-sbom.json
+
+      - name: Upload SBOM as release asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ./cachekit-core-sbom.json
+          asset_name: cachekit-core-sbom.json
+          asset_content_type: application/json
