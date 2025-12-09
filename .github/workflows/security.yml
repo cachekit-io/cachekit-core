@@ -93,9 +93,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.85"
+        uses: dtolnay/rust-toolchain@nightly
 
       - name: Cache Rust dependencies
         uses: actions/cache@v4
@@ -105,9 +103,9 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             fuzz/target/
-          key: ${{ runner.os }}-cargo-fuzz-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-fuzz-nightly-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-fuzz-
+            ${{ runner.os }}-cargo-fuzz-nightly-
             ${{ runner.os }}-cargo-
 
       - name: Install cargo-fuzz
@@ -116,7 +114,10 @@ jobs:
       - name: Run quick fuzz (corpus only)
         run: |
           cd fuzz
-          timeout 120 cargo fuzz run ${{ matrix.target }} -- -runs=0 -max_total_time=120 || true
+          # Build first - fail fast on compile errors
+          cargo fuzz build ${{ matrix.target }}
+          # Run corpus - timeout exit code 124 is acceptable (means it ran)
+          timeout 120 cargo fuzz run ${{ matrix.target }} -- -runs=0 -max_total_time=120 || [ $? -eq 124 ]
 
   deep-fuzz:
     name: Deep Fuzzing (8 hours)
@@ -147,9 +148,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.85"
+        uses: dtolnay/rust-toolchain@nightly
 
       - name: Cache Rust dependencies
         uses: actions/cache@v4
@@ -159,9 +158,9 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             fuzz/target/
-          key: ${{ runner.os }}-cargo-fuzz-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-fuzz-nightly-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-fuzz-
+            ${{ runner.os }}-cargo-fuzz-nightly-
             ${{ runner.os }}-cargo-
 
       - name: Install cargo-fuzz
@@ -170,7 +169,10 @@ jobs:
       - name: Run deep fuzz (30 minutes per target)
         run: |
           cd fuzz
-          timeout 1800 cargo fuzz run ${{ matrix.target }} -- -max_total_time=1800 || true
+          # Build first - fail fast on compile errors
+          cargo fuzz build ${{ matrix.target }}
+          # Run fuzz - timeout exit code 124 is acceptable (means it ran the full duration)
+          timeout 1800 cargo fuzz run ${{ matrix.target }} -- -max_total_time=1800 || [ $? -eq 124 ]
 
       - name: Upload crash artifacts
         if: always()
