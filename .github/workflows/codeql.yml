@@ -25,18 +25,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
           languages: cpp
-          # CodeQL doesn't have native Rust support, but analyzes C FFI layer
-          # For Rust-specific analysis, we rely on clippy and cargo-deny
+          # Analyze generated C FFI headers and cross-language test code
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build with FFI
-        run: cargo build --features ffi --release
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
