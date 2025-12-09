@@ -36,11 +36,13 @@ jobs:
 
       - name: Build to generate C FFI headers
         run: |
-          cargo build --features ffi --release
+          # Build Rust library with FFI to generate C header
+          cargo build --release --features ffi,encryption
           # Verify header was generated
           ls -la include/cachekit.h
-          # Compile cross-language test to demonstrate C usage
-          cd tests/cross_language && make clean && make
+          # Compile C test (but don't run it - CodeQL just needs compilation)
+          cd tests/cross_language
+          cc -std=c99 -Wall -Wextra -I../../include -c test_c.c -o test_c.o
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
