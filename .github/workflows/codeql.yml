@@ -34,8 +34,13 @@ jobs:
           languages: cpp
           # Analyze generated C FFI headers and cross-language test code
 
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
+      - name: Build to generate C FFI headers
+        run: |
+          cargo build --features ffi --release
+          # Verify header was generated
+          ls -la include/cachekit.h
+          # Compile cross-language test to demonstrate C usage
+          cd tests/cross_language && make clean && make
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
