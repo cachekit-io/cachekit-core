@@ -5,6 +5,14 @@ include_guard = "CACHEKIT_H"
 no_includes = true
 sys_includes = ["stdint.h", "stddef.h", "stdbool.h"]
 
+# Opaque handle types (macro-generated, invisible to cbindgen)
+# These are forward declarations for opaque pointers used across FFI
+after_includes = """
+/* Opaque handle types - never dereference from C */
+typedef struct CACHEKIT_ByteStorage CACHEKIT_ByteStorage;
+typedef struct CACHEKIT_CachekitEncryptor CACHEKIT_CachekitEncryptor;
+"""
+
 [export]
 prefix = "CACHEKIT_"
 

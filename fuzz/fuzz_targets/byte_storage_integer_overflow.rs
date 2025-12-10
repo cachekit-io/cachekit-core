@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use cachekit_core::byte_storage::StorageEnvelope;
+use cachekit_core::byte_storage::{StorageEnvelope, ByteStorageError};
 use arbitrary::Arbitrary;
 
 #[derive(Arbitrary, Debug)]
@@ -10,8 +10,8 @@ struct OverflowTestCase {
     original_size: u32,
     /// Compressed data size (small to create suspicious ratios)
     compressed_data_len: u8, // 0-255 bytes
-    /// Checksum bytes
-    checksum: [u8; 32],
+    /// Checksum bytes (xxHash3-64 = 8 bytes)
+    checksum: [u8; 8],
     /// Format string
     format_len: u8, // 0-255 for format string length
 }
@@ -40,13 +40,20 @@ fuzz_target!(|test_case: OverflowTestCase| {
             // Decompression succeeded - envelope passed all validation checks
             // This should only happen for valid sizes within limits
         }
-        Err(err_msg) => {
+        Err(err) => {
             // Expected for oversized allocations (u32::MAX, beyond 512MB, etc.)
-            // Verify error message is descriptive
+            // Valid error types for size/validation failures
             assert!(
-                err_msg.contains("Security violation") || err_msg.contains("failed"),
-                "Error message should be descriptive: {}",
-                err_msg
+                matches!(
+                    err,
+                    ByteStorageError::InputTooLarge
+                        | ByteStorageError::DecompressionBomb
+                        | ByteStorageError::DecompressionFailed
+                        | ByteStorageError::ChecksumMismatch
+                        | ByteStorageError::SizeValidationFailed
+                ),
+                "Expected size/validation error, got: {:?}",
+                err
             );
         }
     }

@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use cachekit_core::byte_storage::{ByteStorage, StorageEnvelope};
+use cachekit_core::byte_storage::{ByteStorage, ByteStorageError, StorageEnvelope};
 use arbitrary::Arbitrary;
 
 #[derive(Arbitrary, Debug)]
@@ -10,8 +10,8 @@ struct CompressionBombTestCase {
     compressed_size: u16, // 0-65535 bytes
     /// Original size claim (potentially massive for bomb attacks)
     original_size: u32,
-    /// Checksum
-    checksum: [u8; 32],
+    /// Checksum (xxHash3-64 = 8 bytes)
+    checksum: [u8; 8],
     /// Format string length
     format_len: u8,
     /// Actual compressed data pattern (for LZ4 valid/invalid inputs)
@@ -57,37 +57,44 @@ fuzz_target!(|test_case: CompressionBombTestCase| {
             );
         }
         Err(err) => {
-            // Expected for malicious inputs - verify error is descriptive
+            // Expected for malicious inputs - verify error type
             if test_case.original_size as usize > storage.max_uncompressed_size() {
                 assert!(
-                    err.contains("Security violation") || err.contains("too large"),
-                    "Expected size limit error, got: {}",
+                    matches!(
+                        err,
+                        ByteStorageError::InputTooLarge
+                            | ByteStorageError::DecompressionBomb
+                            | ByteStorageError::DecompressionFailed
+                    ),
+                    "Expected size limit error, got: {:?}",
                     err
                 );
             }
         }
     }
 
-    // Property 3: Compression ratio limits enforced (500x max expansion)
+    // Property 3: Compression ratio limits enforced (1000x max expansion)
     if !compressed_data.is_empty() && test_case.original_size > 0 {
-        let claimed_ratio = test_case.original_size as f64 / compressed_data.len() as f64;
+        let claimed_ratio = test_case.original_size as u64 / compressed_data.len() as u64;
 
         if claimed_ratio > storage.max_compression_ratio() {
             // Must reject suspicious ratios (or size limits caught it first)
             assert!(
                 extract_result.is_err(),
-                "Decompression bomb bypassed ratio limit: {:.1}x expansion (1KB -> {}MB)",
-                claimed_ratio,
-                test_case.original_size / (1024 * 1024)
+                "Decompression bomb bypassed ratio limit: {}x expansion",
+                claimed_ratio
             );
 
             if let Err(err) = &extract_result {
                 // Security checks may fail in different order (size limit or ratio limit)
                 assert!(
-                    err.contains("Suspicious compression ratio")
-                        || err.contains("decompression bomb")
-                        || err.contains("too large"), // Size limit caught it first
-                    "Expected security violation error, got: {}",
+                    matches!(
+                        err,
+                        ByteStorageError::DecompressionBomb
+                            | ByteStorageError::InputTooLarge
+                            | ByteStorageError::DecompressionFailed
+                    ),
+                    "Expected security violation error, got: {:?}",
                     err
                 );
             }
@@ -110,10 +117,10 @@ fuzz_target!(|test_case: CompressionBombTestCase| {
 
                 // Ratio must be within limits (for non-empty compressed data)
                 if !compressed_data.is_empty() {
-                    let actual_ratio = decompressed.len() as f64 / compressed_data.len() as f64;
+                    let actual_ratio = decompressed.len() as u64 / compressed_data.len() as u64;
                     assert!(
                         actual_ratio <= storage.max_compression_ratio(),
-                        "retrieve() bypassed ratio limit: {:.1}x",
+                        "retrieve() bypassed ratio limit: {}x",
                         actual_ratio
                     );
                 }
@@ -130,7 +137,7 @@ fuzz_target!(|test_case: CompressionBombTestCase| {
     // Defense-in-depth: Size limits prevent 1KB -> 10GB attacks
 
     // SUCCESS: All compression bomb attack vectors blocked
-    // - Extreme ratios rejected (500x limit)
+    // - Extreme ratios rejected (1000x limit)
     // - Oversized outputs rejected (512MB limit)
     // - Malformed LZ4 data handled gracefully
     // - No panics, crashes, or memory exhaustion

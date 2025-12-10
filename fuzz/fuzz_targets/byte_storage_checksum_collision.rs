@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use cachekit_core::byte_storage::StorageEnvelope;
+use cachekit_core::byte_storage::{StorageEnvelope, ByteStorageError};
 use arbitrary::Arbitrary;
 
 #[derive(Arbitrary, Debug)]
@@ -55,20 +55,20 @@ fuzz_target!(|test_case: ChecksumTestCase| {
             // If it succeeded, data must be unchanged (flip reverted or no-op)
             // This is only acceptable if flip_mask was 0 or flipped back to original
         }
-        Err(err_msg) => {
-            // Expected: Checksum validation should fail
+        Err(err) => {
+            // Expected: Checksum validation or decompression should fail
             assert!(
-                err_msg.contains("Checksum validation failed") || err_msg.contains("decompression failed"),
-                "Error should indicate checksum or decompression failure: {}",
-                err_msg
+                matches!(err, ByteStorageError::ChecksumMismatch | ByteStorageError::DecompressionFailed),
+                "Error should be checksum or decompression failure: {:?}",
+                err
             );
         }
     }
 
-    // Test with completely wrong checksum
+    // Test with completely wrong checksum (xxHash3-64 = 8 bytes)
     let wrong_checksum_envelope = StorageEnvelope {
         compressed_data: envelope.compressed_data.clone(),
-        checksum: [0xFF; 32], // Wrong checksum
+        checksum: [0xFF; 8], // Wrong checksum
         original_size: envelope.original_size,
         format: envelope.format.clone(),
     };
@@ -76,13 +76,13 @@ fuzz_target!(|test_case: ChecksumTestCase| {
     // Should be rejected unless original checksum happened to be all 0xFF
     match wrong_checksum_envelope.extract() {
         Ok(_) => {
-            // Only acceptable if original checksum was [0xFF; 32]
+            // Only acceptable if original checksum was [0xFF; 8]
         }
-        Err(err_msg) => {
+        Err(err) => {
             assert!(
-                err_msg.contains("Checksum") || err_msg.contains("failed"),
-                "Wrong checksum should be detected: {}",
-                err_msg
+                matches!(err, ByteStorageError::ChecksumMismatch | ByteStorageError::DecompressionFailed),
+                "Wrong checksum should be detected: {:?}",
+                err
             );
         }
     }

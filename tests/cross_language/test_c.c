@@ -260,9 +260,10 @@ int test_encrypt_decrypt_roundtrip(void) {
     size_t aad_len = strlen(aad);
 
     /* Create encryptor */
-    struct CACHEKIT_CachekitEncryptor* enc = cachekit_encryptor_new();
+    enum CACHEKIT_CachekitError init_err;
+    struct CACHEKIT_CachekitEncryptor* enc = cachekit_encryptor_new(&init_err);
     if (enc == NULL) {
-        printf("  cachekit_encryptor_new returned null\n");
+        printf("  cachekit_encryptor_new returned null (error: %d)\n", init_err);
         return 1;
     }
 
@@ -297,6 +298,7 @@ int test_encrypt_decrypt_roundtrip(void) {
     size_t decrypted_len = sizeof(decrypted);
 
     err = cachekit_decrypt(
+        enc,
         key, sizeof(key),
         (const uint8_t*)aad, aad_len,
         ciphertext, ciphertext_len,
@@ -332,7 +334,8 @@ int test_encrypt_wrong_aad_fails(void) {
     const char* aad_encrypt = "correct-aad";
     const char* aad_decrypt = "wrong-aad";
 
-    struct CACHEKIT_CachekitEncryptor* enc = cachekit_encryptor_new();
+    enum CACHEKIT_CachekitError init_err;
+    struct CACHEKIT_CachekitEncryptor* enc = cachekit_encryptor_new(&init_err);
     if (enc == NULL) {
         return 1;
     }
@@ -359,6 +362,7 @@ int test_encrypt_wrong_aad_fails(void) {
     size_t decrypted_len = sizeof(decrypted);
 
     err = cachekit_decrypt(
+        enc,
         key, sizeof(key),
         (const uint8_t*)aad_decrypt, strlen(aad_decrypt),
         ciphertext, ciphertext_len,
@@ -380,7 +384,8 @@ int test_encrypt_invalid_key_length(void) {
     const char* plaintext = "test";
     const char* aad = "tenant";
 
-    struct CACHEKIT_CachekitEncryptor* enc = cachekit_encryptor_new();
+    enum CACHEKIT_CachekitError init_err;
+    struct CACHEKIT_CachekitEncryptor* enc = cachekit_encryptor_new(&init_err);
     if (enc == NULL) {
         return 1;
     }
@@ -407,7 +412,8 @@ int test_encrypt_invalid_key_length(void) {
 }
 
 int test_encryptor_counter(void) {
-    struct CACHEKIT_CachekitEncryptor* enc = cachekit_encryptor_new();
+    enum CACHEKIT_CachekitError init_err;
+    struct CACHEKIT_CachekitEncryptor* enc = cachekit_encryptor_new(&init_err);
     if (enc == NULL) {
         return 1;
     }
