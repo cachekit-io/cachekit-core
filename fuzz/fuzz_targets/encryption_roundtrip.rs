@@ -10,24 +10,25 @@ fuzz_target!(|data: &[u8]| {
     }
 
     // Create encryptor
-    let encryptor = ZeroKnowledgeEncryptor::new();
+    let encryptor = match ZeroKnowledgeEncryptor::new() {
+        Ok(e) => e,
+        Err(_) => return, // Skip if encryptor creation fails
+    };
 
     // Generate deterministic key and AAD from input
     // (In real usage, keys come from key derivation)
-    let key = if data.len() >= 32 {
+    let key: &[u8] = if data.len() >= 32 {
         &data[0..32]
     } else {
         // Pad with zeros if input too short
-        let mut padded = [0u8; 32];
-        padded[..data.len()].copy_from_slice(data);
-        return; // Skip fuzzing with padded keys - focus on real data
+        return; // Skip fuzzing with short keys - focus on real data
     };
 
     let aad = b"fuzz_test_aad";
     let plaintext = if data.len() > 32 {
         &data[32..]
     } else {
-        b"test_plaintext"
+        b"test_plaintext" as &[u8]
     };
 
     // Test encryption (should not panic on any input)

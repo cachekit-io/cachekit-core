@@ -20,7 +20,10 @@ fuzz_target!(|data: &[u8]| {
     let (key, plaintext) = data.split_at(32);
     let aad = b"large_payload_test";
 
-    let encryptor = ZeroKnowledgeEncryptor::new();
+    let encryptor = match ZeroKnowledgeEncryptor::new() {
+        Ok(e) => e,
+        Err(_) => return, // Skip if encryptor creation fails
+    };
 
     // Test encryption → decryption roundtrip
     let start = std::time::Instant::now();
