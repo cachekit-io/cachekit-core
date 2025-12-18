@@ -5,6 +5,10 @@
 //! - Write only with new key (migration forward)
 //! - Key version bytes in ciphertext header track which key was used
 
+// Zeroize derive macro generates code that triggers false positive unused_assignments
+// lint in Rust 1.92+ for #[zeroize(skip)] fields. The KeyRotationState.rotation_active field IS read.
+#![allow(unused_assignments)]
+
 use std::convert::TryInto;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 

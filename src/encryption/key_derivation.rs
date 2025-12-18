@@ -8,6 +8,10 @@
 //! to prevent key confusion attacks and ensure cryptographic isolation between different
 //! uses of the same master key.
 
+// Zeroize derive macro generates code that triggers false positive unused_assignments
+// lint in Rust 1.92+ for #[zeroize(skip)] fields. The TenantKeys.tenant_id field IS read.
+#![allow(unused_assignments)]
+
 use hkdf::Hkdf;
 use sha2::Sha256;
 use thiserror::Error;
