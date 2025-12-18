@@ -8,6 +8,10 @@
 //! to prevent key confusion attacks and ensure cryptographic isolation between different
 //! uses of the same master key.
 
+// Zeroize derive macro generates code that triggers false positive unused_assignments
+// lint in Rust 1.92+ for #[zeroize(skip)] fields. The TenantKeys.tenant_id field IS read.
+#![allow(unused_assignments)]
+
 use hkdf::Hkdf;
 use sha2::Sha256;
 use thiserror::Error;
@@ -153,12 +157,16 @@ pub fn derive_tenant_keys(
 ///
 /// Note: `Clone` is intentionally NOT derived to prevent key material from proliferating
 /// in memory. Each `TenantKeys` instance is zeroized on drop via `ZeroizeOnDrop`.
+// Allow unused_assignments: Zeroize derive macro generates assignment code for #[zeroize(skip)]
+// fields that triggers false positive in Rust 1.92+. The tenant_id field IS read in tests/fuzz.
+#[allow(unused_assignments)]
 #[derive(Debug, Zeroize, ZeroizeOnDrop)]
 pub struct TenantKeys {
     pub encryption_key: [u8; 32],
     pub authentication_key: [u8; 32],
     pub cache_key_salt: [u8; 32],
     #[zeroize(skip)]
+    #[allow(unused_assignments)] // False positive: field IS read, Zeroize derive triggers lint
     pub tenant_id: String,
 }
 

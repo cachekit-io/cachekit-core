@@ -5,6 +5,10 @@
 //! - Write only with new key (migration forward)
 //! - Key version bytes in ciphertext header track which key was used
 
+// Zeroize derive macro generates code that triggers false positive unused_assignments
+// lint in Rust 1.92+ for #[zeroize(skip)] fields. The KeyRotationState.rotation_active field IS read.
+#![allow(unused_assignments)]
+
 use std::convert::TryInto;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -114,6 +118,9 @@ impl RotationAwareHeader {
 /// let state = KeyRotationState::new([0u8; 32]);
 /// let cloned = state.clone(); // ERROR: Clone not implemented
 /// ```
+// Allow unused_assignments: Zeroize derive macro generates assignment code for #[zeroize(skip)]
+// fields that triggers false positive in Rust 1.92+. The rotation_active field IS read.
+#[allow(unused_assignments)]
 #[derive(Debug, Zeroize, ZeroizeOnDrop)]
 pub struct KeyRotationState {
     /// Old key for reading legacy ciphertext (backward compatibility during migration)
@@ -122,6 +129,7 @@ pub struct KeyRotationState {
     pub new_key: [u8; 32],
     /// Indicates if rotation is currently active (old_key exists)
     #[zeroize(skip)]
+    #[allow(unused_assignments)] // False positive: field IS read, Zeroize derive triggers lint
     pub rotation_active: bool,
 }
 

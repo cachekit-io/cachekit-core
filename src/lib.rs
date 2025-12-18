@@ -68,8 +68,8 @@ pub use byte_storage::{ByteStorage, StorageEnvelope};
 pub mod encryption;
 #[cfg(feature = "encryption")]
 pub use encryption::{
-    EncryptionError, EncryptionHeader, KeyDerivationError, KeyDomain, KeyRotationState,
-    RotationAwareHeader, ZeroKnowledgeEncryptor, derive_domain_key,
+    derive_domain_key, EncryptionError, EncryptionHeader, KeyDerivationError, KeyDomain,
+    KeyRotationState, RotationAwareHeader, ZeroKnowledgeEncryptor,
 };
 
 // C FFI layer (feature-gated)

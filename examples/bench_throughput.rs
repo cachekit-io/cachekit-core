@@ -55,7 +55,7 @@ fn bench_size(size: usize, iterations: usize) {
     // AES-256-GCM Encrypt
     #[cfg(feature = "encryption")]
     {
-        use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
+        use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
         let key_bytes = [0u8; 32];
         let unbound = UnboundKey::new(&AES_256_GCM, &key_bytes).unwrap();
         let key = LessSafeKey::new(unbound);
@@ -75,7 +75,7 @@ fn bench_size(size: usize, iterations: usize) {
     // AES-256-GCM Decrypt
     #[cfg(feature = "encryption")]
     {
-        use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
+        use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
         let key_bytes = [0u8; 32];
         let unbound = UnboundKey::new(&AES_256_GCM, &key_bytes).unwrap();
         let key = LessSafeKey::new(unbound);

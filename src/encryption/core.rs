@@ -21,7 +21,7 @@
 
 use crate::metrics::OperationMetrics;
 use ring::{
-    aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey},
+    aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM},
     rand::{SecureRandom, SystemRandom},
 };
 use std::sync::atomic::{AtomicU64, Ordering};

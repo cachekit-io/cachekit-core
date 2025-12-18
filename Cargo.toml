@@ -1,10 +1,10 @@
 [package]
 name = "cachekit-core"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 authors = ["cachekit Contributors"]
 description = "LZ4 compression, xxHash3 integrity, AES-256-GCM encryption for byte payloads"
-rust-version = "1.85"
+rust-version = "1.82"
 license = "MIT"
 repository = "https://github.com/cachekit-io/cachekit-core"
 homepage = "https://github.com/cachekit-io/cachekit-core"
