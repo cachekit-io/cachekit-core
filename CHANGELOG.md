@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.1.0...cachekit-core-v0.1.1) (2025-12-18)
+
+
+### Bug Fixes
+
+* downgrade to edition 2021 and MSRV 1.80 for stable Rust compatibility ([#16](https://github.com/cachekit-io/cachekit-core/issues/16)) ([da5ced5](https://github.com/cachekit-io/cachekit-core/commit/da5ced5712cc88fe4f6ab966fbc39b79fcdfa089))
+
 ## [0.1.0](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.0.1...cachekit-core-v0.1.0) (2025-12-05)
 
 

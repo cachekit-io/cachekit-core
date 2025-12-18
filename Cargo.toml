@@ -1,6 +1,6 @@
 [package]
 name = "cachekit-core"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["cachekit Contributors"]
 description = "LZ4 compression, xxHash3 integrity, AES-256-GCM encryption for byte payloads"
