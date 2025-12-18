@@ -16,7 +16,7 @@ pub mod key_rotation;
 
 // Re-exports for convenience
 pub use core::{EncryptionError, ZeroKnowledgeEncryptor};
-pub use key_derivation::{KeyDerivationError, derive_domain_key};
+pub use key_derivation::{derive_domain_key, KeyDerivationError};
 pub use key_rotation::{KeyRotationState, RotationAwareHeader};
 
 // RotationAwareHeader is the canonical encryption header
@@ -59,7 +59,7 @@ mod tests {
         assert_eq!(decoded.key_fingerprint, [0x12; 16]);
         assert_eq!(decoded.domain, *b"ench");
         assert_eq!(decoded.key_version, 0); // Non-rotated data
-        // Verify algorithm is always AES-256-GCM (byte value 0)
+                                            // Verify algorithm is always AES-256-GCM (byte value 0)
         assert_eq!(bytes[1], 0);
     }
 

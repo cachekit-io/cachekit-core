@@ -19,7 +19,7 @@
 mod common;
 
 use cachekit_core::encryption::core::{EncryptionError, ZeroKnowledgeEncryptor};
-use cachekit_core::encryption::key_derivation::{KeyDerivationError, derive_domain_key};
+use cachekit_core::encryption::key_derivation::{derive_domain_key, KeyDerivationError};
 use common::fixtures::*;
 
 // Local test constants only used in encryption tests

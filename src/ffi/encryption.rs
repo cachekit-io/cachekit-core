@@ -19,7 +19,7 @@ const TAG_SIZE: usize = 16;
 const CIPHERTEXT_OVERHEAD: usize = NONCE_SIZE + TAG_SIZE; // 28 bytes
 
 #[cfg(feature = "encryption")]
-use crate::encryption::{ZeroKnowledgeEncryptor, derive_domain_key};
+use crate::encryption::{derive_domain_key, ZeroKnowledgeEncryptor};
 #[cfg(feature = "encryption")]
 use crate::ffi::error::CachekitError;
 #[cfg(feature = "encryption")]
@@ -77,7 +77,7 @@ use std::slice;
 /// **RECOMMENDATION**: Store the encryptor handle in a global/singleton and reuse it.
 /// Each handle supports 2^32 (~4 billion) encryptions before requiring a new key.
 #[cfg(feature = "encryption")]
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub unsafe extern "C" fn cachekit_encryptor_new(
     error_out: *mut CachekitError,
 ) -> *mut CachekitEncryptor {
@@ -115,7 +115,7 @@ pub unsafe extern "C" fn cachekit_encryptor_new(
 /// - `handle` must not be used after this call
 /// - Function is panic-safe and will never unwind across FFI boundary
 #[cfg(feature = "encryption")]
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub unsafe extern "C" fn cachekit_encryptor_free(handle: *mut CachekitEncryptor) {
     let _ = catch_unwind(|| {
         // from_opaque_ptr handles null check and validity tracking
@@ -144,7 +144,7 @@ pub unsafe extern "C" fn cachekit_encryptor_free(handle: *mut CachekitEncryptor)
 /// - `handle` must remain valid for duration of call
 /// - Function is panic-safe and will never unwind across FFI boundary
 #[cfg(feature = "encryption")]
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub unsafe extern "C" fn cachekit_encryptor_get_counter(handle: *const CachekitEncryptor) -> u64 {
     let result = catch_unwind(|| {
         // as_ref handles null check and validity tracking
@@ -195,7 +195,7 @@ pub unsafe extern "C" fn cachekit_encryptor_get_counter(handle: *const CachekitE
 ///
 /// Function is panic-safe and will never unwind across FFI boundary.
 #[cfg(feature = "encryption")]
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub unsafe extern "C" fn cachekit_encrypt(
     handle: *mut CachekitEncryptor,
     key: *const u8,
@@ -324,7 +324,7 @@ pub unsafe extern "C" fn cachekit_encrypt(
 ///
 /// Function is panic-safe and will never unwind across FFI boundary.
 #[cfg(feature = "encryption")]
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub unsafe extern "C" fn cachekit_decrypt(
     handle: *const CachekitEncryptor,
     key: *const u8,
@@ -438,7 +438,7 @@ pub unsafe extern "C" fn cachekit_decrypt(
 ///
 /// Function is panic-safe and will never unwind across FFI boundary.
 #[cfg(feature = "encryption")]
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub unsafe extern "C" fn cachekit_derive_key(
     master: *const u8,
     master_len: usize,

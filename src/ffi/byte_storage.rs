@@ -36,7 +36,7 @@ use std::slice;
 /// - Pointers remain valid for duration of call
 ///
 /// Function is panic-safe and will never unwind across FFI boundary.
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub unsafe extern "C" fn cachekit_compress(
     input: *const u8,
     input_len: usize,
@@ -133,7 +133,7 @@ pub unsafe extern "C" fn cachekit_compress(
 /// - Pointers remain valid for duration of call
 ///
 /// Function is panic-safe and will never unwind across FFI boundary.
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub unsafe extern "C" fn cachekit_decompress(
     input: *const u8,
     input_len: usize,
@@ -220,7 +220,7 @@ pub unsafe extern "C" fn cachekit_decompress(
 ///
 /// # Safety
 /// This is a pure computation with no memory access. Always safe to call.
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub extern "C" fn cachekit_compressed_bound(input_len: usize) -> usize {
     // LZ4 worst case: input_len + (input_len / 255) + 16
     // See: https://github.com/lz4/lz4/blob/dev/lib/lz4.h#L166
