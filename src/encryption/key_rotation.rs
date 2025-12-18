@@ -125,6 +125,7 @@ pub struct KeyRotationState {
     pub new_key: [u8; 32],
     /// Indicates if rotation is currently active (old_key exists)
     #[zeroize(skip)]
+    #[allow(unused_assignments)] // False positive: field IS read, Zeroize derive triggers lint
     pub rotation_active: bool,
 }
 

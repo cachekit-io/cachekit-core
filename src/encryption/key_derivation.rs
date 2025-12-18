@@ -162,6 +162,7 @@ pub struct TenantKeys {
     pub authentication_key: [u8; 32],
     pub cache_key_salt: [u8; 32],
     #[zeroize(skip)]
+    #[allow(unused_assignments)] // False positive: field IS read, Zeroize derive triggers lint
     pub tenant_id: String,
 }
 

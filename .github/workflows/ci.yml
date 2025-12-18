@@ -19,7 +19,7 @@ jobs:
         # Full OS matrix for stable only; MSRV and beta on ubuntu only
         include:
           # MSRV - ensures we don't use newer Rust features
-          - rust: "1.80"
+          - rust: "1.82"
             os: ubuntu-latest
           # Stable - primary target, all platforms
           - rust: stable
@@ -51,7 +51,7 @@ jobs:
         run: cargo fmt --check
 
       - name: Run clippy
-        if: matrix.rust != '1.80'
+        if: matrix.rust != '1.82'
         run: cargo clippy --all-features -- -D warnings
 
       - name: Run tests (all features)
