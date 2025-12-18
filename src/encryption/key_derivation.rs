@@ -153,6 +153,9 @@ pub fn derive_tenant_keys(
 ///
 /// Note: `Clone` is intentionally NOT derived to prevent key material from proliferating
 /// in memory. Each `TenantKeys` instance is zeroized on drop via `ZeroizeOnDrop`.
+// Allow unused_assignments: Zeroize derive macro generates assignment code for #[zeroize(skip)]
+// fields that triggers false positive in Rust 1.92+. The tenant_id field IS read in tests/fuzz.
+#[allow(unused_assignments)]
 #[derive(Debug, Zeroize, ZeroizeOnDrop)]
 pub struct TenantKeys {
     pub encryption_key: [u8; 32],

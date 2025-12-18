@@ -114,6 +114,9 @@ impl RotationAwareHeader {
 /// let state = KeyRotationState::new([0u8; 32]);
 /// let cloned = state.clone(); // ERROR: Clone not implemented
 /// ```
+// Allow unused_assignments: Zeroize derive macro generates assignment code for #[zeroize(skip)]
+// fields that triggers false positive in Rust 1.92+. The rotation_active field IS read.
+#[allow(unused_assignments)]
 #[derive(Debug, Zeroize, ZeroizeOnDrop)]
 pub struct KeyRotationState {
     /// Old key for reading legacy ciphertext (backward compatibility during migration)
