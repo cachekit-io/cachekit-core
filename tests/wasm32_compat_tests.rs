@@ -25,7 +25,9 @@ mod byte_storage_roundtrip {
         let data: &[u8] = b"";
 
         let stored = storage.store(data, None).expect("store empty must succeed");
-        let (retrieved, _) = storage.retrieve(&stored).expect("retrieve empty must succeed");
+        let (retrieved, _) = storage
+            .retrieve(&stored)
+            .expect("retrieve empty must succeed");
 
         assert_eq!(data, retrieved.as_slice());
     }
@@ -35,8 +37,12 @@ mod byte_storage_roundtrip {
         let storage = ByteStorage::new(None);
         let data: Vec<u8> = (0u8..=255u8).collect();
 
-        let stored = storage.store(&data, None).expect("store binary must succeed");
-        let (retrieved, _) = storage.retrieve(&stored).expect("retrieve binary must succeed");
+        let stored = storage
+            .store(&data, None)
+            .expect("store binary must succeed");
+        let (retrieved, _) = storage
+            .retrieve(&stored)
+            .expect("retrieve binary must succeed");
 
         assert_eq!(data, retrieved);
     }
@@ -78,7 +84,13 @@ fn cross_backend_wire_format_compatibility() {
     let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
     let nonce = AesGcmNonce::from_slice(&nonce_bytes);
     let ct = cipher
-        .encrypt(nonce, Payload { msg: &plaintext[..], aad: &aad[..] })
+        .encrypt(
+            nonce,
+            Payload {
+                msg: &plaintext[..],
+                aad: &aad[..],
+            },
+        )
         .unwrap();
 
     // Build wire format: nonce(12) || ciphertext || tag(16)
@@ -100,7 +112,13 @@ fn cross_backend_wire_format_compatibility() {
 
     let nonce2 = AesGcmNonce::from_slice(ring_nonce);
     let decrypted2 = cipher
-        .decrypt(nonce2, Payload { msg: ring_ct_tag, aad: &aad[..] })
+        .decrypt(
+            nonce2,
+            Payload {
+                msg: ring_ct_tag,
+                aad: &aad[..],
+            },
+        )
         .unwrap();
     assert_eq!(decrypted2, plaintext);
 }

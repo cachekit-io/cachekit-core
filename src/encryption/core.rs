@@ -519,8 +519,16 @@ impl ZeroKnowledgeEncryptor {
 
         // encrypt() returns ciphertext || tag (no nonce) — same layout as ring's seal_in_place_append_tag
         let ciphertext_with_tag = cipher
-            .encrypt(nonce, Payload { msg: plaintext, aad })
-            .map_err(|e| EncryptionError::EncryptionFailed(format!("AES-GCM encrypt failed: {e}")))?;
+            .encrypt(
+                nonce,
+                Payload {
+                    msg: plaintext,
+                    aad,
+                },
+            )
+            .map_err(|e| {
+                EncryptionError::EncryptionFailed(format!("AES-GCM encrypt failed: {e}"))
+            })?;
 
         // Wire format: nonce(12) || ciphertext || tag(16) — identical to native ring output
         let mut result = Vec::with_capacity(12 + ciphertext_with_tag.len());
@@ -568,7 +576,13 @@ impl ZeroKnowledgeEncryptor {
 
         // decrypt() verifies auth tag and returns plaintext
         let plaintext = cipher
-            .decrypt(nonce, Payload { msg: encrypted_data, aad })
+            .decrypt(
+                nonce,
+                Payload {
+                    msg: encrypted_data,
+                    aad,
+                },
+            )
             .map_err(|_| EncryptionError::AuthenticationFailed)?;
 
         // Metrics: Instant unavailable on wasm32
