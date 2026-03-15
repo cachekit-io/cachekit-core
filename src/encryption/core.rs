@@ -26,6 +26,7 @@ use ring::{
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 use thiserror::Error;
 
@@ -271,7 +272,8 @@ impl ZeroKnowledgeEncryptor {
         key: &[u8],
         aad: &[u8],
     ) -> Result<Vec<u8>, EncryptionError> {
-        // Time encryption operation
+        // Time encryption operation (wasm32: Instant unavailable, use 0)
+        #[cfg(not(target_arch = "wasm32"))]
         let encryption_start = Instant::now();
 
         // Validate key length
@@ -304,8 +306,10 @@ impl ZeroKnowledgeEncryptor {
         result.extend_from_slice(&ciphertext);
 
         // Update metrics for observability
-        let encryption_elapsed = encryption_start.elapsed();
-        let encryption_micros = encryption_elapsed.as_micros() as u64;
+        #[cfg(not(target_arch = "wasm32"))]
+        let encryption_micros = encryption_start.elapsed().as_micros() as u64;
+        #[cfg(target_arch = "wasm32")]
+        let encryption_micros = 0u64;
         if let Ok(mut metrics) = self.last_metrics.lock() {
             *metrics = OperationMetrics::new()
                 .with_encryption(encryption_micros, self.hardware_acceleration_detected);
@@ -329,7 +333,8 @@ impl ZeroKnowledgeEncryptor {
         key: &[u8],
         aad: &[u8],
     ) -> Result<Vec<u8>, EncryptionError> {
-        // Time decryption operation
+        // Time decryption operation (wasm32: Instant unavailable, use 0)
+        #[cfg(not(target_arch = "wasm32"))]
         let decryption_start = Instant::now();
 
         // Validate key length
@@ -373,8 +378,10 @@ impl ZeroKnowledgeEncryptor {
         plaintext.truncate(decrypted_len);
 
         // Update metrics for observability
-        let decryption_elapsed = decryption_start.elapsed();
-        let decryption_micros = decryption_elapsed.as_micros() as u64;
+        #[cfg(not(target_arch = "wasm32"))]
+        let decryption_micros = decryption_start.elapsed().as_micros() as u64;
+        #[cfg(target_arch = "wasm32")]
+        let decryption_micros = 0u64;
         if let Ok(mut metrics) = self.last_metrics.lock() {
             *metrics = OperationMetrics::new()
                 .with_encryption(decryption_micros, self.hardware_acceleration_detected);

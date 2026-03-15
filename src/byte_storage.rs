@@ -10,6 +10,7 @@ use crate::metrics::OperationMetrics;
 use lz4_flex;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 use thiserror::Error;
 #[cfg(feature = "checksum")]
@@ -175,14 +176,17 @@ impl ByteStorage {
 
         let format = format.unwrap_or_else(|| self.default_format.clone());
 
-        // Time compression operation
+        // Time compression operation (wasm32: Instant unavailable, use 0)
+        #[cfg(not(target_arch = "wasm32"))]
         let compression_start = Instant::now();
         let original_size = data.len();
 
         let envelope = StorageEnvelope::new(data.to_vec(), format)?;
 
-        let compression_elapsed = compression_start.elapsed();
-        let compression_micros = compression_elapsed.as_micros() as u64;
+        #[cfg(not(target_arch = "wasm32"))]
+        let compression_micros = compression_start.elapsed().as_micros() as u64;
+        #[cfg(target_arch = "wasm32")]
+        let compression_micros = 0u64;
         let compressed_size = envelope.compressed_data.len();
 
         // Serialize envelope with MessagePack
@@ -220,14 +224,17 @@ impl ByteStorage {
         let envelope: StorageEnvelope = rmp_serde::from_slice(envelope_bytes)
             .map_err(|e| ByteStorageError::DeserializationFailed(e.to_string()))?;
 
-        // Time decompression and checksum operations
+        // Time decompression and checksum operations (wasm32: Instant unavailable, use 0)
+        #[cfg(not(target_arch = "wasm32"))]
         let decompress_start = Instant::now();
 
         // Extract and validate data (all security checks happen inside extract())
         let data = envelope.extract()?;
 
-        let decompress_elapsed = decompress_start.elapsed();
-        let decompress_micros = decompress_elapsed.as_micros() as u64;
+        #[cfg(not(target_arch = "wasm32"))]
+        let decompress_micros = decompress_start.elapsed().as_micros() as u64;
+        #[cfg(target_arch = "wasm32")]
+        let decompress_micros = 0u64;
 
         // Calculate compression ratio from stored metadata
         let compressed_size = envelope.compressed_data.len();
