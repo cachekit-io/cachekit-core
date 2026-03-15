@@ -78,10 +78,10 @@ static GLOBAL_INSTANCE_COUNTER: LazyLock<AtomicU64> = LazyLock::new(|| {
 
 // ── wasm32: thread_local Cell<u64> seeded from getrandom ────────────────────
 
-/// Per-thread encryptor instance counter for wasm32 (no atomics available).
-///
-/// wasm32-unknown-unknown lacks threads, so a thread-local Cell<u64> is safe.
-/// Seeded from `getrandom` (which uses the JS crypto API via WASM).
+// Per-thread encryptor instance counter for wasm32 (no atomics available).
+//
+// wasm32-unknown-unknown lacks threads, so a thread-local Cell<u64> is safe.
+// Seeded from `getrandom` (which uses the JS crypto API via WASM).
 #[cfg(target_arch = "wasm32")]
 thread_local! {
     static WASM_INSTANCE_COUNTER: std::cell::Cell<u64> = {
@@ -347,8 +347,7 @@ impl ZeroKnowledgeEncryptor {
         key: &[u8],
         aad: &[u8],
     ) -> Result<Vec<u8>, EncryptionError> {
-        // Time encryption operation (wasm32: Instant unavailable, use 0)
-        #[cfg(not(target_arch = "wasm32"))]
+        // Time encryption operation
         let encryption_start = Instant::now();
 
         // Validate key length
@@ -381,10 +380,7 @@ impl ZeroKnowledgeEncryptor {
         result.extend_from_slice(&ciphertext);
 
         // Update metrics for observability
-        #[cfg(not(target_arch = "wasm32"))]
         let encryption_micros = encryption_start.elapsed().as_micros() as u64;
-        #[cfg(target_arch = "wasm32")]
-        let encryption_micros = 0u64;
         if let Ok(mut metrics) = self.last_metrics.lock() {
             *metrics = OperationMetrics::new()
                 .with_encryption(encryption_micros, self.hardware_acceleration_detected);
@@ -409,8 +405,7 @@ impl ZeroKnowledgeEncryptor {
         key: &[u8],
         aad: &[u8],
     ) -> Result<Vec<u8>, EncryptionError> {
-        // Time decryption operation (wasm32: Instant unavailable, use 0)
-        #[cfg(not(target_arch = "wasm32"))]
+        // Time decryption operation
         let decryption_start = Instant::now();
 
         // Validate key length
@@ -454,10 +449,7 @@ impl ZeroKnowledgeEncryptor {
         plaintext.truncate(decrypted_len);
 
         // Update metrics for observability
-        #[cfg(not(target_arch = "wasm32"))]
         let decryption_micros = decryption_start.elapsed().as_micros() as u64;
-        #[cfg(target_arch = "wasm32")]
-        let decryption_micros = 0u64;
         if let Ok(mut metrics) = self.last_metrics.lock() {
             *metrics = OperationMetrics::new()
                 .with_encryption(decryption_micros, self.hardware_acceleration_detected);
@@ -559,10 +551,10 @@ impl ZeroKnowledgeEncryptor {
             return Err(EncryptionError::InvalidKeyLength(key.len()));
         }
 
-        // Minimum: nonce(12) + tag(16) = 28 bytes
-        if ciphertext.len() < 28 {
+        // Minimum: nonce(12) + tag(16)
+        if ciphertext.len() < 12 + 16 {
             return Err(EncryptionError::InvalidCiphertext(
-                "ciphertext too short (minimum 28 bytes: 12 nonce + 16 tag)".into(),
+                "Ciphertext too short".into(),
             ));
         }
 

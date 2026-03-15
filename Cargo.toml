@@ -49,8 +49,8 @@ generic-array = { version = "0.14", optional = true }
 getrandom = { version = "0.2", features = ["js"], optional = true }
 
 # RustCrypto: pure-Rust AES-256-GCM for wasm32 targets (ring requires clang + C asm)
-aes-gcm = { version = "0.10", optional = true }
-aes = { version = "0.8", optional = true }
+aes-gcm = { version = "0.10", features = ["zeroize"], optional = true }
+aes = { version = "0.8", features = ["zeroize"], optional = true }
 
 # Byte utilities
 bytes = "1.5"
@@ -71,6 +71,7 @@ proptest = "1.4"
 serde_json = "1.0"
 blake2 = "0.10"
 hex = "0.4"
+aes-gcm = { version = "0.10", features = ["zeroize"] }
 
 [features]
 default = ["compression", "checksum", "messagepack"]
@@ -82,9 +83,9 @@ messagepack = ["dep:rmp-serde"]
 
 # Encryption (AES-256-GCM with HKDF-SHA256 key derivation)
 # Native: ring provides hardware-accelerated AES-256-GCM (target-conditional dep above)
-# wasm32: aes-gcm (pure Rust) is used instead — activated by the `wasm` feature
-# Note: `dep:ring` is valid here because ring is declared optional in the target section;
-# on wasm32 targets the dep simply doesn't exist, so Cargo ignores it safely.
+# wasm32: aes-gcm (pure Rust) is used instead — automatically selected via cfg(target_arch)
+# aes-gcm/aes/getrandom compile on native but are dead code (all usage behind wasm32 cfg);
+# the compiler optimizes them out.
 encryption = [
     "dep:ring",
     "dep:zeroize",
@@ -92,13 +93,16 @@ encryption = [
     "dep:sha2",
     "dep:hmac",
     "dep:generic-array",
+    "dep:aes-gcm",
+    "dep:aes",
+    "dep:getrandom",
 ]
 
 # C FFI layer (generates include/cachekit.h)
 ffi = []
 
-# wasm32 support: getrandom with JS bindings for RNG + RustCrypto AES-GCM for encryption
-wasm = ["dep:getrandom", "dep:aes-gcm", "dep:aes"]
+# wasm32 support: alias for encryption (deps now folded into encryption feature)
+wasm = ["encryption"]
 
 # Kani formal verification configuration
 # Provides mathematical proofs of memory safety for unsafe code and FFI boundaries

@@ -57,3 +57,50 @@ mod byte_storage_roundtrip {
         assert_eq!("cbor", format);
     }
 }
+
+/// Verify that aes-gcm (wasm32 backend) produces wire-format-compatible
+/// output that ring (native backend) can decrypt, and vice versa.
+#[cfg(feature = "encryption")]
+#[test]
+fn cross_backend_wire_format_compatibility() {
+    use aes_gcm::{
+        aead::{Aead, KeyInit, Payload},
+        Aes256Gcm, Nonce as AesGcmNonce,
+    };
+    use cachekit_core::ZeroKnowledgeEncryptor;
+
+    let key = [0x42u8; 32];
+    let nonce_bytes = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+    let plaintext = b"cross-backend wire format test";
+    let aad = b"test_aad_domain";
+
+    // Encrypt with aes-gcm (simulating wasm32 path)
+    let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
+    let nonce = AesGcmNonce::from_slice(&nonce_bytes);
+    let ct = cipher
+        .encrypt(nonce, Payload { msg: &plaintext[..], aad: &aad[..] })
+        .unwrap();
+
+    // Build wire format: nonce(12) || ciphertext || tag(16)
+    let mut wire = Vec::new();
+    wire.extend_from_slice(&nonce_bytes);
+    wire.extend_from_slice(&ct);
+
+    // Decrypt with ring (native path) via ZeroKnowledgeEncryptor
+    let encryptor = ZeroKnowledgeEncryptor::new().unwrap();
+    let decrypted = encryptor.decrypt_aes_gcm(&wire, &key, aad).unwrap();
+    assert_eq!(decrypted, plaintext);
+
+    // Also test the reverse: ring encrypts, aes-gcm decrypts
+    let ring_ciphertext = encryptor.encrypt_aes_gcm(plaintext, &key, aad).unwrap();
+
+    // Extract nonce and ciphertext+tag from ring output
+    let ring_nonce = &ring_ciphertext[..12];
+    let ring_ct_tag = &ring_ciphertext[12..];
+
+    let nonce2 = AesGcmNonce::from_slice(ring_nonce);
+    let decrypted2 = cipher
+        .decrypt(nonce2, Payload { msg: ring_ct_tag, aad: &aad[..] })
+        .unwrap();
+    assert_eq!(decrypted2, plaintext);
+}
