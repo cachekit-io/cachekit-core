@@ -11,8 +11,14 @@
 //! |:--------|:------------|:-------:|
 //! | `compression` | LZ4 compression via `lz4_flex` | Yes |
 //! | `checksum` | xxHash3-64 integrity verification | Yes |
-//! | `encryption` | AES-256-GCM + HKDF-SHA256 | No |
+//! | `encryption` | AES-256-GCM + HKDF-SHA256 (ring on native, aes-gcm on wasm32) | No |
 //! | `ffi` | C header generation | No |
+//!
+//! ## Platform Support
+//!
+//! Compiles on both native targets and `wasm32-unknown-unknown` (Cloudflare Workers).
+//! On wasm32, encryption uses RustCrypto's `aes-gcm` (pure Rust) instead of `ring`.
+//! Both backends produce identical AES-256-GCM wire format.
 //!
 //! ## Quick Start
 //!
