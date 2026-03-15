@@ -20,9 +20,19 @@
 //! for a total of 2^96 unique nonces - far exceeding any practical usage.
 
 use crate::metrics::OperationMetrics;
+
+// Native: ring for AES-256-GCM (hardware-accelerated, requires clang)
+#[cfg(not(target_arch = "wasm32"))]
 use ring::{
     aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM},
     rand::{SecureRandom, SystemRandom},
+};
+
+// wasm32: RustCrypto aes-gcm (pure Rust, compiles on wasm32-unknown-unknown)
+#[cfg(target_arch = "wasm32")]
+use aes_gcm::{
+    aead::{Aead, KeyInit, Payload},
+    Aes256Gcm, Nonce as AesGcmNonce,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -330,6 +340,7 @@ impl ZeroKnowledgeEncryptor {
     ///
     /// # Returns
     /// Encrypted data in format: `[nonce(12)][ciphertext+auth_tag]`
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn encrypt_aes_gcm(
         &self,
         plaintext: &[u8],
@@ -391,6 +402,7 @@ impl ZeroKnowledgeEncryptor {
     ///
     /// # Returns
     /// Decrypted plaintext data
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn decrypt_aes_gcm(
         &self,
         ciphertext: &[u8],
@@ -488,6 +500,91 @@ impl ZeroKnowledgeEncryptor {
             "Key rotation will be implemented in a future release with gradual migration support"
                 .into(),
         ))
+    }
+
+    /// Encrypt data using AES-256-GCM with authenticated additional data (wasm32)
+    ///
+    /// Uses RustCrypto's `aes-gcm` crate (pure Rust, compiles on wasm32-unknown-unknown).
+    /// Produces identical wire format to the native `ring` path:
+    /// `[nonce(12)][ciphertext][auth_tag(16)]`
+    #[cfg(target_arch = "wasm32")]
+    pub fn encrypt_aes_gcm(
+        &self,
+        plaintext: &[u8],
+        key: &[u8],
+        aad: &[u8],
+    ) -> Result<Vec<u8>, EncryptionError> {
+        if key.len() != 32 {
+            return Err(EncryptionError::InvalidKeyLength(key.len()));
+        }
+
+        let nonce_bytes = self.generate_nonce()?;
+
+        let cipher = Aes256Gcm::new_from_slice(key)
+            .map_err(|e| EncryptionError::EncryptionFailed(format!("key error: {e}")))?;
+
+        let nonce = AesGcmNonce::from_slice(&nonce_bytes);
+
+        // encrypt() returns ciphertext || tag (no nonce) — same layout as ring's seal_in_place_append_tag
+        let ciphertext_with_tag = cipher
+            .encrypt(nonce, Payload { msg: plaintext, aad })
+            .map_err(|e| EncryptionError::EncryptionFailed(format!("AES-GCM encrypt failed: {e}")))?;
+
+        // Wire format: nonce(12) || ciphertext || tag(16) — identical to native ring output
+        let mut result = Vec::with_capacity(12 + ciphertext_with_tag.len());
+        result.extend_from_slice(&nonce_bytes);
+        result.extend_from_slice(&ciphertext_with_tag);
+
+        // Metrics: Instant unavailable on wasm32
+        if let Ok(mut metrics) = self.last_metrics.lock() {
+            *metrics = OperationMetrics::new().with_encryption(0u64, false);
+        }
+
+        Ok(result)
+    }
+
+    /// Decrypt data using AES-256-GCM with authenticated additional data (wasm32)
+    ///
+    /// Uses RustCrypto's `aes-gcm` crate (pure Rust, compiles on wasm32-unknown-unknown).
+    /// Expects identical wire format to the native `ring` path:
+    /// `[nonce(12)][ciphertext][auth_tag(16)]`
+    #[cfg(target_arch = "wasm32")]
+    pub fn decrypt_aes_gcm(
+        &self,
+        ciphertext: &[u8],
+        key: &[u8],
+        aad: &[u8],
+    ) -> Result<Vec<u8>, EncryptionError> {
+        if key.len() != 32 {
+            return Err(EncryptionError::InvalidKeyLength(key.len()));
+        }
+
+        // Minimum: nonce(12) + tag(16) = 28 bytes
+        if ciphertext.len() < 28 {
+            return Err(EncryptionError::InvalidCiphertext(
+                "ciphertext too short (minimum 28 bytes: 12 nonce + 16 tag)".into(),
+            ));
+        }
+
+        let nonce_bytes = &ciphertext[..12];
+        let encrypted_data = &ciphertext[12..]; // ciphertext + tag
+
+        let cipher = Aes256Gcm::new_from_slice(key)
+            .map_err(|e| EncryptionError::DecryptionFailed(format!("key error: {e}")))?;
+
+        let nonce = AesGcmNonce::from_slice(nonce_bytes);
+
+        // decrypt() verifies auth tag and returns plaintext
+        let plaintext = cipher
+            .decrypt(nonce, Payload { msg: encrypted_data, aad })
+            .map_err(|_| EncryptionError::AuthenticationFailed)?;
+
+        // Metrics: Instant unavailable on wasm32
+        if let Ok(mut metrics) = self.last_metrics.lock() {
+            *metrics = OperationMetrics::new().with_encryption(0u64, false);
+        }
+
+        Ok(plaintext)
     }
 }
 
