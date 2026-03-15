@@ -46,6 +46,9 @@ sha2 = { version = "0.10", optional = true }
 hmac = { version = "0.12", optional = true }
 generic-array = { version = "0.14", optional = true }
 
+# wasm32 RNG: getrandom with JS feature for wasm32-unknown-unknown targets
+getrandom = { version = "0.2", features = ["js"], optional = true }
+
 # Byte utilities
 bytes = "1.5"
 byteorder = "1.5"
@@ -80,6 +83,9 @@ encryption = [
 
 # C FFI layer (generates include/cachekit.h)
 ffi = []
+
+# wasm32 support: getrandom with JS bindings for RNG on wasm32-unknown-unknown
+wasm = ["dep:getrandom"]
 
 # Kani formal verification configuration
 # Provides mathematical proofs of memory safety for unsafe code and FFI boundaries
