@@ -70,8 +70,16 @@ deny = []
 # Skip specific dependencies from multiple-version checks
 # These are transitive dependencies where version duplication is unavoidable
 skip = [
-    # getrandom 0.2.x via ring, getrandom 0.3.x via proptest/tempfile
-    { crate = "getrandom@0.2.16", reason = "Transitive via ring crypto lib" },
+    # getrandom has 3 major versions in the dep tree:
+    # 0.2.x via aes-gcm/crypto-common (encryption)
+    # 0.3.x via proptest (dev-dependency)
+    # 0.4.x via tempfile/cbindgen (build-dependency)
+    { crate = "getrandom@0.2", reason = "Transitive via aes-gcm crypto chain" },
+    { crate = "getrandom@0.3", reason = "Transitive via proptest (dev-dependency)" },
+    # rand_core duplication from aes-gcm (0.6.x) vs proptest (0.9.x)
+    { crate = "rand_core@0.6", reason = "Transitive via aes-gcm crypto chain" },
+    # libc duplication unavoidable (getrandom versions pull different libc)
+    { crate = "libc@0.2", reason = "Transitive via multiple getrandom versions" },
 ]
 
 # Skip crate trees entirely (e.g., frequently-updated foundational crates)

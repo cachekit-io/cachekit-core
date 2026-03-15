@@ -4,7 +4,7 @@ version = "0.1.1"
 edition = "2021"
 authors = ["cachekit Contributors"]
 description = "LZ4 compression, xxHash3 integrity, AES-256-GCM encryption for byte payloads"
-rust-version = "1.82"
+rust-version = "1.85"
 license = "MIT"
 repository = "https://github.com/cachekit-io/cachekit-core"
 homepage = "https://github.com/cachekit-io/cachekit-core"
@@ -36,19 +36,31 @@ lz4_flex = { version = "0.11", features = ["frame", "std"], optional = true }
 # xxHash3-64: ~36 GB/s, sufficient for corruption detection (security via AES-GCM auth tag)
 xxhash-rust = { version = "0.8", features = ["xxh3"], optional = true }
 
-
 # Encryption dependencies (all optional, gated by encryption feature)
 # Uses HKDF-SHA256 for key derivation (NOT Blake2b - that's only for Python cache keys)
-ring = { version = "0.17", optional = true }
+# ring is native-only (see [target.'cfg(not(target_arch = "wasm32"))'.dependencies])
 zeroize = { version = "1.8", features = ["derive"], optional = true }
 hkdf = { version = "0.12", optional = true }
 sha2 = { version = "0.10", optional = true }
 hmac = { version = "0.12", optional = true }
 generic-array = { version = "0.14", optional = true }
 
+# wasm32 RNG: getrandom with JS feature for wasm32-unknown-unknown targets
+getrandom = { version = "0.2", features = ["js"], optional = true }
+
+# RustCrypto: pure-Rust AES-256-GCM for wasm32 targets (ring requires clang + C asm)
+aes-gcm = { version = "0.10", features = ["zeroize"], optional = true }
+aes = { version = "0.8", features = ["zeroize"], optional = true }
+
 # Byte utilities
 bytes = "1.5"
 byteorder = "1.5"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# ring: hardware-accelerated AES-256-GCM for native targets only.
+# Does NOT compile on wasm32-unknown-unknown (requires clang for C asm).
+# Kept optional so it is only compiled when the `encryption` feature is active.
+ring = { version = "0.17", optional = true }
 
 [build-dependencies]
 # C header generation (required for ffi feature)
@@ -59,6 +71,7 @@ proptest = "1.4"
 serde_json = "1.0"
 blake2 = "0.10"
 hex = "0.4"
+aes-gcm = { version = "0.10", features = ["zeroize"] }
 
 [features]
 default = ["compression", "checksum", "messagepack"]
@@ -69,6 +82,10 @@ checksum = ["dep:xxhash-rust"]
 messagepack = ["dep:rmp-serde"]
 
 # Encryption (AES-256-GCM with HKDF-SHA256 key derivation)
+# Native: ring provides hardware-accelerated AES-256-GCM (target-conditional dep above)
+# wasm32: aes-gcm (pure Rust) is used instead — automatically selected via cfg(target_arch)
+# aes-gcm/aes/getrandom compile on native but are dead code (all usage behind wasm32 cfg);
+# the compiler optimizes them out.
 encryption = [
     "dep:ring",
     "dep:zeroize",
@@ -76,10 +93,16 @@ encryption = [
     "dep:sha2",
     "dep:hmac",
     "dep:generic-array",
+    "dep:aes-gcm",
+    "dep:aes",
+    "dep:getrandom",
 ]
 
 # C FFI layer (generates include/cachekit.h)
 ffi = []
+
+# wasm32 support: alias for encryption (deps now folded into encryption feature)
+wasm = ["encryption"]
 
 # Kani formal verification configuration
 # Provides mathematical proofs of memory safety for unsafe code and FFI boundaries

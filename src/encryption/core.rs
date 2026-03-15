@@ -20,16 +20,33 @@
 //! for a total of 2^96 unique nonces - far exceeding any practical usage.
 
 use crate::metrics::OperationMetrics;
+
+// Native: ring for AES-256-GCM (hardware-accelerated, requires clang)
+#[cfg(not(target_arch = "wasm32"))]
 use ring::{
     aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM},
     rand::{SecureRandom, SystemRandom},
 };
+
+// wasm32: RustCrypto aes-gcm (pure Rust, compiles on wasm32-unknown-unknown)
+#[cfg(target_arch = "wasm32")]
+use aes_gcm::{
+    aead::{Aead, KeyInit, Payload},
+    Aes256Gcm, Nonce as AesGcmNonce,
+};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Arc, LazyLock, Mutex};
+#[cfg(target_arch = "wasm32")]
+use std::sync::{Arc, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 use thiserror::Error;
 
-/// Global encryptor instance counter for deterministic nonce uniqueness.
+// ── Native: LazyLock<AtomicU64> seeded from ring's SystemRandom ─────────────
+
+/// Global encryptor instance counter for deterministic nonce uniqueness (native only).
 ///
 /// Each encryptor gets a unique 64-bit instance ID from this counter,
 /// which is used as the first 8 bytes of every nonce. This provides
@@ -45,16 +62,55 @@ use thiserror::Error;
 /// reusing instance IDs from the previous run. By starting with a random
 /// 32-bit offset, we get ~2^32 cross-process collision resistance while
 /// maintaining deterministic uniqueness within a single process.
+#[cfg(not(target_arch = "wasm32"))]
 static GLOBAL_INSTANCE_COUNTER: LazyLock<AtomicU64> = LazyLock::new(|| {
     // Initialize with random 32-bit value in upper bits for cross-process uniqueness
     // Lower 32 bits start at 0 for deterministic ordering
     let rng = SystemRandom::new();
     let mut random_seed = [0u8; 4];
-    // If RNG fails, fall back to 0 (still unique within process)
-    let _ = rng.fill(&mut random_seed);
+    // RNG failure is a hard error — silently falling back to 0 is a security risk
+    // because multiple restarts would produce the same instance IDs
+    rng.fill(&mut random_seed)
+        .expect("SystemRandom::fill failed during GLOBAL_INSTANCE_COUNTER initialization");
     let seed = u32::from_be_bytes(random_seed) as u64;
     AtomicU64::new(seed << 32)
 });
+
+// ── wasm32: thread_local Cell<u64> seeded from getrandom ────────────────────
+
+// Per-thread encryptor instance counter for wasm32 (no atomics available).
+//
+// wasm32-unknown-unknown lacks threads, so a thread-local Cell<u64> is safe.
+// Seeded from `getrandom` (which uses the JS crypto API via WASM).
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static WASM_INSTANCE_COUNTER: std::cell::Cell<u64> = {
+        let mut seed_bytes = [0u8; 4];
+        getrandom::getrandom(&mut seed_bytes)
+            .expect("getrandom failed during WASM_INSTANCE_COUNTER initialization");
+        let seed = u32::from_be_bytes(seed_bytes) as u64;
+        std::cell::Cell::new(seed << 32)
+    };
+}
+
+/// Get the next globally unique instance ID, incrementing the counter.
+///
+/// On native: uses `GLOBAL_INSTANCE_COUNTER` (thread-safe `AtomicU64`).
+/// On wasm32: uses `WASM_INSTANCE_COUNTER` (thread-local `Cell<u64>`).
+fn next_instance_id() -> u64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        GLOBAL_INSTANCE_COUNTER.fetch_add(1, Ordering::SeqCst)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        WASM_INSTANCE_COUNTER.with(|c| {
+            let id = c.get();
+            c.set(id.wrapping_add(1));
+            id
+        })
+    }
+}
 
 // CPU feature detection
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -103,7 +159,9 @@ pub enum EncryptionError {
 /// Zero-knowledge encryptor using AES-256-GCM with hardware acceleration detection
 pub struct ZeroKnowledgeEncryptor {
     hardware_acceleration_detected: bool,
-    /// Atomic counter for provably unique nonces.
+    /// Nonce counter for provably unique nonces.
+    ///
+    /// Native: `AtomicU64` for lock-free thread safety.
     ///
     /// # Why AtomicU64 instead of AtomicU32?
     ///
@@ -120,11 +178,14 @@ pub struct ZeroKnowledgeEncryptor {
     /// - Next call: counter is u32::MAX + 1, check fails again
     /// - Counter STAYS exhausted, no nonce reuse possible
     ///
-    /// This is defense-in-depth: the type prevents wraparound from ever occurring.
+    /// wasm32: `std::cell::Cell<u64>` — no threads on wasm32-unknown-unknown, Cell is safe.
+    #[cfg(not(target_arch = "wasm32"))]
     nonce_counter: AtomicU64,
+    #[cfg(target_arch = "wasm32")]
+    nonce_counter: std::cell::Cell<u64>,
     /// Globally unique 64-bit instance ID (deterministic, no birthday paradox).
     ///
-    /// Assigned from GLOBAL_INSTANCE_COUNTER at construction. Used as the first
+    /// Assigned from the platform counter at construction. Used as the first
     /// 8 bytes of every nonce to guarantee cross-instance uniqueness.
     ///
     /// # Security Properties
@@ -151,13 +212,15 @@ impl ZeroKnowledgeEncryptor {
     pub fn new() -> Result<Self, EncryptionError> {
         let hardware_acceleration_detected = Self::detect_hardware_acceleration();
 
-        // Get a globally unique instance ID (deterministic, no birthday paradox)
-        // This replaces the previous random IV which had ~2^32 collision bound
-        let instance_id = GLOBAL_INSTANCE_COUNTER.fetch_add(1, Ordering::SeqCst);
+        // Get a globally unique instance ID via platform-specific counter
+        let instance_id = next_instance_id();
 
         Ok(Self {
             hardware_acceleration_detected,
+            #[cfg(not(target_arch = "wasm32"))]
             nonce_counter: AtomicU64::new(0),
+            #[cfg(target_arch = "wasm32")]
+            nonce_counter: std::cell::Cell::new(0),
             instance_id,
             last_metrics: Arc::new(Mutex::new(OperationMetrics::new())),
         })
@@ -225,17 +288,22 @@ impl ZeroKnowledgeEncryptor {
     /// Format: [instance_id(8)][counter(4)] = 12 bytes total
     ///
     /// Security properties:
-    /// - Instance ID is globally unique (from atomic counter, no birthday paradox)
+    /// - Instance ID is globally unique (from platform counter, no birthday paradox)
     /// - Counter ensures per-instance uniqueness (up to 2^32 encryptions)
     /// - Combined: 2^96 total unique nonces possible
-    /// - Atomic operations ensure thread safety
-    /// - Overflow detection prevents wraparound
+    /// - Overflow detection prevents wraparound and nonce reuse
     fn generate_nonce(&self) -> Result<[u8; 12], EncryptionError> {
-        // Fetch and increment counter atomically (thread-safe across PyO3 boundary)
-        // Using 32-bit counter allows ~4 billion operations per encryptor instance
+        // Increment counter and retrieve previous value
+        #[cfg(not(target_arch = "wasm32"))]
         let counter = self.nonce_counter.fetch_add(1, Ordering::SeqCst);
+        #[cfg(target_arch = "wasm32")]
+        let counter = {
+            let c = self.nonce_counter.get();
+            self.nonce_counter.set(c.wrapping_add(1));
+            c
+        };
 
-        // Check for overflow (after 2^32 operations on this instance, require new instance)
+        // Check for exhaustion (after 2^32 operations, require new instance)
         if counter >= u32::MAX as u64 {
             return Err(EncryptionError::NonceCounterExhausted);
         }
@@ -253,7 +321,14 @@ impl ZeroKnowledgeEncryptor {
     ///
     /// Exposed for operational monitoring and alerting on counter exhaustion.
     pub fn get_nonce_counter(&self) -> u64 {
-        self.nonce_counter.load(Ordering::SeqCst)
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.nonce_counter.load(Ordering::SeqCst)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.nonce_counter.get()
+        }
     }
 
     /// Encrypt data using AES-256-GCM with authenticated additional data
@@ -265,6 +340,7 @@ impl ZeroKnowledgeEncryptor {
     ///
     /// # Returns
     /// Encrypted data in format: `[nonce(12)][ciphertext+auth_tag]`
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn encrypt_aes_gcm(
         &self,
         plaintext: &[u8],
@@ -304,8 +380,7 @@ impl ZeroKnowledgeEncryptor {
         result.extend_from_slice(&ciphertext);
 
         // Update metrics for observability
-        let encryption_elapsed = encryption_start.elapsed();
-        let encryption_micros = encryption_elapsed.as_micros() as u64;
+        let encryption_micros = encryption_start.elapsed().as_micros() as u64;
         if let Ok(mut metrics) = self.last_metrics.lock() {
             *metrics = OperationMetrics::new()
                 .with_encryption(encryption_micros, self.hardware_acceleration_detected);
@@ -323,6 +398,7 @@ impl ZeroKnowledgeEncryptor {
     ///
     /// # Returns
     /// Decrypted plaintext data
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn decrypt_aes_gcm(
         &self,
         ciphertext: &[u8],
@@ -373,8 +449,7 @@ impl ZeroKnowledgeEncryptor {
         plaintext.truncate(decrypted_len);
 
         // Update metrics for observability
-        let decryption_elapsed = decryption_start.elapsed();
-        let decryption_micros = decryption_elapsed.as_micros() as u64;
+        let decryption_micros = decryption_start.elapsed().as_micros() as u64;
         if let Ok(mut metrics) = self.last_metrics.lock() {
             *metrics = OperationMetrics::new()
                 .with_encryption(decryption_micros, self.hardware_acceleration_detected);
@@ -384,7 +459,7 @@ impl ZeroKnowledgeEncryptor {
     }
 
     /// Generate a secure random key for testing purposes
-    #[cfg(test)]
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     pub fn generate_key(&self) -> Result<[u8; 32], EncryptionError> {
         let rng = SystemRandom::new();
         let mut key = [0u8; 32];
@@ -418,13 +493,112 @@ impl ZeroKnowledgeEncryptor {
                 .into(),
         ))
     }
+
+    /// Encrypt data using AES-256-GCM with authenticated additional data (wasm32)
+    ///
+    /// Uses RustCrypto's `aes-gcm` crate (pure Rust, compiles on wasm32-unknown-unknown).
+    /// Produces identical wire format to the native `ring` path:
+    /// `[nonce(12)][ciphertext][auth_tag(16)]`
+    #[cfg(target_arch = "wasm32")]
+    pub fn encrypt_aes_gcm(
+        &self,
+        plaintext: &[u8],
+        key: &[u8],
+        aad: &[u8],
+    ) -> Result<Vec<u8>, EncryptionError> {
+        if key.len() != 32 {
+            return Err(EncryptionError::InvalidKeyLength(key.len()));
+        }
+
+        let nonce_bytes = self.generate_nonce()?;
+
+        let cipher = Aes256Gcm::new_from_slice(key)
+            .map_err(|e| EncryptionError::EncryptionFailed(format!("key error: {e}")))?;
+
+        let nonce = AesGcmNonce::from_slice(&nonce_bytes);
+
+        // encrypt() returns ciphertext || tag (no nonce) — same layout as ring's seal_in_place_append_tag
+        let ciphertext_with_tag = cipher
+            .encrypt(
+                nonce,
+                Payload {
+                    msg: plaintext,
+                    aad,
+                },
+            )
+            .map_err(|e| {
+                EncryptionError::EncryptionFailed(format!("AES-GCM encrypt failed: {e}"))
+            })?;
+
+        // Wire format: nonce(12) || ciphertext || tag(16) — identical to native ring output
+        let mut result = Vec::with_capacity(12 + ciphertext_with_tag.len());
+        result.extend_from_slice(&nonce_bytes);
+        result.extend_from_slice(&ciphertext_with_tag);
+
+        // Metrics: Instant unavailable on wasm32
+        if let Ok(mut metrics) = self.last_metrics.lock() {
+            *metrics = OperationMetrics::new().with_encryption(0u64, false);
+        }
+
+        Ok(result)
+    }
+
+    /// Decrypt data using AES-256-GCM with authenticated additional data (wasm32)
+    ///
+    /// Uses RustCrypto's `aes-gcm` crate (pure Rust, compiles on wasm32-unknown-unknown).
+    /// Expects identical wire format to the native `ring` path:
+    /// `[nonce(12)][ciphertext][auth_tag(16)]`
+    #[cfg(target_arch = "wasm32")]
+    pub fn decrypt_aes_gcm(
+        &self,
+        ciphertext: &[u8],
+        key: &[u8],
+        aad: &[u8],
+    ) -> Result<Vec<u8>, EncryptionError> {
+        if key.len() != 32 {
+            return Err(EncryptionError::InvalidKeyLength(key.len()));
+        }
+
+        // Minimum: nonce(12) + tag(16)
+        if ciphertext.len() < 12 + 16 {
+            return Err(EncryptionError::InvalidCiphertext(
+                "Ciphertext too short".into(),
+            ));
+        }
+
+        let nonce_bytes = &ciphertext[..12];
+        let encrypted_data = &ciphertext[12..]; // ciphertext + tag
+
+        let cipher = Aes256Gcm::new_from_slice(key)
+            .map_err(|e| EncryptionError::DecryptionFailed(format!("key error: {e}")))?;
+
+        let nonce = AesGcmNonce::from_slice(nonce_bytes);
+
+        // decrypt() verifies auth tag and returns plaintext
+        let plaintext = cipher
+            .decrypt(
+                nonce,
+                Payload {
+                    msg: encrypted_data,
+                    aad,
+                },
+            )
+            .map_err(|_| EncryptionError::AuthenticationFailed)?;
+
+        // Metrics: Instant unavailable on wasm32
+        if let Ok(mut metrics) = self.last_metrics.lock() {
+            *metrics = OperationMetrics::new().with_encryption(0u64, false);
+        }
+
+        Ok(plaintext)
+    }
 }
 
 // Note: Default is intentionally NOT implemented.
 // ZeroKnowledgeEncryptor::new() returns Result for API stability, even though
 // the current implementation is infallible.
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 
@@ -559,6 +733,7 @@ mod tests {
     // ============================================================================
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn test_nonce_exhaustion_at_boundary() {
         // WHY: Verify nonce counter exhaustion is detected at u32::MAX
         // This is critical for AES-GCM security - nonce reuse is catastrophic
@@ -603,6 +778,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn test_counter_no_wraparound_after_exhaustion() {
         // WHY: Verify that after counter exhaustion, subsequent operations
         // continue to fail (counter doesn't wrap back to 0)
@@ -928,6 +1104,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn test_concurrent_nonce_exhaustion() {
         // WHY: Verify atomic counter behavior under concurrent access at exhaustion boundary
         // This ensures no race conditions allow nonce reuse
