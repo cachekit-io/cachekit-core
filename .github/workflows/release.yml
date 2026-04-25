@@ -54,22 +54,20 @@ jobs:
         uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
         with:
           subject-path: target/package/*.crate
-        continue-on-error: true
 
       - name: Install cargo-sbom
         run: cargo install cargo-sbom --locked
-        continue-on-error: true
 
       - name: Generate SBOM
-        run: cargo sbom --output-format cyclonedx_json_v1_6 > sbom.cdx.json
-        continue-on-error: true
+        run: |
+          cargo sbom --output-format cyclone_dx_json_1_6 > sbom.cdx.json
+          test -s sbom.cdx.json || { echo "::error::SBOM file is empty"; exit 1; }
 
       - name: Attest SBOM
         uses: actions/attest-sbom@10926c72720ffc3f7b666661c8e55b1344e2a365 # v2
         with:
           subject-path: target/package/*.crate
           sbom-path: sbom.cdx.json
-        continue-on-error: true
 
       - name: Publish to crates.io
         run: cargo publish
