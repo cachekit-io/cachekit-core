@@ -21,20 +21,20 @@ env:
 jobs:
   fast-security:
     name: Fast Security Checks
-    runs-on: ubuntu-latest
+    runs-on: cachekit
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: "stable"
           components: clippy
 
       - name: Cache Rust dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
             ~/.cargo/registry/index/
@@ -66,7 +66,7 @@ jobs:
 
   quick-fuzz:
     name: Quick Fuzz (Corpus Only)
-    runs-on: ubuntu-latest
+    runs-on: cachekit
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     strategy:
       fail-fast: false
@@ -90,13 +90,13 @@ jobs:
           - key_derivation
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
 
       - name: Cache Rust dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
             ~/.cargo/registry/index/
@@ -121,7 +121,7 @@ jobs:
 
   deep-fuzz:
     name: Deep Fuzzing (8 hours)
-    runs-on: ubuntu-latest
+    runs-on: cachekit
     if: github.event_name == 'schedule'
     strategy:
       fail-fast: false
@@ -145,13 +145,13 @@ jobs:
           - key_derivation
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
 
       - name: Cache Rust dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
             ~/.cargo/registry/index/
@@ -176,7 +176,7 @@ jobs:
 
       - name: Upload crash artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: fuzz-crashes-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}/
@@ -184,19 +184,19 @@ jobs:
 
   kani:
     name: Kani Formal Verification
-    runs-on: ubuntu-latest
+    runs-on: cachekit
     if: github.event_name == 'schedule'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
           toolchain: "1.85"
 
       - name: Cache Rust dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
             ~/.cargo/registry/index/
@@ -219,19 +219,19 @@ jobs:
 
   cargo-vet:
     name: Cargo Vet (Supply Chain)
-    runs-on: ubuntu-latest
+    runs-on: cachekit
     if: github.event_name == 'schedule'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
           toolchain: "1.85"
 
       - name: Cache Rust dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
             ~/.cargo/registry/index/
@@ -251,19 +251,19 @@ jobs:
 
   sbom:
     name: Generate SBOM
-    runs-on: ubuntu-latest
+    runs-on: cachekit
     if: github.event_name == 'release'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
           toolchain: "1.85"
 
       - name: Cache Rust dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
             ~/.cargo/registry/index/
@@ -282,7 +282,7 @@ jobs:
         run: cargo sbom > cachekit-core-sbom.json
 
       - name: Upload SBOM as release asset
-        uses: actions/upload-release-asset@v1
+        uses: actions/upload-release-asset@e8f9f06c4b078e705bd2ea027f0926603fc9b4d5 # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

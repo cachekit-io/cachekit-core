@@ -11,37 +11,42 @@ concurrency:
 jobs:
   test:
     name: ${{ matrix.rust }} / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.rust == 'beta' }}
     strategy:
       fail-fast: false
       matrix:
-        # Full OS matrix for stable only; MSRV and beta on ubuntu only
+        # Full OS matrix for stable only; MSRV and beta on self-hosted only
         include:
           # MSRV - ensures we don't use newer Rust features
           - rust: "1.85"
             os: ubuntu-latest
+            runner: cachekit
           # Stable - primary target, all platforms
           - rust: stable
             os: ubuntu-latest
+            runner: cachekit
           - rust: stable
             os: macos-latest
+            runner: macos-latest
           - rust: stable
             os: windows-latest
+            runner: windows-latest
           # Beta - early warning (allowed to fail)
           - rust: beta
             os: ubuntu-latest
+            runner: cachekit
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
           toolchain: ${{ matrix.rust }}
-          components: ${{ matrix.rust != '1.80' && 'rustfmt, clippy' || '' }}
+          components: ${{ matrix.rust != '1.85' && 'rustfmt, clippy' || '' }}
 
       - name: Cache cargo registry
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           cache-all-crates: true
 
@@ -62,15 +67,15 @@ jobs:
         run: cargo test --features ffi
 
   security:
-    runs-on: ubuntu-latest
+    runs-on: cachekit
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Cache cargo registry
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           cache-all-crates: true
 

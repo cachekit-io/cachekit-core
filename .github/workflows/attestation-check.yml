@@ -8,7 +8,7 @@ on:
 jobs:
   verify:
     name: Verify Latest Release Attestations
-    runs-on: ubuntu-latest
+    runs-on: cachekit
     permissions:
       contents: read
       issues: write
