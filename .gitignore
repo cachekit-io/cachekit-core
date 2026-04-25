@@ -15,3 +15,13 @@ include/cachekit.h
 # OS files
 .DS_Store
 Thumbs.db
+
+# AI agent configs (internal tooling, not shipped in OSS)
+CLAUDE.md
+AGENTS.md
+CALIBER_LEARNINGS.md
+.caliber/
+.claude/
+.cursor/
+.cursorrules
+.github/copilot-instructions.md
