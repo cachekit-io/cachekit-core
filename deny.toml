@@ -70,16 +70,11 @@ deny = []
 # Skip specific dependencies from multiple-version checks
 # These are transitive dependencies where version duplication is unavoidable
 skip = [
-    # getrandom has 3 major versions in the dep tree:
-    # 0.2.x via aes-gcm/crypto-common (encryption)
-    # 0.3.x via proptest (dev-dependency)
-    # 0.4.x via tempfile/cbindgen (build-dependency)
+    # getrandom 0.2.x (aes-gcm crypto chain) vs 0.4.x (tempfile/cbindgen build-dep)
     { crate = "getrandom@0.2", reason = "Transitive via aes-gcm crypto chain" },
-    { crate = "getrandom@0.3", reason = "Transitive via proptest (dev-dependency)" },
-    # rand_core duplication from aes-gcm (0.6.x) vs proptest (0.9.x)
-    { crate = "rand_core@0.6", reason = "Transitive via aes-gcm crypto chain" },
-    # libc duplication unavoidable (getrandom versions pull different libc)
-    { crate = "libc@0.2", reason = "Transitive via multiple getrandom versions" },
+    # winnow 0.7.x vs 1.x — both pulled by toml@0.9 (direct + via toml_parser)
+    # through cbindgen build-dependency; internal split, can't resolve
+    { crate = "winnow@0.7", reason = "Transitive via toml/cbindgen (build-dependency)" },
 ]
 
 # Skip crate trees entirely (e.g., frequently-updated foundational crates)
