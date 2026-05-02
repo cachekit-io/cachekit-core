@@ -230,6 +230,9 @@ jobs:
         with:
           toolchain: "1.85"
 
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+
       - name: Cache Rust dependencies
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
