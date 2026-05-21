@@ -109,7 +109,10 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        # NOTE: --locked omitted: cargo-fuzz 0.13.1's published Cargo.lock pins
+        # rustix 0.36.5, which uses unstable `rustc_attrs` cfg gates that newer
+        # nightly rustc rejects. Let cargo resolve fresh deps.
+        run: cargo install cargo-fuzz
 
       - name: Run quick fuzz (corpus only)
         run: |
@@ -164,7 +167,10 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        # NOTE: --locked omitted: cargo-fuzz 0.13.1's published Cargo.lock pins
+        # rustix 0.36.5, which uses unstable `rustc_attrs` cfg gates that newer
+        # nightly rustc rejects. Let cargo resolve fresh deps.
+        run: cargo install cargo-fuzz
 
       - name: Run deep fuzz (30 minutes per target)
         run: |
@@ -220,7 +226,7 @@ jobs:
   cargo-vet:
     name: Cargo Vet (Supply Chain)
     runs-on: cachekit
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'pull_request'
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
