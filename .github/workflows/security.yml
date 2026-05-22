@@ -126,6 +126,7 @@ jobs:
     name: Deep Fuzzing (8 hours)
     runs-on: cachekit
     if: github.event_name == 'schedule'
+    timeout-minutes: 540
     strategy:
       fail-fast: false
       matrix:
@@ -172,13 +173,13 @@ jobs:
         # nightly rustc rejects. Let cargo resolve fresh deps.
         run: cargo install cargo-fuzz
 
-      - name: Run deep fuzz (30 minutes per target)
+      - name: Run deep fuzz (8 hours per target)
         run: |
           cd fuzz
           # Build first - fail fast on compile errors
           cargo fuzz build ${{ matrix.target }}
           # Run fuzz - timeout exit code 124 is acceptable (means it ran the full duration)
-          timeout 1800 cargo fuzz run ${{ matrix.target }} -- -max_total_time=1800 || [ $? -eq 124 ]
+          timeout 28800 cargo fuzz run ${{ matrix.target }} -- -max_total_time=28800 || [ $? -eq 124 ]
 
       - name: Upload crash artifacts
         if: always()
