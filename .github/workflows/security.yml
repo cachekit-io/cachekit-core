@@ -6,7 +6,12 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    - cron: '0 3 * * *'
+    # Saturday 11:07 UTC = Sat 21:07 AEST / 22:07 AEDT (Sydney night, year-round).
+    # Weekly cadence: deep fuzz at 8h/target × 16 targets is ~128 runner-hours.
+    # PR-time coverage (cargo audit/deny, Cargo Vet, Quick Fuzz, CodeQL) catches
+    # regressions promptly; deep fuzz is for finding bugs, not gating merges.
+    # Off-minute (:07) avoids the cron pile-up that GitHub schedules at :00.
+    - cron: '7 11 * * 6'
   release:
     types: [published]
 
