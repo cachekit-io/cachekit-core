@@ -77,10 +77,12 @@ fmt-check: ## Check code formatting
 	@echo "$(GREEN)✓ Code formatting OK$(RESET)"
 
 bench: ## Run Criterion benches (uses --features encryption)
-	cargo bench -p cachekit-core --features encryption --bench hot_path
+	$(call require_binary,cargo,Install Rust: https://rustup.rs)
+	@cargo bench -p cachekit-core --features encryption --bench hot_path
 
 bench-quick: ## Quick bench run for CI (1s warmup, 2s measurement, 10 samples)
-	cargo bench -p cachekit-core --features encryption --bench hot_path -- --warm-up-time 1 --measurement-time 2 --sample-size 10
+	$(call require_binary,cargo,Install Rust: https://rustup.rs)
+	@cargo bench -p cachekit-core --features encryption --bench hot_path -- --warm-up-time 1 --measurement-time 2 --sample-size 10
 
 fuzz-quick: ## Quick corpus-only fuzz run (2 min per target)
 	@echo "$(BLUE)Running quick fuzzing (2 min per target)...$(RESET)"
