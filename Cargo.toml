@@ -72,6 +72,7 @@ serde_json = "1.0"
 blake2 = "0.10"
 hex = "0.4"
 aes-gcm = { version = "0.10", features = ["zeroize"] }
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [features]
 default = ["compression", "checksum", "messagepack"]
@@ -143,3 +144,7 @@ codegen-units = 1
 panic = "abort"
 strip = "symbols"
 debug = "line-tables-only"
+
+[[bench]]
+name = "hot_path"
+harness = false
