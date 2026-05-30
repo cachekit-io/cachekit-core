@@ -59,21 +59,22 @@ use thiserror::Error;
 ///
 /// # Why randomized start?
 /// If a process restarts, the counter would start at 0 again, potentially
-/// reusing instance IDs from the previous run. By starting with a random
-/// 32-bit offset, we get ~2^32 cross-process collision resistance while
-/// maintaining deterministic uniqueness within a single process.
+/// reusing instance IDs from the previous run. By seeding with a full 8-byte
+/// random value we get ~2^64 cross-process collision resistance — well below
+/// 2^-32 probability for any realistic fleet size (e.g. Cloudflare Workers).
 #[cfg(not(target_arch = "wasm32"))]
 static GLOBAL_INSTANCE_COUNTER: LazyLock<AtomicU64> = LazyLock::new(|| {
-    // Initialize with random 32-bit value in upper bits for cross-process uniqueness
-    // Lower 32 bits start at 0 for deterministic ordering
+    // Seed with 8 bytes of randomness so the full u64 space is covered.
+    // A 4-byte seed (legacy) gave only 2^32 cross-process collision resistance,
+    // which is reachable on Cloudflare Workers where isolates churn constantly.
+    // 8 bytes brings collision probability below 2^-32 for any realistic fleet.
     let rng = SystemRandom::new();
-    let mut random_seed = [0u8; 4];
+    let mut random_seed = [0u8; 8];
     // RNG failure is a hard error — silently falling back to 0 is a security risk
-    // because multiple restarts would produce the same instance IDs
+    // because multiple restarts would produce the same instance IDs.
     rng.fill(&mut random_seed)
         .expect("SystemRandom::fill failed during GLOBAL_INSTANCE_COUNTER initialization");
-    let seed = u32::from_be_bytes(random_seed) as u64;
-    AtomicU64::new(seed << 32)
+    AtomicU64::new(u64::from_be_bytes(random_seed))
 });
 
 // ── wasm32: thread_local Cell<u64> seeded from getrandom ────────────────────
@@ -85,11 +86,12 @@ static GLOBAL_INSTANCE_COUNTER: LazyLock<AtomicU64> = LazyLock::new(|| {
 #[cfg(target_arch = "wasm32")]
 thread_local! {
     static WASM_INSTANCE_COUNTER: std::cell::Cell<u64> = {
-        let mut seed_bytes = [0u8; 4];
+        // Seed with 8 bytes for full u64 entropy. See native path above for
+        // rationale. On wasm32, getrandom routes to the JS crypto API.
+        let mut seed_bytes = [0u8; 8];
         getrandom::getrandom(&mut seed_bytes)
             .expect("getrandom failed during WASM_INSTANCE_COUNTER initialization");
-        let seed = u32::from_be_bytes(seed_bytes) as u64;
-        std::cell::Cell::new(seed << 32)
+        std::cell::Cell::new(u64::from_be_bytes(seed_bytes))
     };
 }
 
@@ -1100,6 +1102,40 @@ mod tests {
             "  enc3: {:02x?} (instance_id={})",
             id3_bytes,
             enc3.get_instance_id()
+        );
+    }
+
+    /// HIGH-2 regression: instance_id must be seeded with full 8 bytes of randomness.
+    ///
+    /// Before the fix, the seed was `(rand_u32 << 32)`, so the lower 32 bits of every
+    /// process's first instance_id were always 0. Each subsequent encryptor created
+    /// in the same process incremented the counter by 1, so the lower 32 bits stayed
+    /// small (just the count of encryptors created so far) — typically < 100 in a
+    /// fresh test process.
+    ///
+    /// Post-fix, the lower 32 bits are randomly distributed across the full u32 space
+    /// at process start, so the probability they are < (2^31) is exactly 1/2 — but
+    /// the probability they are below some small threshold like 1000 is ~1000/2^32
+    /// ≈ 2.3e-7, vanishingly small.
+    ///
+    /// Test strategy: read GLOBAL_INSTANCE_COUNTER after one encryptor is created.
+    /// Pre-fix this is at most (small N + a few from other tests). Post-fix this
+    /// is randomly distributed — almost certainly ≥ 1000.
+    ///
+    /// NOTE: This test is order-dependent. If many other tests have run before it
+    /// and each created encryptors, the lower 32 bits pre-fix would still grow
+    /// linearly. To force a deterministic check, run isolated:
+    ///   cargo test -p cachekit-core --features encryption -- --test-threads=1
+    #[test]
+    fn test_instance_seed_uses_8_random_bytes() {
+        let _e = ZeroKnowledgeEncryptor::new().unwrap();
+        let counter = GLOBAL_INSTANCE_COUNTER.load(Ordering::SeqCst);
+        let low32 = counter as u32;
+        assert!(
+            low32 >= 1000,
+            "instance counter lower 32 bits = {low32}; pre-fix this would be a small \
+             integer (count of encryptors created in this process). Post-fix this is \
+             randomly seeded across the full u64 space."
         );
     }
 

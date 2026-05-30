@@ -72,6 +72,7 @@ serde_json = "1.0"
 blake2 = "0.10"
 hex = "0.4"
 aes-gcm = { version = "0.10", features = ["zeroize"] }
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [features]
 default = ["compression", "checksum", "messagepack"]
@@ -120,3 +121,30 @@ stubbing = false
 [lints.rust]
 # Suppress benign warnings about cfg(kani) which is set by Kani verifier
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+# Release profile for cachekit-core's own release builds.
+#
+# Cargo only honors the ROOT package's [profile.release]. Workspace consumers
+# (cachekit-rs, cachekit-py via PyO3, cachekit-ts via NAPI) define their own
+# [profile.release] and use it instead — this profile does NOT propagate to
+# them. The value of setting it here is:
+#
+#   1. `cargo bench` from inside cachekit-core runs under a stable, fully
+#      optimized profile (Phase 3 perf measurement depends on this).
+#   2. `cargo build --release` and `cargo publish` produce a consistently
+#      optimized artifact.
+#   3. Standalone binary consumers WITHOUT their own [profile.release]
+#      inherit this one instead of Cargo defaults (codegen-units=16, lto=false).
+#
+# Mirrors cachekit-py/rust/Cargo.toml for consistency.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+debug = "line-tables-only"
+
+[[bench]]
+name = "hot_path"
+harness = false

@@ -1,6 +1,6 @@
 # cachekit-core - Development Makefile
 
-.PHONY: help check test lint clippy audit deny vet fmt fmt-check fuzz-quick fuzz-deep sbom clean
+.PHONY: help check test lint clippy audit deny vet fmt fmt-check bench bench-quick fuzz-quick fuzz-deep sbom clean
 .DEFAULT_GOAL := help
 
 # Colors for output
@@ -75,6 +75,14 @@ fmt-check: ## Check code formatting
 	$(call require_binary,cargo,Install Rust: https://rustup.rs)
 	@cargo fmt --check
 	@echo "$(GREEN)✓ Code formatting OK$(RESET)"
+
+bench: ## Run Criterion benches (uses --features encryption)
+	$(call require_binary,cargo,Install Rust: https://rustup.rs)
+	@cargo bench -p cachekit-core --features encryption --bench hot_path
+
+bench-quick: ## Quick bench run for CI (1s warmup, 2s measurement, 10 samples)
+	$(call require_binary,cargo,Install Rust: https://rustup.rs)
+	@cargo bench -p cachekit-core --features encryption --bench hot_path -- --warm-up-time 1 --measurement-time 2 --sample-size 10
 
 fuzz-quick: ## Quick corpus-only fuzz run (2 min per target)
 	@echo "$(BLUE)Running quick fuzzing (2 min per target)...$(RESET)"
