@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.2.0...cachekit-core-v0.2.1) (2026-05-31)
+
+
+### Bug Fixes
+
+* use local&gt; preset ref for private renovate-config repo ([#29](https://github.com/cachekit-io/cachekit-core/issues/29)) ([80355a4](https://github.com/cachekit-io/cachekit-core/commit/80355a49806b36a2b759be9fdfd9e0536cd43476))
+
 ## [0.2.0](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.1.1...cachekit-core-v0.2.0) (2026-03-16)
 
 
