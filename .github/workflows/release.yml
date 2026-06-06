@@ -4,10 +4,20 @@ on:
   push:
     branches:
       - main
+  # Manual re-publish escape hatch: lets the publish job run for the version
+  # currently on main when an automated release published the tag but the
+  # publish job failed downstream (e.g. a transient Sigstore/Fulcio outage).
+  workflow_dispatch: {}
 
 permissions:
   contents: write
   pull-requests: write
+
+# Serialise release runs so a push and a manual dispatch can't race into two
+# concurrent cargo publish attempts. Never cancel an in-flight publish.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release-please:
@@ -29,7 +39,11 @@ jobs:
 
   publish:
     needs: release-please
-    if: ${{ needs.release-please.outputs.release_created }}
+    # Run on an automated release, OR on a manual dispatch — but a manual dispatch
+    # must target main (workflow_dispatch can be fired from any ref; restricting to
+    # refs/heads/main stops a feature branch from publishing its own Cargo.toml).
+    # Explicit == 'true' avoids relying on string-coercion of the action output.
+    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
     runs-on: cachekit
     permissions:
       contents: read
@@ -56,7 +70,11 @@ jobs:
           subject-path: target/package/*.crate
 
       - name: Install cargo-sbom
-        run: cargo install cargo-sbom --locked
+        # --force is required: the self-hosted runner's CARGO_HOME (/cache/cargo) is a
+        # persistent volume, so the binary survives between runs and a plain install
+        # exits 101 ("binary `cargo-sbom` already exists"). --force reinstalls the
+        # --locked pinned version idempotently.
+        run: cargo install cargo-sbom --locked --force
 
       - name: Generate SBOM
         run: |
