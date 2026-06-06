@@ -44,7 +44,11 @@ jobs:
     # refs/heads/main stops a feature branch from publishing its own Cargo.toml).
     # Explicit == 'true' avoids relying on string-coercion of the action output.
     if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
-    runs-on: cachekit
+    # GitHub-hosted: the self-hosted ARC pods have unreliable DNS/egress to Sigstore
+    # (Fulcio/Rekor), which intermittently fails build-provenance + SBOM attestation
+    # and blocks publish. A hosted runner has reliable egress to Sigstore + crates.io,
+    # and the publish job is infrequent + free on public repos.
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
