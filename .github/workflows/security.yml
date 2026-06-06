@@ -207,6 +207,14 @@ jobs:
         env:
           FUZZ_SECONDS: ${{ (github.event_name == 'workflow_dispatch' && inputs.fuzz_seconds) || '3600' }}
         run: |
+          # Validate the dispatch-supplied duration before it reaches shell arithmetic
+          # and the fuzzer. Must be a positive integer and within the 540min job cap.
+          case "$FUZZ_SECONDS" in
+            ''|*[!0-9]*) echo "::error::fuzz_seconds must be a positive integer (got '$FUZZ_SECONDS')"; exit 1 ;;
+          esac
+          if [ "$FUZZ_SECONDS" -lt 1 ] || [ "$FUZZ_SECONDS" -gt 32400 ]; then
+            echo "::error::fuzz_seconds must be 1..32400 (<= 540min job cap), got $FUZZ_SECONDS"; exit 1
+          fi
           cd fuzz
           # Build first - fail fast on compile errors
           cargo fuzz build ${{ matrix.target }}
