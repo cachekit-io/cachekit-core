@@ -4,6 +4,11 @@
 # Generated files (keep .gitkeep but ignore generated header)
 include/cachekit.h
 
+# CI release artifact: SBOM is generated in the release workflow before
+# `cargo publish`. Ignoring it keeps the working tree clean so cargo publish
+# (which refuses a dirty tree) doesn't fail on it.
+/sbom.cdx.json
+
 # Editor files
 *.swp
 *.swo
