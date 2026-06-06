@@ -124,8 +124,12 @@ jobs:
           cd fuzz
           # Build first - fail fast on compile errors
           cargo fuzz build ${{ matrix.target }}
-          # Run corpus - timeout exit code 124 is acceptable (means it ran)
-          timeout 120 cargo fuzz run ${{ matrix.target }} -- -runs=0 -max_total_time=120 || [ $? -eq 124 ]
+          # libFuzzer self-exits at -max_total_time (graceful "Done ..."); the outer
+          # `timeout` is a +30s hang safety-net only. Buffer matters because libFuzzer's
+          # clock starts after build/corpus-load, so an equal `timeout` would always
+          # SIGTERM first ("run interrupted") and the graceful path would be unreachable.
+          # Exit 124 (timeout fired = genuine hang) is still tolerated.
+          timeout 150 cargo fuzz run ${{ matrix.target }} -- -runs=0 -max_total_time=120 || [ $? -eq 124 ]
 
   deep-fuzz:
     name: Deep Fuzzing (8 hours)
@@ -183,8 +187,14 @@ jobs:
           cd fuzz
           # Build first - fail fast on compile errors
           cargo fuzz build ${{ matrix.target }}
-          # Run fuzz - timeout exit code 124 is acceptable (means it ran the full duration)
-          timeout 28800 cargo fuzz run ${{ matrix.target }} -- -max_total_time=28800 || [ $? -eq 124 ]
+          # libFuzzer self-exits at -max_total_time=8h with a graceful "Done N runs ..."
+          # (final stats + corpus consolidation). The outer `timeout` is +3min slack so
+          # it only fires on a genuine hang — NOT as the normal end-of-budget stop. An
+          # equal `timeout` would always win the race (libFuzzer's clock starts later,
+          # after build/corpus-load) and every run would log "run interrupted" instead,
+          # making a real hang indistinguishable from normal completion. Still inside the
+          # 540min job cap. Exit 124 (hang killed by timeout) remains tolerated.
+          timeout 28980 cargo fuzz run ${{ matrix.target }} -- -max_total_time=28800 || [ $? -eq 124 ]
 
       - name: Upload crash artifacts
         if: always()
