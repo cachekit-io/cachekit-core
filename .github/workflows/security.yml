@@ -7,13 +7,28 @@ on:
     branches: [main]
   schedule:
     # Saturday 11:07 UTC = Sat 21:07 AEST / 22:07 AEDT (Sydney night, year-round).
-    # Weekly cadence: deep fuzz at 8h/target × 16 targets is ~128 runner-hours.
+    # Weekly cadence: deep fuzz at 1h/target × 16 targets is ~16 runner-hours, which
+    # drains in a few hours overnight instead of monopolising the shared ARC pool for
+    # ~32h. The full 8h/target run is opt-in via workflow_dispatch (run_deep_fuzz).
     # PR-time coverage (cargo audit/deny, Cargo Vet, Quick Fuzz, CodeQL) catches
     # regressions promptly; deep fuzz is for finding bugs, not gating merges.
     # Off-minute (:07) avoids the cron pile-up that GitHub schedules at :00.
     - cron: '7 11 * * 6'
   release:
     types: [published]
+  # On-demand: lets the schedule-only jobs (e.g. Kani) be run and verified
+  # without waiting for the weekly cron. A plain dispatch does NOT trigger the
+  # heavy deep-fuzz matrix — set run_deep_fuzz=true to opt into that.
+  workflow_dispatch:
+    inputs:
+      run_deep_fuzz:
+        description: "Run the full deep-fuzz matrix (heavy — occupies the ARC pool)"
+        type: boolean
+        default: false
+      fuzz_seconds:
+        description: "Seconds per target for an on-demand deep fuzz (default 8h)"
+        type: string
+        default: "28800"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -132,9 +147,13 @@ jobs:
           timeout 150 cargo fuzz run ${{ matrix.target }} -- -runs=0 -max_total_time=120 || [ $? -eq 124 ]
 
   deep-fuzz:
-    name: Deep Fuzzing (8 hours)
+    name: Deep Fuzzing
     runs-on: cachekit
-    if: github.event_name == 'schedule'
+    # Scheduled weekly run is light (1h/target) so it can't monopolise the shared
+    # ARC pool. The full 8h/target run is opt-in via workflow_dispatch (run_deep_fuzz).
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_deep_fuzz)
+    # 540min cap accommodates the on-demand 8h path; the inner timeout governs the
+    # actual scheduled (1h) vs dispatched (configurable) duration.
     timeout-minutes: 540
     strategy:
       fail-fast: false
@@ -182,19 +201,31 @@ jobs:
         # nightly rustc rejects. Let cargo resolve fresh deps.
         run: cargo install cargo-fuzz
 
-      - name: Run deep fuzz (8 hours per target)
+      - name: Run deep fuzz
+        # Scheduled runs use 1h/target (keeps the ARC pool free for PR CI); a manual
+        # workflow_dispatch can request the full 8h (or any duration) via fuzz_seconds.
+        env:
+          FUZZ_SECONDS: ${{ (github.event_name == 'workflow_dispatch' && inputs.fuzz_seconds) || '3600' }}
         run: |
+          # Validate the dispatch-supplied duration before it reaches shell arithmetic
+          # and the fuzzer. Must be a positive integer and within the 540min job cap.
+          case "$FUZZ_SECONDS" in
+            ''|*[!0-9]*) echo "::error::fuzz_seconds must be a positive integer (got '$FUZZ_SECONDS')"; exit 1 ;;
+          esac
+          if [ "$FUZZ_SECONDS" -lt 1 ] || [ "$FUZZ_SECONDS" -gt 32400 ]; then
+            echo "::error::fuzz_seconds must be 1..32400 (<= 540min job cap), got $FUZZ_SECONDS"; exit 1
+          fi
           cd fuzz
           # Build first - fail fast on compile errors
           cargo fuzz build ${{ matrix.target }}
-          # libFuzzer self-exits at -max_total_time=8h with a graceful "Done N runs ..."
+          # libFuzzer self-exits at -max_total_time with a graceful "Done N runs ..."
           # (final stats + corpus consolidation). The outer `timeout` is +3min slack so
           # it only fires on a genuine hang — NOT as the normal end-of-budget stop. An
           # equal `timeout` would always win the race (libFuzzer's clock starts later,
           # after build/corpus-load) and every run would log "run interrupted" instead,
-          # making a real hang indistinguishable from normal completion. Still inside the
-          # 540min job cap. Exit 124 (hang killed by timeout) remains tolerated.
-          timeout 28980 cargo fuzz run ${{ matrix.target }} -- -max_total_time=28800 || [ $? -eq 124 ]
+          # making a real hang indistinguishable from normal completion. Exit 124 (hang
+          # killed by timeout) remains tolerated.
+          timeout "$((FUZZ_SECONDS + 180))" cargo fuzz run ${{ matrix.target }} -- -max_total_time="$FUZZ_SECONDS" || [ $? -eq 124 ]
 
       - name: Upload crash artifacts
         if: always()
@@ -207,7 +238,9 @@ jobs:
   kani:
     name: Kani Formal Verification
     runs-on: cachekit
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read # least-privilege: the job only checks out and verifies
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -215,7 +248,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
-          toolchain: "1.85"
+          # Host toolchain for the kani-verifier installer only — Kani downloads its
+          # own pinned verification toolchain in `cargo kani setup`. Must be current
+          # stable: kani-verifier's deps (e.g. home 0.5.12) now require rustc >= 1.88,
+          # so the old "1.85" pin failed to compile the installer.
+          toolchain: stable
 
       - name: Cache Rust dependencies
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
@@ -231,13 +268,16 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Install Kani
+        # No `|| echo` swallowing: a failed install/setup MUST fail the job. Silently
+        # skipping verification gives false green-CI assurance. --force makes the
+        # install idempotent on the runner's persistent cargo cache.
         run: |
-          cargo install --locked kani-verifier || echo "Kani install failed, skipping verification"
-          cargo kani setup || echo "Kani setup failed, skipping verification"
+          cargo install --locked --force kani-verifier
+          cargo kani setup
 
       - name: Run Kani verification
-        run: cargo kani --all-features || echo "Kani verification failed or not supported"
-        continue-on-error: true
+        # No continue-on-error, no `|| echo`: a failed proof must turn CI red.
+        run: cargo kani --all-features
 
   cargo-vet:
     name: Cargo Vet (Supply Chain)
