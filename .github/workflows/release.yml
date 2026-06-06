@@ -13,6 +13,12 @@ permissions:
   contents: write
   pull-requests: write
 
+# Serialise release runs so a push and a manual dispatch can't race into two
+# concurrent cargo publish attempts. Never cancel an in-flight publish.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release-please:
     runs-on: cachekit
@@ -33,8 +39,11 @@ jobs:
 
   publish:
     needs: release-please
-    # Run on an automated release, OR on a manual dispatch (re-publish escape hatch).
-    if: ${{ needs.release-please.outputs.release_created || github.event_name == 'workflow_dispatch' }}
+    # Run on an automated release, OR on a manual dispatch — but a manual dispatch
+    # must target main (workflow_dispatch can be fired from any ref; restricting to
+    # refs/heads/main stops a feature branch from publishing its own Cargo.toml).
+    # Explicit == 'true' avoids relying on string-coercion of the action output.
+    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
     runs-on: cachekit
     permissions:
       contents: read
