@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - main
+  # Manual re-publish escape hatch: lets the publish job run for the version
+  # currently on main when an automated release published the tag but the
+  # publish job failed downstream (e.g. a transient Sigstore/Fulcio outage).
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -29,7 +33,8 @@ jobs:
 
   publish:
     needs: release-please
-    if: ${{ needs.release-please.outputs.release_created }}
+    # Run on an automated release, OR on a manual dispatch (re-publish escape hatch).
+    if: ${{ needs.release-please.outputs.release_created || github.event_name == 'workflow_dispatch' }}
     runs-on: cachekit
     permissions:
       contents: read
@@ -56,7 +61,11 @@ jobs:
           subject-path: target/package/*.crate
 
       - name: Install cargo-sbom
-        run: cargo install cargo-sbom --locked
+        # --force is required: the self-hosted runner's CARGO_HOME (/cache/cargo) is a
+        # persistent volume, so the binary survives between runs and a plain install
+        # exits 101 ("binary `cargo-sbom` already exists"). --force reinstalls the
+        # --locked pinned version idempotently.
+        run: cargo install cargo-sbom --locked --force
 
       - name: Generate SBOM
         run: |
