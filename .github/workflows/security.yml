@@ -211,6 +211,8 @@ jobs:
     name: Kani Formal Verification
     runs-on: cachekit
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read # least-privilege: the job only checks out and verifies
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
