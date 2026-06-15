@@ -23,7 +23,7 @@ url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
 url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/audits.toml"
 
 [policy.cachekit-core]
-audit-as-crates-io = true
+audit-as-crates-io = false
 
 [[exemptions.aead]]
 version = "0.5.2"
@@ -67,10 +67,6 @@ criteria = "safe-to-run"
 
 [[exemptions.bytes]]
 version = "1.11.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.cachekit-core]]
-version = "0.2.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.cbindgen]]
