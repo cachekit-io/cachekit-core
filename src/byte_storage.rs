@@ -66,9 +66,13 @@ pub struct StorageEnvelope {
 }
 
 impl StorageEnvelope {
-    /// Create new envelope with data compression and checksum
+    /// Create new envelope with data compression and checksum.
+    ///
+    /// Takes the input by shared slice: it is only compressed and hashed (both
+    /// borrow), never retained, so there is no reason to own it. Avoids a
+    /// full-payload copy (up to `MAX_UNCOMPRESSED_SIZE`) on the write path.
     #[cfg(all(feature = "compression", feature = "checksum"))]
-    pub fn new(data: Vec<u8>, format: String) -> Result<Self, ByteStorageError> {
+    pub fn new(data: &[u8], format: String) -> Result<Self, ByteStorageError> {
         // Security: Check input size before compression
         if data.len() > MAX_UNCOMPRESSED_SIZE {
             return Err(ByteStorageError::InputTooLarge);
@@ -77,7 +81,7 @@ impl StorageEnvelope {
         let original_size = data.len() as u32;
 
         // Compress with LZ4
-        let compressed_data = lz4_flex::compress(&data);
+        let compressed_data = lz4_flex::compress(data);
 
         // Security: Check compressed size
         if compressed_data.len() > MAX_COMPRESSED_SIZE {
@@ -85,7 +89,7 @@ impl StorageEnvelope {
         }
 
         // Generate xxHash3-64 checksum of original data (big-endian = xxhash canonical format)
-        let checksum = xxh3_64(&data).to_be_bytes();
+        let checksum = xxh3_64(data).to_be_bytes();
 
         Ok(StorageEnvelope {
             compressed_data,
@@ -181,7 +185,7 @@ impl ByteStorage {
         let compression_start = Instant::now();
         let original_size = data.len();
 
-        let envelope = StorageEnvelope::new(data.to_vec(), format)?;
+        let envelope = StorageEnvelope::new(data, format)?;
 
         #[cfg(not(target_arch = "wasm32"))]
         let compression_micros = compression_start.elapsed().as_micros() as u64;
@@ -321,7 +325,7 @@ mod tests {
     #[test]
     fn test_storage_envelope_roundtrip() {
         let data = b"Hello, World! This is test data for compression.".to_vec();
-        let envelope = StorageEnvelope::new(data.clone(), "test".to_string()).unwrap();
+        let envelope = StorageEnvelope::new(&data, "test".to_string()).unwrap();
         let extracted = envelope.extract().unwrap();
         assert_eq!(data, extracted);
     }
@@ -329,13 +333,13 @@ mod tests {
     #[test]
     fn test_compression_works() {
         let data = b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_vec(); // Highly compressible
-        let envelope = StorageEnvelope::new(data.clone(), "test".to_string()).unwrap();
+        let envelope = StorageEnvelope::new(&data, "test".to_string()).unwrap();
         assert!(envelope.compressed_data.len() < data.len());
     }
 
     #[test]
     fn test_checksum_validation() {
-        let mut envelope = StorageEnvelope::new(b"test".to_vec(), "test".to_string()).unwrap();
+        let mut envelope = StorageEnvelope::new(b"test", "test".to_string()).unwrap();
         // Corrupt the checksum
         envelope.checksum[0] = !envelope.checksum[0];
         assert!(envelope.extract().is_err());
@@ -367,7 +371,7 @@ mod tests {
     fn test_size_limits_envelope() {
         // Create data exactly at the limit
         let max_data = vec![0u8; MAX_UNCOMPRESSED_SIZE];
-        let envelope_result = StorageEnvelope::new(max_data, "test".to_string());
+        let envelope_result = StorageEnvelope::new(&max_data, "test".to_string());
 
         // Should succeed at exactly the limit
         assert!(envelope_result.is_ok());
