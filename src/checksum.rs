@@ -38,7 +38,12 @@ mod tests {
 
     #[test]
     fn checksum_handles_empty_input() {
-        assert_eq!(checksum(b""), checksum(b""));
+        // Pin the canonical xxHash3-64 of the empty input (big-endian); proves
+        // "handles empty" beyond just "doesn't panic", and locks the value.
+        assert_eq!(
+            checksum(b""),
+            [0x2D, 0x06, 0x80, 0x05, 0x38, 0xD3, 0x94, 0xC2]
+        );
     }
 
     #[test]
