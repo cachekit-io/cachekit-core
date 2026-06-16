@@ -13,8 +13,6 @@ use std::sync::{Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 use thiserror::Error;
-#[cfg(feature = "checksum")]
-use xxhash_rust::xxh3::xxh3_64;
 
 /// Error types for ByteStorage operations
 #[derive(Debug, Error, Clone, PartialEq)]
@@ -135,10 +133,8 @@ impl StorageEnvelope {
             .map_err(|_| ByteStorageError::DecompressionFailed)?;
 
         // Verify checksum (checksum validation happens AFTER decompression to prevent processing corrupted data)
-        // Note: xxHash3 is non-cryptographic, so we use simple equality (not constant-time)
-        // Security against tampering is provided by AES-GCM authentication tag, not the checksum
-        let computed_checksum = xxh3_64(&decompressed).to_be_bytes();
-        if computed_checksum != self.checksum {
+        // false -> ChecksumMismatch (preserve the error variant; verify_checksum returns bool)
+        if !crate::checksum::verify_checksum(&decompressed, &self.checksum) {
             return Err(ByteStorageError::ChecksumMismatch);
         }
 
