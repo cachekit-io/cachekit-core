@@ -65,6 +65,12 @@
 pub mod metrics;
 pub use metrics::OperationMetrics;
 
+// Standalone integrity primitive (usable without compression/messagepack)
+#[cfg(feature = "checksum")]
+pub mod checksum;
+#[cfg(feature = "checksum")]
+pub use checksum::{checksum, verify_checksum};
+
 // Core byte storage layer
 pub mod byte_storage;
 pub use byte_storage::{ByteStorage, StorageEnvelope};
