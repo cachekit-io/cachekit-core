@@ -24,7 +24,7 @@ fuzz_target!(|test_case: ChecksumTestCase| {
     }
 
     // Create valid envelope first
-    let envelope = match StorageEnvelope::new(test_case.data.clone(), "msgpack".to_string()) {
+    let envelope = match StorageEnvelope::new(&test_case.data, "msgpack".to_string()) {
         Ok(env) => env,
         Err(_) => return, // Skip if data too large
     };
