@@ -88,8 +88,8 @@ impl StorageEnvelope {
             return Err(ByteStorageError::InputTooLarge);
         }
 
-        // Generate xxHash3-64 checksum of original data (big-endian = xxhash canonical format)
-        let checksum = xxh3_64(data).to_be_bytes();
+        // Single canonical xxHash3-64 definition (see crate::checksum)
+        let checksum = crate::checksum::checksum(data);
 
         Ok(StorageEnvelope {
             compressed_data,
@@ -321,6 +321,13 @@ impl Default for ByteStorage {
 ))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn envelope_embeds_canonical_checksum() {
+        let data = b"DRY-guard payload";
+        let envelope = StorageEnvelope::new(data, "test".to_string()).unwrap();
+        assert_eq!(envelope.checksum, crate::checksum::checksum(data));
+    }
 
     #[test]
     fn test_storage_envelope_roundtrip() {
