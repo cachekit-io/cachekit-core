@@ -256,6 +256,7 @@ cachekit-core/
 ├── src/
 │   ├── lib.rs              # Public API exports
 │   ├── byte_storage.rs     # LZ4 + xxHash3 storage envelope
+│   ├── checksum.rs         # Standalone xxHash3 checksum/verify primitive
 │   ├── metrics.rs          # Operation timing & statistics
 │   │
 │   ├── encryption/         # (feature = "encryption")
