@@ -345,7 +345,12 @@ mod tests {
         let mut envelope = StorageEnvelope::new(b"test", "test".to_string()).unwrap();
         // Corrupt the checksum
         envelope.checksum[0] = !envelope.checksum[0];
-        assert!(envelope.extract().is_err());
+        // Fail-open guard: the DRY refactor must still surface the specific
+        // ChecksumMismatch variant (not silently succeed on a flipped checksum).
+        assert!(matches!(
+            envelope.extract(),
+            Err(ByteStorageError::ChecksumMismatch)
+        ));
     }
 
     #[test]
