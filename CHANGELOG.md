@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.2.1...cachekit-core-v0.2.2) (2026-06-17)
+
+
+### Performance Improvements
+
+* borrow input in ByteStorage write path instead of copying it ([#48](https://github.com/cachekit-io/cachekit-core/issues/48)) ([7f5ebc1](https://github.com/cachekit-io/cachekit-core/commit/7f5ebc1410ee0d16b5c31b4d19097d3d9e1d5582))
+
 ## [0.2.1](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.2.0...cachekit-core-v0.2.1) (2026-05-31)
 
 
