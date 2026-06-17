@@ -37,6 +37,11 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Cap cargo parallelism so cold builds (incl. ASAN fuzz-target builds) don't
+  # OOM-kill the linker in the 5Gi cachekit runner — see cachekit-rs #25/#26.
+  # NOTE: -j bounds parallel codegen, not ASAN's absolute footprint; it's a
+  # strong mitigation for the fuzz builds, a full fix for normal cargo builds.
+  CARGO_BUILD_JOBS: "4"
 
 jobs:
   fast-security:
