@@ -13,10 +13,17 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # cargo's available_parallelism() reads the node's 32 threads, not the pod's
+  # cgroup CPU quota, so the cold release build below can OOM-kill the linker in
+  # the 5Gi cachekit runner (cachekit-rs #25/#26). Cap parallel jobs to fit.
+  CARGO_BUILD_JOBS: "4"
+
 jobs:
   analyze:
     name: Analyze
     runs-on: cachekit
+    timeout-minutes: 30
     permissions:
       actions: read
       contents: read
