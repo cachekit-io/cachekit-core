@@ -57,13 +57,19 @@
 //!
 //! - **AES-256-GCM**: Authenticated encryption via `ring`
 //! - **HKDF-SHA256**: Key derivation with tenant isolation (RFC 5869)
-//! - **xxHash3-64**: Fast non-cryptographic checksums (corruption detection)
+//! - **xxHash3-64**: Fast non-cryptographic checksums (corruption detection), available standalone via [`checksum`]/[`verify_checksum`] without compression.
 //! - **Nonce safety**: Counter-based + random IV prevents reuse
 //! - **Memory safety**: `zeroize` on drop for all key material
 
 // Metrics and observability
 pub mod metrics;
 pub use metrics::OperationMetrics;
+
+// Standalone integrity primitive (usable without compression/messagepack)
+#[cfg(feature = "checksum")]
+pub mod checksum;
+#[cfg(feature = "checksum")]
+pub use checksum::{checksum, verify_checksum};
 
 // Core byte storage layer
 pub mod byte_storage;

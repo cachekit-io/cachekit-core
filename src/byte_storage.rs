@@ -13,8 +13,6 @@ use std::sync::{Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 use thiserror::Error;
-#[cfg(feature = "checksum")]
-use xxhash_rust::xxh3::xxh3_64;
 
 /// Error types for ByteStorage operations
 #[derive(Debug, Error, Clone, PartialEq)]
@@ -88,8 +86,8 @@ impl StorageEnvelope {
             return Err(ByteStorageError::InputTooLarge);
         }
 
-        // Generate xxHash3-64 checksum of original data (big-endian = xxhash canonical format)
-        let checksum = xxh3_64(data).to_be_bytes();
+        // Single canonical xxHash3-64 definition (see crate::checksum)
+        let checksum = crate::checksum::checksum(data);
 
         Ok(StorageEnvelope {
             compressed_data,
@@ -135,10 +133,8 @@ impl StorageEnvelope {
             .map_err(|_| ByteStorageError::DecompressionFailed)?;
 
         // Verify checksum (checksum validation happens AFTER decompression to prevent processing corrupted data)
-        // Note: xxHash3 is non-cryptographic, so we use simple equality (not constant-time)
-        // Security against tampering is provided by AES-GCM authentication tag, not the checksum
-        let computed_checksum = xxh3_64(&decompressed).to_be_bytes();
-        if computed_checksum != self.checksum {
+        // false -> ChecksumMismatch (preserve the error variant; verify_checksum returns bool)
+        if !crate::checksum::verify_checksum(&decompressed, &self.checksum) {
             return Err(ByteStorageError::ChecksumMismatch);
         }
 
@@ -323,6 +319,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn envelope_embeds_canonical_checksum() {
+        let data = b"DRY-guard payload";
+        let envelope = StorageEnvelope::new(data, "test".to_string()).unwrap();
+        assert_eq!(envelope.checksum, crate::checksum::checksum(data));
+    }
+
+    #[test]
     fn test_storage_envelope_roundtrip() {
         let data = b"Hello, World! This is test data for compression.".to_vec();
         let envelope = StorageEnvelope::new(&data, "test".to_string()).unwrap();
@@ -342,7 +345,12 @@ mod tests {
         let mut envelope = StorageEnvelope::new(b"test", "test".to_string()).unwrap();
         // Corrupt the checksum
         envelope.checksum[0] = !envelope.checksum[0];
-        assert!(envelope.extract().is_err());
+        // Fail-open guard: the DRY refactor must still surface the specific
+        // ChecksumMismatch variant (not silently succeed on a flipped checksum).
+        assert!(matches!(
+            envelope.extract(),
+            Err(ByteStorageError::ChecksumMismatch)
+        ));
     }
 
     #[test]
