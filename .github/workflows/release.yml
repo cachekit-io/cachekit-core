@@ -37,6 +37,17 @@ jobs:
         with:
           token: ${{ steps.app-token.outputs.token }}
 
+      # release-please's config schema has no assignees option, so assign the
+      # release PR here. outputs.pr is set whenever the release PR was created
+      # OR updated, so this re-runs on every push to main while a release PR is
+      # open — adding an already-present assignee is a no-op, so that's safe.
+      - name: Assign release PR to 27Bslash6
+        if: ${{ steps.release.outputs.pr }}
+        run: gh pr edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --add-assignee 27Bslash6
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ fromJson(steps.release.outputs.pr).number }}
+
   publish:
     needs: release-please
     # Run on an automated release, OR on a manual dispatch — but a manual dispatch
