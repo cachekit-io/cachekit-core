@@ -1,0 +1,4 @@
+# Vendored protocol test vectors are byte-exact artifacts, sha256-pinned by
+# tests/wire_format_vectors.rs — never let git rewrite their line endings
+# (windows runners set core.autocrlf=true and would break the pin).
+tests/vectors/* -text
