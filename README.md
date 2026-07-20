@@ -331,6 +331,17 @@ cd fuzz && cargo fuzz run byte_storage_corrupted_envelope
 
 See [`fuzz/README.md`](fuzz/README.md) for comprehensive fuzzing documentation.
 
+### Protocol wire-format vectors
+
+`tests/wire_format_vectors.rs` byte-verifies this crate against the canonical
+ByteStorage envelope vectors from
+[`cachekit-io/protocol`](https://github.com/cachekit-io/protocol)
+(`test-vectors/wire-format.json`): every vector must decode to the exact
+payload bytes and re-encode to the exact envelope bytes. The fixture is
+vendored at `tests/vectors/wire-format.json` and integrity-pinned by sha256 —
+to update it, re-copy from the protocol repo and change the pinned hash in the
+same commit.
+
 ---
 
 ## Minimum Supported Rust Version
