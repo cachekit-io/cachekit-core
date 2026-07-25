@@ -125,19 +125,27 @@ fn dual_decode_matrix_against_legacy_vectors() {
             "[{}] outer fixarray(4) preserved",
             v.name
         );
-        assert!(
-            // 0xc4/0xc5/0xc6 = msgpack bin8/bin16/bin32
-            matches!(new_wire[1], 0xc4..=0xc6),
-            "[{}] compressed_data not bin-encoded: 0x{:02x}",
+        assert_eq!(
+            // 0xc4 = msgpack bin8. Every pinned twin's compressed_data is small
+            // enough to be bin8; a wider marker here is a width-selection
+            // regression that would break cross-SDK byte-identity.
+            new_wire[1],
+            0xc4,
+            "[{}] compressed_data not bin8-encoded: 0x{:02x}",
             v.name,
             new_wire[1]
         );
-        // Documented micro-regression: bin loses at most a header byte or two
-        // on tiny envelopes (bin8 header 2 B vs fixarray 1 B); every payload
-        // byte >= 0x80 saves a byte. Growth is bounded by header slack.
+        // Documented micro-regression: bin costs at most +1 B, and only on the
+        // smallest envelopes. A <=15 B compressed_data goes from a 1 B fixarray
+        // header to a 2 B bin8 header (+1); any array >=16 B already carried a
+        // 3 B array16 header, so bin8's 2 B header shrinks it. Measured worst
+        // case on the pinned set is exactly +1 (`empty`, 25 -> 26 B); every
+        // other vector ties or shrinks. This +1 B ceiling is the micro-
+        // regression contract the writer-flip step (LAB-764) will read, so keep
+        // it tight — a +2/+3 bloat regression must not slip through green.
         assert!(
-            new_wire.len() <= old_wire.len() + 4,
-            "[{}] new wire larger than old beyond header slack",
+            new_wire.len() <= old_wire.len() + 1,
+            "[{}] new wire exceeds the +1 B bin8-header ceiling",
             v.name
         );
 
@@ -200,7 +208,7 @@ fn incompressible(len: usize) -> Vec<u8> {
 /// Build a real envelope (real LZ4 output) from an incompressible payload,
 /// bin-encode it via the serde_bytes shape, and assert the expected bin width
 /// marker before running the full reader matrix on it.
-fn assert_width_tier(name: &str, payload_len: usize, expected_marker: u8) -> usize {
+fn assert_width_tier(name: &str, payload_len: usize, expected_marker: u8) {
     let payload = incompressible(payload_len);
     let env = StorageEnvelope::new(&payload, "msgpack".to_string())
         .unwrap_or_else(|e| panic!("[{name}] envelope construction failed: {e:?}"));
@@ -222,7 +230,6 @@ fn assert_width_tier(name: &str, payload_len: usize, expected_marker: u8) -> usi
     );
 
     assert_all_readers_decode(name, &wire, &payload);
-    compressed_len
 }
 
 /// bin8/bin16 boundary: the fixture twins never leave bin8 territory (all
@@ -262,18 +269,14 @@ fn width_boundary_bin8_bin16() {
 /// One representative envelope per side, full reader matrix on each.
 #[test]
 fn width_boundary_bin16_bin32() {
+    // The 0xc5 / 0xc6 marker assert inside assert_width_tier already proves the
+    // tier: rmp selects the bin width purely by length, so marker <=> range.
+    // A separate range assert on the returned length would only restate that.
+
     // Comfortably inside bin16 (compressed ~4 KiB).
-    let len16 = assert_width_tier("bin16 tier", 4 * 1024, 0xc5);
-    assert!(
-        (256..=65535).contains(&len16),
-        "bin16 tier compressed_data landed outside (256..=65535): {len16} B"
-    );
+    assert_width_tier("bin16 tier", 4 * 1024, 0xc5);
 
     // Incompressible 68 KiB compresses to > 65,535 B (LZ4 overhead is
     // positive on incompressible input), forcing bin32.
-    let len32 = assert_width_tier("bin32 tier", 68 * 1024, 0xc6);
-    assert!(
-        len32 > 65535,
-        "bin32 tier compressed_data must exceed 65535 B: {len32} B"
-    );
+    assert_width_tier("bin32 tier", 68 * 1024, 0xc6);
 }

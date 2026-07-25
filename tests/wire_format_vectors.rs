@@ -256,10 +256,12 @@ fn bin_twins_are_bin_encoded_and_field_identical_to_legacy() {
             "[{}] outer fixarray(4) marker",
             twin.name
         );
-        assert!(
-            // 0xc4/0xc5/0xc6 = msgpack bin8/bin16/bin32
-            matches!(twin_bytes[1], 0xc4..=0xc6),
-            "[{}] compressed_data is not bin-encoded: marker 0x{:02x}",
+        assert_eq!(
+            // 0xc4 = msgpack bin8. Every pinned twin is small enough to be
+            // bin8; a wider marker here is a width-selection regression.
+            twin_bytes[1],
+            0xc4,
+            "[{}] compressed_data is not bin8-encoded: marker 0x{:02x}",
             twin.name,
             twin_bytes[1]
         );
