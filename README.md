@@ -336,11 +336,17 @@ See [`fuzz/README.md`](fuzz/README.md) for comprehensive fuzzing documentation.
 `tests/wire_format_vectors.rs` byte-verifies this crate against the canonical
 ByteStorage envelope vectors from
 [`cachekit-io/protocol`](https://github.com/cachekit-io/protocol)
-(`test-vectors/wire-format.json`): every vector must decode to the exact
-payload bytes and re-encode to the exact envelope bytes. The fixture is
-vendored at `tests/vectors/wire-format.json` and integrity-pinned by sha256 —
-to update it, re-copy from the protocol repo and change the pinned hash in the
-same commit.
+(`test-vectors/wire-format.json`). Since protocol 1.1 the fixture pins two
+`compressed_data` encodings — legacy array-of-integers vectors and their
+`*_bin` twins (msgpack `bin`, canonical for 1.1+ writers): every vector in
+both sets must decode to the exact payload bytes, while re-encode
+byte-identity is asserted against the set matching this crate's current
+writer encoding (legacy, until the `serde_bytes` writer flip lands).
+`tests/dual_decode.rs` proves both reader shapes accept both encodings,
+including bin16/bin32 width headers. The fixture is vendored at
+`tests/vectors/wire-format.json` and integrity-pinned by sha256 — to update
+it, re-copy from the protocol repo and change the pinned hash in the same
+commit.
 
 ---
 
