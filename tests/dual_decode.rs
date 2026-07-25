@@ -103,16 +103,20 @@ fn dual_decode_matrix_against_legacy_vectors() {
     assert!(legacy.len() >= 6, "expected the pinned legacy vector set");
 
     for v in legacy {
-        let old_wire = hex::decode(&v.envelope_hex).unwrap();
-        let input = hex::decode(&v.input_hex).unwrap();
+        let old_wire = hex::decode(&v.envelope_hex)
+            .unwrap_or_else(|e| panic!("[{}] envelope_hex must decode: {e}", v.name));
+        let input = hex::decode(&v.input_hex)
+            .unwrap_or_else(|e| panic!("[{}] input_hex must decode: {e}", v.name));
 
         // Cells: old reader <- old wire (baseline), new reader <- old wire
         // (the readers-first claim), plus retrieve() on the pinned bytes.
         assert_all_readers_decode(&v.name, &old_wire, &input);
 
         // Produce new wire the way the flipped writer will.
-        let new_from_old: StorageEnvelopeV2 = rmp_serde::from_slice(&old_wire).unwrap();
-        let new_wire = rmp_serde::to_vec(&new_from_old).unwrap();
+        let new_from_old: StorageEnvelopeV2 = rmp_serde::from_slice(&old_wire)
+            .unwrap_or_else(|e| panic!("[{}] new reader must decode legacy wire: {e}", v.name));
+        let new_wire = rmp_serde::to_vec(&new_from_old)
+            .unwrap_or_else(|e| panic!("[{}] serde_bytes shape must serialize: {e}", v.name));
 
         // compressed_data (element [0], right after the 0x94 fixarray marker)
         // must now carry a bin marker.
@@ -158,13 +162,17 @@ fn dual_decode_matrix_against_bin_vectors() {
     assert!(bin.len() >= 6, "expected the pinned *_bin twin set");
 
     for v in bin {
-        let wire = hex::decode(&v.envelope_hex).unwrap();
-        let input = hex::decode(&v.input_hex).unwrap();
+        let wire = hex::decode(&v.envelope_hex)
+            .unwrap_or_else(|e| panic!("[{}] envelope_hex must decode: {e}", v.name));
+        let input = hex::decode(&v.input_hex)
+            .unwrap_or_else(|e| panic!("[{}] input_hex must decode: {e}", v.name));
 
         assert_all_readers_decode(&v.name, &wire, &input);
 
-        let env: StorageEnvelopeV2 = rmp_serde::from_slice(&wire).unwrap();
-        let reencoded = rmp_serde::to_vec(&env).unwrap();
+        let env: StorageEnvelopeV2 = rmp_serde::from_slice(&wire)
+            .unwrap_or_else(|e| panic!("[{}] new reader must decode bin wire: {e}", v.name));
+        let reencoded = rmp_serde::to_vec(&env)
+            .unwrap_or_else(|e| panic!("[{}] serde_bytes shape must serialize: {e}", v.name));
         assert_eq!(
             hex::encode(&reencoded),
             hex::encode(&wire),
@@ -194,7 +202,8 @@ fn incompressible(len: usize) -> Vec<u8> {
 /// marker before running the full reader matrix on it.
 fn assert_width_tier(name: &str, payload_len: usize, expected_marker: u8) -> usize {
     let payload = incompressible(payload_len);
-    let env = StorageEnvelope::new(&payload, "msgpack".to_string()).unwrap();
+    let env = StorageEnvelope::new(&payload, "msgpack".to_string())
+        .unwrap_or_else(|e| panic!("[{name}] envelope construction failed: {e:?}"));
     let compressed_len = env.compressed_data.len();
 
     let v2 = StorageEnvelopeV2 {
@@ -203,7 +212,8 @@ fn assert_width_tier(name: &str, payload_len: usize, expected_marker: u8) -> usi
         original_size: env.original_size,
         format: env.format,
     };
-    let wire = rmp_serde::to_vec(&v2).unwrap();
+    let wire = rmp_serde::to_vec(&v2)
+        .unwrap_or_else(|e| panic!("[{name}] serde_bytes shape must serialize: {e}"));
     assert_eq!(wire[0], 0x94, "[{name}] outer fixarray(4) preserved");
     assert_eq!(
         wire[1], expected_marker,
@@ -226,7 +236,9 @@ fn width_boundary_bin8_bin16() {
     let mut seen_bin16 = false;
     for payload_len in 230..=270 {
         let payload = incompressible(payload_len);
-        let env = StorageEnvelope::new(&payload, "msgpack".to_string()).unwrap();
+        let env = StorageEnvelope::new(&payload, "msgpack".to_string()).unwrap_or_else(|e| {
+            panic!("[sweep len={payload_len}] envelope construction failed: {e:?}")
+        });
         let expected = if env.compressed_data.len() <= 255 {
             seen_bin8 = true;
             0xc4 // bin8
