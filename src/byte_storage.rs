@@ -54,6 +54,11 @@ const MAX_COMPRESSION_RATIO: u64 = 1000;
 #[derive(Serialize, Deserialize)]
 pub struct StorageEnvelope {
     /// Compressed payload data
+    ///
+    /// Serialized as msgpack `bin` (protocol 1.1, `envelope-bin-encoding.md`).
+    /// Scope is strictly this field: `checksum` stays array-of-ints by
+    /// normative exclusion (crypto-adjacent surface — MUST NOT flip).
+    #[serde(with = "serde_bytes")]
     pub compressed_data: Vec<u8>,
     /// xxHash3-64 checksum for integrity (8 bytes)
     pub checksum: [u8; 8],

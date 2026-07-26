@@ -12,8 +12,8 @@
 //! their `*_bin` twins (`"envelope_encoding": "bin"`, canonical for 1.1+
 //! writers). Decode-identity runs against BOTH sets, forever. Re-encode
 //! byte-identity runs against the set matching this crate's CURRENT writer
-//! encoding — legacy today; the writer-flip diff (`serde_bytes` on
-//! `compressed_data`) switches those assertions to the `*_bin` set.
+//! encoding — `bin` since the writer flip (`serde_bytes` on
+//! `compressed_data`, LAB-866), so those assertions target the `*_bin` set.
 //!
 //! Fixture provenance: vendored from
 //! <https://github.com/cachekit-io/protocol> `test-vectors/wire-format.json`
@@ -63,8 +63,8 @@ struct Vector {
 }
 
 impl Vector {
-    /// Encoded with the legacy array-of-integers `compressed_data` — the
-    /// encoding this crate's writer currently emits.
+    /// Encoded with the legacy array-of-integers `compressed_data` — what
+    /// pre-1.1 writers emitted; retained forever as legacy-read proof.
     fn is_legacy(&self) -> bool {
         self.envelope_encoding.is_none()
     }
@@ -165,13 +165,17 @@ fn vectors_decode_to_expected_payload() {
 /// and cross-version reads are at risk — regenerate vectors deliberately in
 /// the protocol repo, never adjust expectations here.
 ///
-/// Legacy vectors only: this asserts against the encoding the writer CURRENTLY
-/// emits. The writer-flip diff switches this filter to the `*_bin` set in the
-/// same PR that adds `serde_bytes` to `compressed_data`.
+/// `*_bin` vectors only: this asserts against the encoding the writer
+/// CURRENTLY emits — msgpack `bin` since the writer flip (`serde_bytes` on
+/// `compressed_data`, LAB-866).
 #[test]
 fn vectors_reencode_byte_identical() {
     let storage = ByteStorage::new(None);
-    for vector in load_fixture().vectors.into_iter().filter(Vector::is_legacy) {
+    for vector in load_fixture()
+        .vectors
+        .into_iter()
+        .filter(|v| !v.is_legacy())
+    {
         let input = hex::decode(&vector.input_hex).expect("input_hex must decode");
         let expected = hex::decode(&vector.envelope_hex).expect("envelope_hex must decode");
 
@@ -193,12 +197,16 @@ fn vectors_reencode_byte_identical() {
 /// codec test failing too means the MessagePack layout changed (protocol#11
 /// territory); codec test passing means the LZ4 block encoding changed.
 ///
-/// Legacy vectors only, same reason as `vectors_reencode_byte_identical`:
-/// re-serialization emits the writer's current encoding, so byte-identity can
-/// only hold for the set that matches it.
+/// `*_bin` vectors only, same reason as `vectors_reencode_byte_identical`:
+/// re-serialization emits the writer's current encoding (`bin`), so
+/// byte-identity can only hold for the set that matches it.
 #[test]
 fn envelope_codec_roundtrip_byte_identical() {
-    for vector in load_fixture().vectors.into_iter().filter(Vector::is_legacy) {
+    for vector in load_fixture()
+        .vectors
+        .into_iter()
+        .filter(|v| !v.is_legacy())
+    {
         let canonical = hex::decode(&vector.envelope_hex).expect("envelope_hex must decode");
         let envelope: StorageEnvelope = rmp_serde::from_slice(&canonical)
             .unwrap_or_else(|e| panic!("[{}] envelope must deserialize: {e}", vector.name));

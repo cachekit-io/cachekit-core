@@ -341,7 +341,10 @@ ByteStorage envelope vectors from
 `*_bin` twins (msgpack `bin`, canonical for 1.1+ writers): every vector in
 both sets must decode to the exact payload bytes, while re-encode
 byte-identity is asserted against the set matching this crate's current
-writer encoding (legacy, until the `serde_bytes` writer flip lands).
+writer encoding — msgpack `bin`, since the protocol 1.1 `serde_bytes`
+writer flip (LAB-866; `checksum` deliberately stays array-of-ints per the
+protocol's normative scope exclusion). Legacy envelopes remain readable
+forever.
 `tests/dual_decode.rs` proves both reader shapes accept both encodings,
 including bin16/bin32 width headers. The fixture is vendored at
 `tests/vectors/wire-format.json` and integrity-pinned by sha256 — to update
