@@ -2,45 +2,42 @@
 //!
 //! Protocol 1.1 (`protocol/decisions/envelope-bin-encoding.md`) flips
 //! `compressed_data` from the legacy msgpack array-of-integers encoding to
-//! msgpack `bin` — readers first. This file is the readers-first CI proof:
-//! under the locked decoder stack (rmp-serde + serde_bytes), BOTH reader
-//! shapes accept BOTH encodings, so `bin` envelopes written by 1.1+ writers
-//! are readable today and legacy envelopes stay readable forever.
+//! msgpack `bin` — readers first, then the writer (LAB-866, shipped). This
+//! file is the permanent CI proof: under the locked decoder stack
+//! (rmp-serde with serde_bytes), BOTH reader shapes accept BOTH encodings,
+//! so `bin` envelopes from 1.1+ writers are readable by pre-1.1 readers and
+//! legacy envelopes stay readable forever.
 //!
 //! The full matrix, executed against the byte-pinned protocol vectors:
 //!
-//! | Reader                             | legacy wire (array) | new wire (bin) |
-//! |------------------------------------|---------------------|----------------|
-//! | old (plain `Vec<u8>`, shipped)     | status quo          | proven here    |
-//! |   …incl. `ByteStorage::retrieve()` |                     | proven here    |
-//! | new (`serde_bytes`, writer-flip)   | proven here         | proven here    |
+//! | Reader                              | legacy wire (array) | new wire (bin) |
+//! |-------------------------------------|---------------------|----------------|
+//! | legacy (plain `Vec<u8>`, pre-1.1)   | proven here         | proven here    |
+//! | shipped (`serde_bytes`, 1.1 writer) | proven here         | proven here    |
+//! |   …incl. `ByteStorage::retrieve()`  | proven here         | proven here    |
 //!
 //! Seeded from the LAB-764 toolchain experiment (`dual_decode_experiment.rs`,
-//! attached to the decision memo on that issue); the throughput half of the
-//! experiment is deliberately absent — benchmark evidence belongs to the
-//! writer-flip stage (LAB-510 harness), not this test-only release.
+//! attached to the decision memo on that issue); throughput evidence lives in
+//! the LAB-510 harness (`benches/hot_path.rs`, 64 MiB incompressible group).
 //!
 //! Width boundaries: the fixture's `*_bin` twins all fit in a bin8 header
 //! (`0xc4`, ≤ 255 B). The `width_boundary_*` tests cover the bin16 (`0xc5`)
-//! and bin32 (`0xc6`) headers with real LZ4 output, per the MUST recorded in
-//! the decision record — fixture-level width vectors land with the writer
-//! flip, where the real writer can generate them natively.
+//! and bin32 (`0xc6`) headers with real LZ4 output from the real writer, per
+//! the MUST recorded in the decision record.
 
 #![cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
 
 use cachekit_core::{ByteStorage, StorageEnvelope};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 const FIXTURE: &str = include_str!("vectors/wire-format.json");
 
-/// Post-writer-flip twin of StorageEnvelope: identical shape, `serde_bytes`
-/// on `compressed_data` only. `checksum: [u8; 8]` deliberately stays
-/// array-of-ints — normative scope exclusion in the decision record
-/// (crypto-adjacent surface; implementations MUST NOT flip it
-/// opportunistically).
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
-struct StorageEnvelopeV2 {
-    #[serde(with = "serde_bytes")]
+/// Pre-1.1 reader stand-in: identical shape to StorageEnvelope but with a
+/// plain `Vec<u8>` (no `serde_bytes`) on `compressed_data` — the shape every
+/// pre-writer-flip SDK shipped. Kept forever: these matrix legs are the proof
+/// that legacy readers accept `bin` wire and that legacy wire still decodes.
+#[derive(Deserialize, PartialEq, Debug)]
+struct StorageEnvelopeLegacy {
     compressed_data: Vec<u8>,
     checksum: [u8; 8],
     original_size: u32,
@@ -67,17 +64,17 @@ fn load_vectors() -> Vec<Vector> {
 }
 
 /// Assert one envelope's bytes decode identically through every reader shape:
-/// old struct, new struct, and the full shipped `retrieve()` path (checksum
-/// validation + decompression-ratio guard included).
+/// legacy struct, shipped struct, and the full shipped `retrieve()` path
+/// (checksum validation + decompression-ratio guard included).
 fn assert_all_readers_decode(name: &str, wire: &[u8], expected_payload: &[u8]) {
-    let old: StorageEnvelope = rmp_serde::from_slice(wire)
-        .unwrap_or_else(|e| panic!("[{name}] old reader (plain Vec<u8>) failed: {e}"));
-    let new: StorageEnvelopeV2 = rmp_serde::from_slice(wire)
-        .unwrap_or_else(|e| panic!("[{name}] new reader (serde_bytes) failed: {e}"));
-    assert_eq!(old.compressed_data, new.compressed_data, "[{name}]");
-    assert_eq!(old.checksum, new.checksum, "[{name}]");
-    assert_eq!(old.original_size, new.original_size, "[{name}]");
-    assert_eq!(old.format, new.format, "[{name}]");
+    let legacy: StorageEnvelopeLegacy = rmp_serde::from_slice(wire)
+        .unwrap_or_else(|e| panic!("[{name}] legacy reader (plain Vec<u8>) failed: {e}"));
+    let shipped: StorageEnvelope = rmp_serde::from_slice(wire)
+        .unwrap_or_else(|e| panic!("[{name}] shipped reader (serde_bytes) failed: {e}"));
+    assert_eq!(legacy.compressed_data, shipped.compressed_data, "[{name}]");
+    assert_eq!(legacy.checksum, shipped.checksum, "[{name}]");
+    assert_eq!(legacy.original_size, shipped.original_size, "[{name}]");
+    assert_eq!(legacy.format, shipped.format, "[{name}]");
 
     let storage = ByteStorage::new(None);
     let (payload, _format) = storage
@@ -90,9 +87,9 @@ fn assert_all_readers_decode(name: &str, wire: &[u8], expected_payload: &[u8]) {
 }
 
 /// The 4-cell matrix over the legacy pinned vectors: decode each with both
-/// reader shapes, re-encode through the new (serde_bytes) shape to produce
-/// bin wire, and prove that bin wire decodes through both reader shapes AND
-/// today's shipped `retrieve()`.
+/// reader shapes, re-encode through the shipped (serde_bytes) writer shape to
+/// produce bin wire, and prove that bin wire decodes through both reader
+/// shapes AND the shipped `retrieve()`.
 #[test]
 fn dual_decode_matrix_against_legacy_vectors() {
     let vectors = load_vectors();
@@ -112,11 +109,11 @@ fn dual_decode_matrix_against_legacy_vectors() {
         // (the readers-first claim), plus retrieve() on the pinned bytes.
         assert_all_readers_decode(&v.name, &old_wire, &input);
 
-        // Produce new wire the way the flipped writer will.
-        let new_from_old: StorageEnvelopeV2 = rmp_serde::from_slice(&old_wire)
-            .unwrap_or_else(|e| panic!("[{}] new reader must decode legacy wire: {e}", v.name));
+        // Produce new wire the way the shipped writer does.
+        let new_from_old: StorageEnvelope = rmp_serde::from_slice(&old_wire)
+            .unwrap_or_else(|e| panic!("[{}] shipped reader must decode legacy wire: {e}", v.name));
         let new_wire = rmp_serde::to_vec(&new_from_old)
-            .unwrap_or_else(|e| panic!("[{}] serde_bytes shape must serialize: {e}", v.name));
+            .unwrap_or_else(|e| panic!("[{}] shipped shape must serialize: {e}", v.name));
 
         // compressed_data (element [0], right after the 0x94 fixarray marker)
         // must now carry a bin marker.
@@ -141,8 +138,9 @@ fn dual_decode_matrix_against_legacy_vectors() {
         // 3 B array16 header, so bin8's 2 B header shrinks it. Measured worst
         // case on the pinned set is exactly +1 (`empty`, 25 -> 26 B); every
         // other vector ties or shrinks. This +1 B ceiling is the micro-
-        // regression contract the writer-flip step (LAB-764) will read, so keep
-        // it tight — a +2/+3 bloat regression must not slip through green.
+        // regression contract accepted by the writer flip (LAB-764/LAB-866),
+        // so keep it tight — a +2/+3 bloat regression must not slip through
+        // green.
         assert!(
             new_wire.len() <= old_wire.len() + 1,
             "[{}] new wire exceeds the +1 B bin8-header ceiling",
@@ -155,11 +153,10 @@ fn dual_decode_matrix_against_legacy_vectors() {
     }
 }
 
-/// The pinned `*_bin` twins through the same matrix, plus the writer-flip
-/// forecast: re-encoding a twin through the serde_bytes shape must be
-/// byte-identical to the protocol's pinned bin bytes — the writer-flip diff
-/// will point `vectors_reencode_byte_identical` at this set, and this assert
-/// guarantees that switch lands green.
+/// The pinned `*_bin` twins through the same reader matrix. Re-encode
+/// byte-identity for this set lives in `tests/wire_format_vectors.rs`
+/// (`vectors_reencode_byte_identical` at store() level,
+/// `envelope_codec_roundtrip_byte_identical` at codec level).
 #[test]
 fn dual_decode_matrix_against_bin_vectors() {
     let vectors = load_vectors();
@@ -176,17 +173,6 @@ fn dual_decode_matrix_against_bin_vectors() {
             .unwrap_or_else(|e| panic!("[{}] input_hex must decode: {e}", v.name));
 
         assert_all_readers_decode(&v.name, &wire, &input);
-
-        let env: StorageEnvelopeV2 = rmp_serde::from_slice(&wire)
-            .unwrap_or_else(|e| panic!("[{}] new reader must decode bin wire: {e}", v.name));
-        let reencoded = rmp_serde::to_vec(&env)
-            .unwrap_or_else(|e| panic!("[{}] serde_bytes shape must serialize: {e}", v.name));
-        assert_eq!(
-            hex::encode(&reencoded),
-            hex::encode(&wire),
-            "[{}] serde_bytes re-encode is not byte-identical to the pinned bin vector",
-            v.name
-        );
     }
 }
 
@@ -206,22 +192,16 @@ fn incompressible(len: usize) -> Vec<u8> {
 }
 
 /// Build a real envelope (real LZ4 output) from an incompressible payload,
-/// bin-encode it via the serde_bytes shape, and assert the expected bin width
-/// marker before running the full reader matrix on it.
+/// bin-encode it via the shipped writer shape, and assert the expected bin
+/// width marker before running the full reader matrix on it.
 fn assert_width_tier(name: &str, payload_len: usize, expected_marker: u8) {
     let payload = incompressible(payload_len);
     let env = StorageEnvelope::new(&payload, "msgpack".to_string())
         .unwrap_or_else(|e| panic!("[{name}] envelope construction failed: {e:?}"));
     let compressed_len = env.compressed_data.len();
 
-    let v2 = StorageEnvelopeV2 {
-        compressed_data: env.compressed_data,
-        checksum: env.checksum,
-        original_size: env.original_size,
-        format: env.format,
-    };
-    let wire = rmp_serde::to_vec(&v2)
-        .unwrap_or_else(|e| panic!("[{name}] serde_bytes shape must serialize: {e}"));
+    let wire = rmp_serde::to_vec(&env)
+        .unwrap_or_else(|e| panic!("[{name}] shipped shape must serialize: {e}"));
     assert_eq!(wire[0], 0x94, "[{name}] outer fixarray(4) preserved");
     assert_eq!(
         wire[1], expected_marker,
