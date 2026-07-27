@@ -41,15 +41,30 @@ jobs:
       # release PR here. outputs.pr is set whenever the release PR was created
       # OR updated, so this re-runs on every push to main while a release PR is
       # open — adding an already-present assignee is a no-op, so that's safe.
-      # The PR is selected by release-please's deterministic head branch, NOT
-      # fromJson(outputs.pr).number: step env templates are evaluated even when
-      # if: is false, so fromJson('') on a no-release push fails the whole job
-      # and skips publish (LAB-865).
+      # github-script, NOT `gh`: the self-hosted cachekit runner has no gh CLI
+      # (LAB-899). outputs.pr is passed raw via env and parsed in JS — never
+      # through template-position fromJson, which is evaluated even when if: is
+      # false and crashes on '' for no-release pushes (LAB-865).
       - name: Assign release PR to 27Bslash6
         if: ${{ steps.release.outputs.pr }}
-        run: gh pr edit "release-please--branches--main--components--cachekit-core" --repo "$GITHUB_REPOSITORY" --add-assignee 27Bslash6
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_JSON: ${{ steps.release.outputs.pr }}
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            try {
+              const pr = JSON.parse(process.env.PR_JSON);
+              await github.rest.issues.addAssignees({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                assignees: ['27Bslash6'],
+              });
+              core.info(`Assigned 27Bslash6 to release PR #${pr.number}`);
+            } catch (error) {
+              core.setFailed(`Failed to assign release PR in ${context.repo.owner}/${context.repo.repo} (PR_JSON length ${process.env.PR_JSON.length}): ${error.message}`);
+            }
 
   publish:
     needs: release-please
