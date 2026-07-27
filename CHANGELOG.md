@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.3.0...cachekit-core-v0.4.0) (2026-07-27)
+
+
+### Features
+
+* emit StorageEnvelope compressed_data as msgpack bin (protocol 1.1) (LAB-866) ([#59](https://github.com/cachekit-io/cachekit-core/issues/59)) ([c691087](https://github.com/cachekit-io/cachekit-core/commit/c69108763dea380f9768b23b885dca2e73bae51d))
+
 ## [0.3.0](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.2.1...cachekit-core-v0.3.0) (2026-07-15)
 
 
