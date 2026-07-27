@@ -53,13 +53,18 @@ jobs:
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
-            const pr = JSON.parse(process.env.PR_JSON);
-            await github.rest.issues.addAssignees({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: pr.number,
-              assignees: ['27Bslash6'],
-            });
+            try {
+              const pr = JSON.parse(process.env.PR_JSON);
+              await github.rest.issues.addAssignees({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                assignees: ['27Bslash6'],
+              });
+              core.info(`Assigned 27Bslash6 to release PR #${pr.number}`);
+            } catch (error) {
+              core.setFailed(`Failed to assign release PR in ${context.repo.owner}/${context.repo.repo} (PR_JSON length ${process.env.PR_JSON.length}): ${error.message}`);
+            }
 
   publish:
     needs: release-please
