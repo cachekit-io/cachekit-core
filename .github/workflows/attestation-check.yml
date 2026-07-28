@@ -5,33 +5,28 @@ on:
     - cron: '23 3 * * 1'  # Weekly Monday 3:23am UTC
   workflow_dispatch:
 
+# Never cancel: a dispatch landing during the Monday cron would otherwise leave two
+# runs racing to file the same failure issue.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   verify:
     name: Verify Latest Release Attestations
-    # GitHub-hosted, NOT the self-hosted `cachekit` runner. Two independently
-    # verified reasons, either of which alone makes this job incapable of
-    # verifying anything on ARC (LAB-984):
-    #   1. The ARC pods have no `gh` CLI (LAB-899). `gh attestation verify` is the
-    #      only tool that performs Sigstore bundle verification — there is no
-    #      github-script equivalent, and `gh attestation list` (which the previous
-    #      version of this file called) is not a real subcommand at all. Every `gh`
-    #      invocation here exited 127 into a `2>/dev/null || echo ""` and the job
-    #      reported green while skipping its own checks for weeks.
-    #   2. The ARC pods have unreliable DNS/egress to Sigstore (Fulcio/Rekor) —
-    #      the same reason release.yml's publish job is already on ubuntu-latest.
-    # This job runs weekly and is free on public repos.
+    # ubuntu-latest, NOT the self-hosted `cachekit` runner: the ARC pods have no `gh`
+    # binary (LAB-899) and unreliable Sigstore (Fulcio/Rekor) egress — the same reason
+    # release.yml's publish job is hosted. `gh attestation verify` is the only tool
+    # that does Sigstore bundle verification, so moving this job back to ARC silently
+    # re-breaks it (LAB-984: every `gh` call exited 127 into `|| echo ""`, and the job
+    # reported green while verifying nothing for weeks).
     runs-on: ubuntu-latest
     permissions:
       contents: read
       issues: write
     steps:
-      # github-script, NOT `gh`: confines `gh` to the single thing only it can do
-      # (Sigstore verification, below) and keeps API calls on the SHA-pinned action
-      # this repo already standardised on (release.yml:44).
-      #
-      # getLatestRelease is deliberate: it 404s when — and only when — the repo has
-      # zero published releases, so "nothing to verify" is unreachable via an API
-      # error. Any non-404 rethrows and fails the job. No error swallowing.
+      # github-script, not `gh`, for API calls — the convention release.yml documents
+      # on its "Assign release PR" step. `gh` is confined to Sigstore verification below.
       - name: Resolve latest release
         id: release
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
@@ -45,17 +40,36 @@ jobs:
               });
               tagName = data.tag_name;
             } catch (error) {
-              if (error.status === 404) {
-                core.info('Repository has no published releases — nothing to verify.');
-                core.setOutput('skip', 'true');
+              if (error.status !== 404) {
+                throw error;
+              }
+              // A 404 here does NOT mean "no releases". getLatestRelease returns the
+              // latest non-draft, non-prerelease release, so a repo whose releases are
+              // all drafts or prereleases 404s too. Skipping on a bare 404 would be a
+              // silent green — the exact fail-open this file was rewritten to remove.
+              // Only a genuinely empty release list may skip.
+              const { data: releases } = await github.rest.repos.listReleases({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 1,
+              });
+              if (releases.length > 0) {
+                core.setFailed(
+                  'No published full release, but the repository has draft/prerelease releases. ' +
+                  'Nothing verifiable — refusing to report green.',
+                );
                 return;
               }
-              throw error;
+              core.info('Repository has no releases at all — nothing to verify.');
+              core.setOutput('skip', 'true');
+              return;
             }
             // release-please tags this crate `<package-name>-v<semver>`
             // (release-please-config.json: package-name cachekit-core, release-type rust).
-            // An unparseable tag is a hard failure, never a silent skip.
-            const match = /^(?<crate>.+)-v(?<version>\d+\.\d+\.\d+.*)$/.exec(tagName);
+            // The character classes are deliberately tight: these values build a URL and
+            // a file path, so `/` and shell metacharacters must not survive parsing.
+            const match = /^(?<crate>[A-Za-z0-9_-]+)-v(?<version>\d+\.\d+\.\d+[0-9A-Za-z.+-]*)$/
+              .exec(tagName);
             if (!match) {
               core.setFailed(`Cannot derive crate name and version from release tag '${tagName}'`);
               return;
@@ -66,18 +80,13 @@ jobs:
             core.setOutput('version', match.groups.version);
             core.info(`Latest release ${tagName} -> crate ${match.groups.crate} version ${match.groups.version}`);
 
-      # The attested artifact is the `.crate` that release.yml hands to
-      # attest-build-provenance and attest-sbom (`target/package/*.crate`) — the
-      # identical file `cargo publish` then uploads to crates.io. GitHub *release
-      # assets* are deliberately not consulted: this repo publishes none (v0.4.0 has
-      # an empty asset list) and they were never the attestation subject. crates.io
-      # is the canonical copy and is byte-identical by digest, which is what
-      # attestation lookup keys on.
+      # The attestation subject is the `.crate` release.yml hands to
+      # attest-build-provenance / attest-sbom (`target/package/*.crate`) — the identical
+      # file `cargo publish` uploads. crates.io holds that byte-identical copy, and this
+      # repo publishes no GitHub release assets, so crates.io is the artifact source.
       #
-      # `curl -f`, no `|| true`: a tagged release whose crate never reached crates.io
-      # is a genuine supply-chain gap — publish failing after the tag landed is
-      # precisely what release.yml's manual re-publish escape hatch exists for — so
-      # it must fail this job rather than degrade to a skip.
+      # `curl -f` with no `|| true`: a tagged release whose crate never reached crates.io
+      # is a real supply-chain gap, so it must fail the job rather than degrade to a skip.
       - name: Download attested crate from crates.io
         if: steps.release.outputs.skip != 'true'
         id: artifact
@@ -87,9 +96,8 @@ jobs:
         run: |
           mkdir -p release-assets
           ARTIFACT="release-assets/${CRATE}-${VERSION}.crate"
-          # -A is mandatory, not politeness: crates.io's API answers 403 to a generic
-          # user agent (verified — plain `curl/8.x` gets 403 on this exact URL), and
-          # the crates.io crawler policy asks callers to identify themselves.
+          # -A is mandatory, not politeness: crates.io answers 403 to a generic user
+          # agent (verified — plain `curl/8.x` gets 403 on this exact URL).
           curl -fsSL --retry 3 --retry-connrefused \
             -A "cachekit-core-attestation-check (+https://github.com/${GITHUB_REPOSITORY})" \
             "https://crates.io/api/v1/crates/${CRATE}/${VERSION}/download" \
@@ -98,56 +106,59 @@ jobs:
           echo "path=$ARTIFACT" >> "$GITHUB_OUTPUT"
           echo "Downloaded $ARTIFACT ($(wc -c < "$ARTIFACT") bytes, sha256 $(sha256sum "$ARTIFACT" | cut -d' ' -f1))"
 
-      # `--signer-workflow` pins WHICH workflow was allowed to sign. Without it,
-      # `--repo` alone accepts an attestation produced by any workflow in the repo,
-      # so a compromised workflow could mint one that passes.
+      # Identity pinning takes BOTH flags. `--signer-workflow` is an unanchored prefix
+      # match on the certificate SAN (verified: a truncated `.../release` with no `.yml`
+      # also passes), so on its own it pins neither the ref nor the full filename — an
+      # actor with push access could mint provenance from a modified release.yml on any
+      # branch and this check would bless it. `--source-ref` is what asserts "built by
+      # the release pipeline on main", which is the only claim worth making here.
       #
-      # `--format json --jq` is not cosmetic: gh prints its "Verification succeeded"
-      # banner only to a TTY, so on a runner a passing verify is otherwise completely
-      # silent — indistinguishable in the log from the skip this job used to do.
-      # The jq line puts the verified digest, predicate type and signer URI in the log.
+      # `--format json --jq` is the evidence trail, not decoration: verified by
+      # redirecting output, a passing `gh attestation verify` prints NOTHING and exits 0,
+      # which in a log is indistinguishable from the skip this job used to do. The jq
+      # line names the digest that was actually verified.
       - name: Verify provenance attestation
         if: steps.release.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARTIFACT: ${{ steps.artifact.outputs.path }}
+          TAG: ${{ steps.release.outputs.tag }}
         run: |
-          echo "Verifying SLSA provenance for ${{ steps.release.outputs.tag }}"
+          echo "Verifying SLSA provenance for $TAG"
           gh attestation verify "$ARTIFACT" \
             --repo "$GITHUB_REPOSITORY" \
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main \
             --predicate-type https://slsa.dev/provenance/v1 \
             --format json \
             --jq '.[] | "verified provenance: digest=\(.verificationResult.statement.subject[0].digest.sha256) predicate=\(.verificationResult.statement.predicateType) signer=\(.verificationResult.signature.certificate.buildSignerURI)"'
 
-      # Predicate type is `https://cyclonedx.org/bom` — unversioned. That is what
-      # actions/attest-sbom emits for the CycloneDX 1.6 document release.yml generates
-      # (`cargo sbom --output-format cyclone_dx_json_1_6`). The previous version of
-      # this file looked for `https://cyclonedx.org/bom/v1.6` with an
-      # `|| <spdx.dev/Document/v2.3>` fallback; both strings match nothing here, so
-      # that check could not have passed even with an artifact in hand. There is no
-      # SPDX attestation to fall back to, so there is no fallback — one predicate,
-      # verified or red.
+      # Predicate type is the UNVERSIONED `https://cyclonedx.org/bom` — that is what
+      # actions/attest-sbom emits for the CycloneDX 1.6 document release.yml generates.
+      # Do not "fix" this to `.../bom/v1.6`: nothing matches that, nor SPDX. There is no
+      # second SBOM predicate to fall back to, so there is no fallback — verified or red.
       - name: Verify SBOM attestation
         if: steps.release.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARTIFACT: ${{ steps.artifact.outputs.path }}
+          TAG: ${{ steps.release.outputs.tag }}
         run: |
-          echo "Verifying CycloneDX SBOM attestation for ${{ steps.release.outputs.tag }}"
+          echo "Verifying CycloneDX SBOM attestation for $TAG"
           gh attestation verify "$ARTIFACT" \
             --repo "$GITHUB_REPOSITORY" \
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main \
             --predicate-type https://cyclonedx.org/bom \
             --format json \
             --jq '.[] | "verified SBOM: digest=\(.verificationResult.statement.subject[0].digest.sha256) predicate=\(.verificationResult.statement.predicateType) signer=\(.verificationResult.signature.certificate.buildSignerURI)"'
 
-      # Deduped: this job is weekly, so an unfixed failure would otherwise file a
-      # fresh issue every Monday. If a tracking issue is already open, log and stop.
-      # Scans the first 100 open `bug` issues — ample for this repo; if that is ever
-      # exceeded the worst case is a duplicate issue, not a missed alert.
-      # github-script rather than `gh issue create` so a failure to raise the alert
-      # is itself a hard failure instead of a shell exit status nobody reads.
+      # Weekly job: without dedupe one unfixed break files a fresh issue every Monday,
+      # and a muted `bug` label is itself a fail-open alert channel. The marker is
+      # per-tag, so a NEW tag's failure still alerts instead of hiding behind the open
+      # issue for the old one. Matched on body, not title or label, so a human
+      # retitling or relabelling the issue cannot break dedupe. The 100-issue page is
+      # ample here; worst case is a duplicate issue, never a missed alert.
       - name: Open issue on failure
         if: failure()
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
@@ -155,33 +166,33 @@ jobs:
           TAG: ${{ steps.release.outputs.tag }}
         with:
           script: |
-            const TITLE_PREFIX = 'Attestation verification failed';
-            const tag = process.env.TAG || '(tag unresolved)';
+            const tag = process.env.TAG || 'unresolved-release';
+            const marker = `<!-- attestation-check:${tag} -->`;
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const { data: open } = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open',
-              labels: 'bug',
               per_page: 100,
             });
-            const existing = open.find((i) => !i.pull_request && i.title.startsWith(TITLE_PREFIX));
+            const existing = open.find((i) => !i.pull_request && (i.body || '').includes(marker));
             if (existing) {
-              core.info(`Tracking issue #${existing.number} is already open; not filing a duplicate. Run: ${runUrl}`);
+              core.info(`Issue #${existing.number} already tracks ${tag}; not filing a duplicate. Run: ${runUrl}`);
               return;
             }
             const { data: created } = await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `${TITLE_PREFIX} for ${tag}`,
+              title: `Attestation verification failed for ${tag}`,
               body: [
+                marker,
                 `The weekly attestation health check failed for \`${tag}\`.`,
                 '',
                 `Run: ${runUrl}`,
                 '',
                 'Check that release.yml produced valid SLSA provenance and CycloneDX SBOM',
-                'attestations for the published `.crate`, and that the crate actually',
-                'reached crates.io for this tag.',
+                'attestations for the published `.crate`, that it ran on `main`, and that',
+                'the crate actually reached crates.io for this tag.',
               ].join('\n'),
               labels: ['bug'],
             });
