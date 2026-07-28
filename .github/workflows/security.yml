@@ -372,6 +372,23 @@ jobs:
             }
             // Throws on 404 — fails closed if the tag has no published release.
             const { data: release } = await github.rest.repos.getReleaseByTag({ ...context.repo, tag });
+
+            // Immutable releases are enabled on this repo, and immutability is
+            // applied at publish: a published release permanently refuses new
+            // assets ("Cannot upload assets to an immutable release"). Fail here
+            // rather than spending a generation run on an SBOM that provably
+            // cannot be attached. See LAB-983 — this needs a decision, not a
+            // retry: either turn the setting off (Settings > Code and automation
+            // > Releases), or create releases as drafts, upload, then publish.
+            if (release.immutable) {
+              core.setFailed(
+                `Release ${tag} is immutable, so assets cannot be attached after publish. ` +
+                `Publishing an SBOM asset requires either disabling immutable releases for ` +
+                `this repository, or attaching assets while the release is still a draft.`,
+              );
+              return;
+            }
+
             core.setOutput('tag', tag);
             // The upload job attaches by id instead of re-resolving the tag, so a
             // tag repointed between the two jobs cannot land this SBOM on a
