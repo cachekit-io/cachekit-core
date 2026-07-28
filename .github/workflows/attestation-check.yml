@@ -87,7 +87,11 @@ jobs:
         run: |
           mkdir -p release-assets
           ARTIFACT="release-assets/${CRATE}-${VERSION}.crate"
+          # -A is mandatory, not politeness: crates.io's API answers 403 to a generic
+          # user agent (verified — plain `curl/8.x` gets 403 on this exact URL), and
+          # the crates.io crawler policy asks callers to identify themselves.
           curl -fsSL --retry 3 --retry-connrefused \
+            -A "cachekit-core-attestation-check (+https://github.com/${GITHUB_REPOSITORY})" \
             "https://crates.io/api/v1/crates/${CRATE}/${VERSION}/download" \
             -o "$ARTIFACT"
           test -s "$ARTIFACT"
