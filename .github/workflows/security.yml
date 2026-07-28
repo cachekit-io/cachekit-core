@@ -29,6 +29,13 @@ on:
         description: "Seconds per target for an on-demand deep fuzz (default 8h)"
         type: string
         default: "28800"
+      release_tag:
+        # Verification + backfill route for the SBOM jobs. Without it the SBOM
+        # path could only ever be exercised by cutting a release, which is how
+        # v0.4.0 shipped with zero assets and stayed that way (LAB-983).
+        description: "Generate and attach an SBOM to this existing release tag (e.g. cachekit-core-v0.4.0)"
+        type: string
+        default: ""
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -243,7 +250,10 @@ jobs:
   kani:
     name: Kani Formal Verification
     runs-on: cachekit
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # An SBOM backfill dispatch (release_tag set) is not a verification request —
+    # it must not drag a full Kani run onto the shared ARC pool. A plain dispatch
+    # still runs Kani on demand, which is what that route is for.
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.release_tag == '')
     permissions:
       contents: read # least-privilege: the job only checks out and verifies
     steps:
@@ -316,44 +326,154 @@ jobs:
       - name: Run cargo vet
         run: cargo vet
 
+  # SBOM generation and SBOM publishing are deliberately two jobs. `cargo sbom`
+  # resolves the dependency graph, which compiles and executes third-party build
+  # scripts and proc-macros on this runner; the release-write token must never sit
+  # on a runner alongside untrusted code. So generation is credential-less, the
+  # SBOM crosses to `sbom-upload` as an artifact, and only that job — which runs
+  # no third-party code at all — holds `contents: write`. Same split, and the same
+  # reasoning, as cachekit-py's sbom job. Do not collapse these back into one.
   sbom:
     name: Generate SBOM
     runs-on: cachekit
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.target.outputs.tag }}
     steps:
+      - name: Resolve target release tag
+        id: target
+        env:
+          # Via env, never inline in the script body: a dispatch input is
+          # caller-supplied and inline ${{ }} is a shell-injection vector.
+          TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: |
+          if [ -z "$TAG" ]; then
+            echo "::error::No release tag resolved (release event gave none and release_tag input was empty)"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
-          toolchain: "1.85"
-
-      - name: Cache Rust dependencies
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-sbom-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-sbom-
-            ${{ runner.os }}-cargo-
-
-      - name: Install cargo-sbom
-        run: cargo install cargo-sbom --locked
+          # SBOM the code that was actually released, not whatever main holds now.
+          # On a backfill dispatch those are different commits, and an SBOM that
+          # describes the wrong tree is worse than a missing one.
+          ref: ${{ steps.target.outputs.tag }}
+          persist-credentials: false
 
       - name: Generate SBOM
-        run: cargo sbom > cachekit-core-sbom.json
+        # No cargo install, no rust-toolchain, no cargo cache: the cachekit runner
+        # image bakes Rust stable AND cargo-sbom (cachekit-io/runner Dockerfile),
+        # and a plain `cargo install cargo-sbom` exits 101 against the runner's
+        # persistent CARGO_HOME anyway (see release.yml). This step compiles
+        # nothing, so there is no build cache worth restoring.
+        # cyclone_dx_json_1_6 matches the SBOM release.yml attests, so the asset
+        # published here and the attested document are the same format.
+        run: cargo sbom --output-format cyclone_dx_json_1_6 > cachekit-core-sbom.json
 
-      - name: Upload SBOM as release asset
-        uses: actions/upload-release-asset@e8f9f06c4b078e705bd2ea027f0926603fc9b4d5 # v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify SBOM is not empty
+        # Fail closed. An empty-but-valid CycloneDX document is worse than no
+        # asset at all: it looks like a verified supply chain and isn't. python3
+        # is on the runner image's PATH; jq and gh are not — do not reach for them.
+        run: |
+          # The `||` is load-bearing: without it a parse failure leaves count
+          # empty, `[ "" -lt 1 ]` errors instead of comparing, the if takes the
+          # false branch and the step exits 0 — publishing the broken SBOM. A
+          # guard that can't tell "zero components" from "couldn't read it" is
+          # not a guard. Same fail-open shape as the old Kani `|| echo`.
+          count=$(python3 -c 'import json; print(len(json.load(open("cachekit-core-sbom.json")).get("components") or []))') || {
+            echo "::error::could not parse cachekit-core-sbom.json as a CycloneDX document"
+            exit 1
+          }
+          echo "SBOM components: $count"
+          # ponytail: a floor of 1 only catches a wholly-unresolved graph. Raise it
+          # to a real minimum if a partially-resolved SBOM ever slips through.
+          if [ "$count" -lt 1 ]; then
+            echo "::error::SBOM lists $count components — refusing to publish an empty SBOM"
+            exit 1
+          fi
+
+      - name: Upload SBOM as workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: ./cachekit-core-sbom.json
-          asset_name: cachekit-core-sbom.json
-          asset_content_type: application/json
+          name: sbom
+          path: cachekit-core-sbom.json
+          if-no-files-found: error
+          # Artifacts are immutable per run, so a "re-run all jobs" would otherwise
+          # 409 on the name from the first attempt and never reach the upload job.
+          overwrite: true
+
+  sbom-upload:
+    name: Attach SBOM to Release
+    needs: sbom
+    runs-on: cachekit
+    # The only write token in this workflow, held by the only job that runs no
+    # third-party code — download-artifact and github-script are both first-party.
+    permissions:
+      contents: write
+    steps:
+      - name: Download SBOM artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: sbom
+
+      - name: Attach SBOM to release
+        # github-script, NOT `gh`: the self-hosted cachekit runner has no gh CLI
+        # (LAB-899, same reason release.yml uses github-script). It replaces the
+        # upload-release-asset action GitHub archived on 2021-03-03, which was
+        # additionally failing here because the old single job inherited the repo's
+        # read-only default token: "Resource not accessible by integration" on
+        # every release (LAB-983).
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          RELEASE_TAG: ${{ needs.sbom.outputs.tag }}
+          ASSET_NAME: cachekit-core-sbom.json
+        with:
+          script: |
+            const fs = require('fs');
+            const name = process.env.ASSET_NAME;
+            const { owner, repo } = context.repo;
+
+            // Resolve by tag for both routes — a release event and a backfill
+            // dispatch then share one code path instead of branching on
+            // github.event.release.
+            const { data: release } = await github.rest.repos.getReleaseByTag({
+              owner,
+              repo,
+              tag: process.env.RELEASE_TAG,
+            });
+
+            // POST .../releases/{id}/assets returns 422 when an asset of this
+            // filename already exists, so re-running over a previous attempt has
+            // to delete first. Idempotent by construction, rather than by
+            // swallowing a 422 we would then have to tell apart from a real one.
+            const existing = (await github.paginate(github.rest.repos.listReleaseAssets, {
+              owner,
+              repo,
+              release_id: release.id,
+            })).find((asset) => asset.name === name);
+            if (existing) {
+              await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: existing.id });
+              core.info(`Replacing existing ${name} (asset ${existing.id})`);
+            }
+
+            // Read as a utf8 string: octokit JSON.stringify's plain objects and
+            // arrays only, so a string body is sent verbatim. uploadReleaseAsset
+            // carries baseUrl: uploads.github.com in its own endpoint defaults, so
+            // it lands on the upload host without any override here.
+            const data = fs.readFileSync(name, 'utf8');
+            const { data: asset } = await github.rest.repos.uploadReleaseAsset({
+              owner,
+              repo,
+              release_id: release.id,
+              name,
+              data,
+              headers: {
+                'content-type': 'application/json',
+                'content-length': Buffer.byteLength(data),
+              },
+            });
+            core.info(`Attached ${asset.name} (${asset.size} bytes) to ${release.tag_name}`);
