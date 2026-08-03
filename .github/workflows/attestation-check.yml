@@ -182,17 +182,32 @@ jobs:
           script: |
             const crate = process.env.CRATE;
             const version = process.env.VERSION;
-            const res = await fetch(`https://crates.io/api/v1/crates/${crate}`, {
-              headers: { 'User-Agent': process.env.CRATES_IO_UA },
-            });
-            if (!res.ok) {
-              core.setFailed(`crates.io API answered ${res.status} for crate '${crate}' — cannot confirm what users install.`);
+            // try/catch so a network-level failure (DNS, connection reset) or a
+            // non-JSON body fails with a descriptive message instead of a raw
+            // unhandled-rejection trace. Red either way — diagnostics, not a swallow.
+            let data;
+            try {
+              const res = await fetch(`https://crates.io/api/v1/crates/${crate}`, {
+                headers: { 'User-Agent': process.env.CRATES_IO_UA },
+              });
+              if (!res.ok) {
+                core.setFailed(`crates.io API answered ${res.status} for crate '${crate}' — cannot confirm what users install.`);
+                return;
+              }
+              data = await res.json();
+            } catch (error) {
+              core.setFailed(`crates.io API request for '${crate}' failed: ${error.message} — cannot confirm what users install.`);
               return;
             }
-            const data = await res.json();
 
-            // Fail closed if the response shape shifts under us: `|| []` here would
-            // silently degrade yank detection to a no-op — `|| echo ""` in JS clothing.
+            // Fail closed if the response shape shifts under us: an error-shaped 200
+            // without a `crate` object, or a missing `versions` array, must fail with
+            // a message, not a TypeError — `|| []`/optional chaining here would
+            // silently degrade the checks to no-ops, `|| echo ""` in JS clothing.
+            if (!data.crate) {
+              core.setFailed(`crates.io response for '${crate}' has no crate object — cannot confirm what users install.`);
+              return;
+            }
             if (!Array.isArray(data.versions)) {
               core.setFailed(`crates.io response for '${crate}' has no versions array — cannot check yank status.`);
               return;
