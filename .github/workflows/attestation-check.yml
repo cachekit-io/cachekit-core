@@ -24,6 +24,10 @@ jobs:
     permissions:
       contents: read
       issues: write
+    env:
+      # crates.io answers 403 to a generic user agent (verified — plain `curl/8.x`
+      # gets 403). One descriptive UA, shared by every crates.io call in this job.
+      CRATES_IO_UA: cachekit-core-attestation-check (+https://github.com/${{ github.repository }})
     steps:
       # github-script, not `gh`, for API calls — the convention release.yml documents
       # on its "Assign release PR" step. `gh` is confined to Sigstore verification below.
@@ -96,10 +100,9 @@ jobs:
         run: |
           mkdir -p release-assets
           ARTIFACT="release-assets/${CRATE}-${VERSION}.crate"
-          # -A is mandatory, not politeness: crates.io answers 403 to a generic user
-          # agent (verified — plain `curl/8.x` gets 403 on this exact URL).
+          # -A is mandatory, not politeness — see CRATES_IO_UA at the job level.
           curl -fsSL --retry 3 --retry-connrefused \
-            -A "cachekit-core-attestation-check (+https://github.com/${GITHUB_REPOSITORY})" \
+            -A "$CRATES_IO_UA" \
             "https://crates.io/api/v1/crates/${CRATE}/${VERSION}/download" \
             -o "$ARTIFACT"
           test -s "$ARTIFACT"
@@ -155,18 +158,20 @@ jobs:
 
       # Verification above proves the latest GitHub release's crate is authentic — but
       # says nothing about whether that is the version `cargo add` actually resolves.
-      # A hand-published newer version, a prerelease-skipped release, or a yank all
-      # leave the steps above green while users install something this job never
-      # checked (LAB-1036). max_stable_version is what cargo resolves by default, so
-      # verified != max_stable is a false green and must go red.
+      # A hand-published version, a prerelease-skipped release, or a yank all leave
+      # the steps above green while users install something this job never checked
+      # (LAB-1036). max_stable_version is what cargo resolves by default, so
+      # verified != max_stable is a false green and must go red — unconditionally.
       #
-      # The one legitimate mismatch is the release→publish window: release.yml creates
-      # the GitHub release BEFORE `cargo publish` runs, so for a few minutes the tag
-      # can lead crates.io. That state is tolerated only when BOTH hold: the verified
-      # (GitHub) side of the mismatch is the newer one, AND a release.yml run is
-      # observably queued or in progress right now. A positive observation, not an
-      # error-swallow — if crates.io trails with no release run in flight, the publish
-      # died, which is exactly the gap this step exists to catch.
+      # Deliberately NO tolerance for the release→publish window (release.yml tags
+      # before `cargo publish`): that window cannot reach this comparison. While it
+      # is open the crate is not on crates.io yet, so the job has already gone red at
+      # the download step above. And an "is release.yml in flight?" tolerance here
+      # would itself be a fail-open — release.yml runs on every push to main, so an
+      # unrelated queued run would green-light a dead publish or a yanked version
+      # (expert panel, LAB-1036). A crate that downloaded successfully but mismatches
+      # max_stable is always a real defect: yanked, hand-published, prerelease-
+      # skipped, or a publish that died after the tag.
       - name: Check crates.io serves the verified version
         if: steps.release.outputs.skip != 'true'
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
@@ -177,12 +182,8 @@ jobs:
           script: |
             const crate = process.env.CRATE;
             const version = process.env.VERSION;
-            // Same mandatory descriptive UA as the download step: crates.io answers
-            // 403 to a generic user agent.
             const res = await fetch(`https://crates.io/api/v1/crates/${crate}`, {
-              headers: {
-                'User-Agent': `cachekit-core-attestation-check (+https://github.com/${process.env.GITHUB_REPOSITORY})`,
-              },
+              headers: { 'User-Agent': process.env.CRATES_IO_UA },
             });
             if (!res.ok) {
               core.setFailed(`crates.io API answered ${res.status} for crate '${crate}' — cannot confirm what users install.`);
@@ -190,7 +191,16 @@ jobs:
             }
             const data = await res.json();
 
-            const entry = (data.versions || []).find((v) => v.num === version);
+            // Fail closed if the response shape shifts under us: `|| []` here would
+            // silently degrade yank detection to a no-op — `|| echo ""` in JS clothing.
+            if (!Array.isArray(data.versions)) {
+              core.setFailed(`crates.io response for '${crate}' has no versions array — cannot check yank status.`);
+              return;
+            }
+            // The explicit yank branch is not redundant with the mismatch below: it
+            // names the actual cause. Yanked crates stay downloadable, so the download
+            // step above cannot catch this case.
+            const entry = data.versions.find((v) => v.num === version);
             if (entry && entry.yanked) {
               core.setFailed(
                 `Verified version ${version} is YANKED on crates.io — this check just green-lit ` +
@@ -204,51 +214,28 @@ jobs:
               core.setFailed(`crates.io reports no stable version of '${crate}' at all (every version yanked or prerelease).`);
               return;
             }
-            if (maxStable === version) {
-              core.info(`crates.io max_stable_version ${maxStable} == verified ${version} — the verified crate is what 'cargo add ${crate}' installs.`);
+            if (maxStable !== version) {
+              core.setFailed(
+                `crates.io max_stable_version is ${maxStable} but this check verified ${version}. ` +
+                `Users running 'cargo add ${crate}' get ${maxStable}, a version this job never verified — a false green (LAB-1036).`,
+              );
               return;
             }
-
-            // Numeric x.y.z comparison. Both sides are stable cargo versions: the tag
-            // regex above guarantees the verified triple, max_stable_version by
-            // definition has no prerelease part.
-            const triple = (v) => v.split('.').slice(0, 3).map((n) => parseInt(n, 10));
-            const [a, b] = [triple(version), triple(maxStable)];
-            const verifiedIsNewer = a[0] !== b[0] ? a[0] > b[0] : a[1] !== b[1] ? a[1] > b[1] : a[2] > b[2];
-
-            if (verifiedIsNewer) {
-              const { data: runs } = await github.rest.actions.listWorkflowRuns({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: 'release.yml',
-                per_page: 20,
-              });
-              const inFlight = runs.workflow_runs.filter((r) =>
-                ['queued', 'in_progress', 'waiting', 'pending', 'requested'].includes(r.status),
-              );
-              if (inFlight.length > 0) {
-                core.info(
-                  `crates.io max_stable_version (${maxStable}) trails verified ${version} while release.yml run(s) ` +
-                  `${inFlight.map((r) => `#${r.run_number}`).join(', ')} are in flight — release→publish window, not a failure.`,
-                );
-                return;
-              }
-            }
-            core.setFailed(
-              `crates.io max_stable_version is ${maxStable} but this check verified ${version}. ` +
-              `Users running 'cargo add ${crate}' get ${maxStable}, a version this job never verified — a false green (LAB-1036).`,
-            );
+            core.info(`crates.io max_stable_version ${maxStable} == verified ${version} — the verified crate is what 'cargo add ${crate}' installs.`);
 
       # GitHub silently disables `schedule:` triggers in public repos after ~60 days
       # without repository activity — after which this job's failure mode becomes
       # "not running at all", indistinguishable from passing quietly (LAB-1036). Fail
       # while the schedule is still alive so the auto-disable is preceded by a red run
-      # and a tracking issue instead of a quiet death. The threshold is 50 days, not
-      # ~55: the cron is weekly, so any margin narrower than 7 days can be jumped
-      # over entirely (green at day 54, disabled before the next run at day 61) —
-      # 50 guarantees at least one red run inside the [50, 60) window. No `if:` on
-      # the release skip output: liveness is independent of whether releases exist.
+      # and a tracking issue instead of a quiet death. The threshold is 43 days: the
+      # cron is weekly AND GitHub documents that scheduled runs can be delayed or
+      # dropped under load, so the margin must fit TWO weekly attempts, not one —
+      # 60 − 43 = 17 days ≥ two cron periods, so even one dropped Monday still leaves
+      # a red run before the disable. (A margin under 7 days could be jumped over
+      # entirely: green at day 54, disabled before the next run at day 61.) No `if:`
+      # on the release skip output: liveness is independent of whether releases exist.
       - name: Assert schedule liveness
+        id: liveness
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
@@ -257,7 +244,9 @@ jobs:
               repo: context.repo.repo,
             });
             const staleDays = (Date.now() - Date.parse(repo.pushed_at)) / 86400000;
-            if (staleDays > 50) {
+            // `!(x <= 43)`, not `x > 43`: Date.parse of a malformed pushed_at is NaN,
+            // and NaN must fail closed, not log "not at risk" and pass.
+            if (!(staleDays <= 43)) {
               core.setFailed(
                 `Last repository push was ${staleDays.toFixed(1)} days ago; GitHub auto-disables this schedule at ` +
                 '~60 days of inactivity, after which the check stops running with no signal at all. ' +
@@ -269,19 +258,25 @@ jobs:
 
       # Weekly job: without dedupe one unfixed break files a fresh issue every Monday,
       # and a muted `bug` label is itself a fail-open alert channel. The marker is
-      # per-tag, so a NEW tag's failure still alerts instead of hiding behind the open
-      # issue for the old one. Matched on body, not title or label, so a human
-      # retitling or relabelling the issue cannot break dedupe. The 100-issue page is
-      # ample here; worst case is a duplicate issue, never a missed alert.
+      # per-failure-class: per-tag for verification breaks (a NEW tag's failure still
+      # alerts instead of hiding behind the open issue for the old one), and a
+      # dedicated `liveness` marker for staleness — the two classes are mutually
+      # exclusive in one run (liveness only executes after verification succeeded),
+      # and a shared marker would let an open staleness issue swallow a later real
+      # attestation break for the same tag. Matched on body, not title or label, so a
+      # human retitling or relabelling the issue cannot break dedupe. The 100-issue
+      # page is ample here; worst case is a duplicate issue, never a missed alert.
       - name: Open issue on failure
         if: failure()
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           TAG: ${{ steps.release.outputs.tag }}
+          LIVENESS_OUTCOME: ${{ steps.liveness.outcome }}
         with:
           script: |
             const tag = process.env.TAG || 'unresolved-release';
-            const marker = `<!-- attestation-check:${tag} -->`;
+            const liveness = process.env.LIVENESS_OUTCOME === 'failure';
+            const marker = liveness ? '<!-- attestation-check:liveness -->' : `<!-- attestation-check:${tag} -->`;
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const { data: open } = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
@@ -297,10 +292,14 @@ jobs:
             const { data: created } = await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `Attestation verification failed for ${tag}`,
+              title: liveness
+                ? 'Attestation health check schedule is at risk of auto-disable'
+                : `Attestation verification failed for ${tag}`,
               body: [
                 marker,
-                `The weekly attestation health check failed for \`${tag}\`.`,
+                liveness
+                  ? 'The repository has had no push activity for >43 days; GitHub auto-disables this workflow\'s `schedule:` trigger at ~60 days, after which the check silently stops running.'
+                  : `The weekly attestation health check failed for \`${tag}\`.`,
                 '',
                 `Run: ${runUrl}`,
                 '',
@@ -309,7 +308,7 @@ jobs:
                 'crate actually reached crates.io for this tag, that crates.io\'s',
                 '`max_stable_version` still matches this release (nothing hand-published,',
                 'yanked, or prerelease-skipped), and that the repository has push activity',
-                'within the last 50 days (GitHub auto-disables the schedule at ~60).',
+                'within the last 43 days (GitHub auto-disables the schedule at ~60).',
               ].join('\n'),
               labels: ['bug'],
             });
