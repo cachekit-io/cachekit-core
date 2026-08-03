@@ -5,102 +5,195 @@ on:
     - cron: '23 3 * * 1'  # Weekly Monday 3:23am UTC
   workflow_dispatch:
 
+# Never cancel: a dispatch landing during the Monday cron would otherwise leave two
+# runs racing to file the same failure issue.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   verify:
     name: Verify Latest Release Attestations
-    runs-on: cachekit
+    # ubuntu-latest, NOT the self-hosted `cachekit` runner: the ARC pods have no `gh`
+    # binary (LAB-899) and unreliable Sigstore (Fulcio/Rekor) egress — the same reason
+    # release.yml's publish job is hosted. `gh attestation verify` is the only tool
+    # that does Sigstore bundle verification, so moving this job back to ARC silently
+    # re-breaks it (LAB-984: every `gh` call exited 127 into `|| echo ""`, and the job
+    # reported green while verifying nothing for weeks).
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Get latest release tag
+      # github-script, not `gh`, for API calls — the convention release.yml documents
+      # on its "Assign release PR" step. `gh` is confined to Sigstore verification below.
+      - name: Resolve latest release
         id: release
-        run: |
-          TAG=$(gh release list --repo ${{ github.repository }} --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "")
-          if [ -z "$TAG" ]; then
-            echo "No releases found, skipping"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            let tagName;
+            try {
+              const { data } = await github.rest.repos.getLatestRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+              });
+              tagName = data.tag_name;
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+              // A 404 here does NOT mean "no releases". getLatestRelease returns the
+              // latest non-draft, non-prerelease release, so a repo whose releases are
+              // all drafts or prereleases 404s too. Skipping on a bare 404 would be a
+              // silent green — the exact fail-open this file was rewritten to remove.
+              // Only a genuinely empty release list may skip.
+              const { data: releases } = await github.rest.repos.listReleases({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 1,
+              });
+              if (releases.length > 0) {
+                core.setFailed(
+                  'No published full release, but the repository has draft/prerelease releases. ' +
+                  'Nothing verifiable — refusing to report green.',
+                );
+                return;
+              }
+              core.info('Repository has no releases at all — nothing to verify.');
+              core.setOutput('skip', 'true');
+              return;
+            }
+            // release-please tags this crate `<package-name>-v<semver>`
+            // (release-please-config.json: package-name cachekit-core, release-type rust).
+            // The character classes are deliberately tight: these values build a URL and
+            // a file path, so `/` and shell metacharacters must not survive parsing.
+            const match = /^(?<crate>[A-Za-z0-9_-]+)-v(?<version>\d+\.\d+\.\d+[0-9A-Za-z.+-]*)$/
+              .exec(tagName);
+            if (!match) {
+              core.setFailed(`Cannot derive crate name and version from release tag '${tagName}'`);
+              return;
+            }
+            core.setOutput('skip', 'false');
+            core.setOutput('tag', tagName);
+            core.setOutput('crate', match.groups.crate);
+            core.setOutput('version', match.groups.version);
+            core.info(`Latest release ${tagName} -> crate ${match.groups.crate} version ${match.groups.version}`);
 
-      - name: Download release asset
+      # The attestation subject is the `.crate` release.yml hands to
+      # attest-build-provenance / attest-sbom (`target/package/*.crate`) — the identical
+      # file `cargo publish` uploads. crates.io holds that byte-identical copy, and this
+      # repo publishes no GitHub release assets, so crates.io is the artifact source.
+      #
+      # `curl -f` with no `|| true`: a tagged release whose crate never reached crates.io
+      # is a real supply-chain gap, so it must fail the job rather than degrade to a skip.
+      - name: Download attested crate from crates.io
         if: steps.release.outputs.skip != 'true'
-        id: asset
-        run: |
-          TAG="${{ steps.release.outputs.tag }}"
-          mkdir -p /tmp/release-assets
-          gh release download "$TAG" --repo ${{ github.repository }} \
-            --pattern "*.crate" --dir /tmp/release-assets 2>/dev/null || true
-          CRATE=$(find /tmp/release-assets -name '*.crate' -print -quit)
-          if [ -z "$CRATE" ]; then
-            echo "::warning::No .crate asset found for $TAG, checking repo-level attestations"
-            echo "has_asset=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "asset=$CRATE" >> "$GITHUB_OUTPUT"
-            echo "has_asset=true" >> "$GITHUB_OUTPUT"
-          fi
+        id: artifact
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CRATE: ${{ steps.release.outputs.crate }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          mkdir -p release-assets
+          ARTIFACT="release-assets/${CRATE}-${VERSION}.crate"
+          # -A is mandatory, not politeness: crates.io answers 403 to a generic user
+          # agent (verified — plain `curl/8.x` gets 403 on this exact URL).
+          curl -fsSL --retry 3 --retry-connrefused \
+            -A "cachekit-core-attestation-check (+https://github.com/${GITHUB_REPOSITORY})" \
+            "https://crates.io/api/v1/crates/${CRATE}/${VERSION}/download" \
+            -o "$ARTIFACT"
+          test -s "$ARTIFACT"
+          echo "path=$ARTIFACT" >> "$GITHUB_OUTPUT"
+          echo "Downloaded $ARTIFACT ($(wc -c < "$ARTIFACT") bytes, sha256 $(sha256sum "$ARTIFACT" | cut -d' ' -f1))"
 
+      # Identity pinning takes BOTH flags. `--signer-workflow` is an unanchored prefix
+      # match on the certificate SAN (verified: a truncated `.../release` with no `.yml`
+      # also passes), so on its own it pins neither the ref nor the full filename — an
+      # actor with push access could mint provenance from a modified release.yml on any
+      # branch and this check would bless it. `--source-ref` is what asserts "built by
+      # the release pipeline on main", which is the only claim worth making here.
+      #
+      # `--format json --jq` is the evidence trail, not decoration: verified by
+      # redirecting output, a passing `gh attestation verify` prints NOTHING and exits 0,
+      # which in a log is indistinguishable from the skip this job used to do. The jq
+      # line names the digest that was actually verified.
       - name: Verify provenance attestation
         if: steps.release.outputs.skip != 'true'
-        run: |
-          TAG="${{ steps.release.outputs.tag }}"
-          echo "Verifying provenance attestation for $TAG"
-          if [ "${{ steps.asset.outputs.has_asset }}" = "true" ]; then
-            gh attestation verify "${{ steps.asset.outputs.asset }}" \
-              --repo ${{ github.repository }} \
-              --predicate-type https://slsa.dev/provenance/v1
-          else
-            # No downloadable .crate asset — verify attestations exist for the repo
-            PROVENANCE=$(gh attestation list --repo ${{ github.repository }} \
-              --predicate-type https://slsa.dev/provenance/v1 --limit 1 --jq 'length')
-            if [ "$PROVENANCE" = "0" ] || [ -z "$PROVENANCE" ]; then
-              echo "::error::No provenance attestation found"
-              exit 1
-            fi
-          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACT: ${{ steps.artifact.outputs.path }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          echo "Verifying SLSA provenance for $TAG"
+          gh attestation verify "$ARTIFACT" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main \
+            --predicate-type https://slsa.dev/provenance/v1 \
+            --format json \
+            --jq '.[] | "verified provenance: digest=\(.verificationResult.statement.subject[0].digest.sha256) predicate=\(.verificationResult.statement.predicateType) signer=\(.verificationResult.signature.certificate.buildSignerURI)"'
 
+      # Predicate type is the UNVERSIONED `https://cyclonedx.org/bom` — that is what
+      # actions/attest-sbom emits for the CycloneDX 1.6 document release.yml generates.
+      # Do not "fix" this to `.../bom/v1.6`: nothing matches that, nor SPDX. There is no
+      # second SBOM predicate to fall back to, so there is no fallback — verified or red.
       - name: Verify SBOM attestation
         if: steps.release.outputs.skip != 'true'
-        run: |
-          TAG="${{ steps.release.outputs.tag }}"
-          echo "Verifying SBOM attestation for $TAG"
-          if [ "${{ steps.asset.outputs.has_asset }}" = "true" ]; then
-            gh attestation verify "${{ steps.asset.outputs.asset }}" \
-              --repo ${{ github.repository }} \
-              --predicate-type https://spdx.dev/Document/v2.3 || \
-            gh attestation verify "${{ steps.asset.outputs.asset }}" \
-              --repo ${{ github.repository }} \
-              --predicate-type https://cyclonedx.org/bom/v1.6
-          else
-            SBOM=$(gh attestation list --repo ${{ github.repository }} \
-              --predicate-type https://cyclonedx.org/bom/v1.6 --limit 1 --jq 'length' 2>/dev/null || echo "0")
-            SPDX=$(gh attestation list --repo ${{ github.repository }} \
-              --predicate-type https://spdx.dev/Document/v2.3 --limit 1 --jq 'length' 2>/dev/null || echo "0")
-            if [ "$SBOM" = "0" ] && [ "$SPDX" = "0" ]; then
-              echo "::error::No SBOM attestation found (checked CycloneDX and SPDX)"
-              exit 1
-            fi
-          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACT: ${{ steps.artifact.outputs.path }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          echo "Verifying CycloneDX SBOM attestation for $TAG"
+          gh attestation verify "$ARTIFACT" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main \
+            --predicate-type https://cyclonedx.org/bom \
+            --format json \
+            --jq '.[] | "verified SBOM: digest=\(.verificationResult.statement.subject[0].digest.sha256) predicate=\(.verificationResult.statement.predicateType) signer=\(.verificationResult.signature.certificate.buildSignerURI)"'
 
+      # Weekly job: without dedupe one unfixed break files a fresh issue every Monday,
+      # and a muted `bug` label is itself a fail-open alert channel. The marker is
+      # per-tag, so a NEW tag's failure still alerts instead of hiding behind the open
+      # issue for the old one. Matched on body, not title or label, so a human
+      # retitling or relabelling the issue cannot break dedupe. The 100-issue page is
+      # ample here; worst case is a duplicate issue, never a missed alert.
       - name: Open issue on failure
         if: failure()
-        run: |
-          gh issue create \
-            --repo ${{ github.repository }} \
-            --title "Attestation verification failed for ${{ steps.release.outputs.tag }}" \
-            --body "Weekly attestation health check failed. Verify that the release workflow produced valid provenance and SBOM attestations." \
-            --label "bug"
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+        with:
+          script: |
+            const tag = process.env.TAG || 'unresolved-release';
+            const marker = `<!-- attestation-check:${tag} -->`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const existing = open.find((i) => !i.pull_request && (i.body || '').includes(marker));
+            if (existing) {
+              core.info(`Issue #${existing.number} already tracks ${tag}; not filing a duplicate. Run: ${runUrl}`);
+              return;
+            }
+            const { data: created } = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Attestation verification failed for ${tag}`,
+              body: [
+                marker,
+                `The weekly attestation health check failed for \`${tag}\`.`,
+                '',
+                `Run: ${runUrl}`,
+                '',
+                'Check that release.yml produced valid SLSA provenance and CycloneDX SBOM',
+                'attestations for the published `.crate`, that it ran on `main`, and that',
+                'the crate actually reached crates.io for this tag.',
+              ].join('\n'),
+              labels: ['bug'],
+            });
+            core.info(`Opened tracking issue #${created.number}`);
