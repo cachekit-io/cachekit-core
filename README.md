@@ -26,7 +26,7 @@
 | **Key Derivation** | Master key → HKDF-SHA256 → derived key per tenant/domain |
 
 > [!TIP]
-> For Redis caching with Python decorators, see [`cachekit`](https://github.com/cachekit-io/cachekit).
+> For decorator-based caching in Python, see [`cachekit-py`](https://github.com/cachekit-io/cachekit-py).
 
 ---
 
