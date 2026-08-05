@@ -14,8 +14,16 @@ on:
     # regressions promptly; deep fuzz is for finding bugs, not gating merges.
     # Off-minute (:07) avoids the cron pile-up that GitHub schedules at :00.
     - cron: '7 11 * * 6'
-  release:
-    types: [published]
+  # Deliberately no `release:` trigger. It existed only for an SBOM job that
+  # attached a release asset, and that can never work here: immutable releases
+  # are enabled on this repo and GitHub seals a release's assets at publish, so
+  # the upload always failed with "Cannot upload assets to an immutable release"
+  # — every release since v0.1.0 has zero assets (LAB-983). The SBOM is generated
+  # and attested in release.yml via actions/attest-sbom; that attestation is the
+  # verifiable artifact, and a plain release asset would be an unsigned weaker
+  # copy of it. Re-adding this trigger without a job gated on it only produces an
+  # empty run per release; re-adding the asset upload needs the release created as
+  # a draft, assets attached, then published.
   # On-demand: lets the schedule-only jobs (e.g. Kani) be run and verified
   # without waiting for the weekly cron. A plain dispatch does NOT trigger the
   # heavy deep-fuzz matrix — set run_deep_fuzz=true to opt into that.
@@ -29,23 +37,9 @@ on:
         description: "Seconds per target for an on-demand deep fuzz (default 8h)"
         type: string
         default: "28800"
-      release_tag:
-        # Verification + backfill route for the SBOM jobs. Without it the SBOM
-        # path could only ever be exercised by cutting a release, which is how
-        # v0.4.0 shipped with zero assets and stayed that way (LAB-983).
-        description: "Generate and attach an SBOM to this existing release tag (e.g. cachekit-core-v0.4.0)"
-        type: string
-        default: ""
 
 concurrency:
-  # release_tag is part of the key so SBOM backfills never cancel each other or a
-  # scheduled/push run on the same ref. sbom-upload deletes a pre-existing asset
-  # before re-uploading it; a cancel landing in that window would leave the
-  # release with its SBOM deleted and never replaced — worse than the missing
-  # asset this workflow exists to fix, and easy to miss behind a "cancelled" run.
-  # github.event.inputs, not inputs: this is evaluated on every event, and the
-  # `inputs` context is only documented as available to dispatch/reusable calls.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event.inputs.release_tag || 'default' }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -257,10 +251,7 @@ jobs:
   kani:
     name: Kani Formal Verification
     runs-on: cachekit
-    # An SBOM backfill dispatch (release_tag set) is not a verification request —
-    # it must not drag a full Kani run onto the shared ARC pool. A plain dispatch
-    # still runs Kani on demand, which is what that route is for.
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.release_tag == '')
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read # least-privilege: the job only checks out and verifies
     steps:
@@ -332,187 +323,3 @@ jobs:
 
       - name: Run cargo vet
         run: cargo vet
-
-  # SBOM generation and SBOM publishing are deliberately two jobs. `cargo sbom`
-  # resolves the dependency graph, which compiles and executes third-party build
-  # scripts and proc-macros on this runner; the release-write token must never sit
-  # on a runner alongside untrusted code. So generation is credential-less, the
-  # SBOM crosses to `sbom-upload` as an artifact, and only that job — which runs
-  # no third-party code at all — holds `contents: write`. Same split, and the same
-  # reasoning, as cachekit-py's sbom job. Do not collapse these back into one.
-  sbom:
-    name: Generate SBOM
-    runs-on: cachekit
-    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
-    permissions:
-      contents: read
-    outputs:
-      tag: ${{ steps.target.outputs.tag }}
-      release_id: ${{ steps.target.outputs.release_id }}
-    steps:
-      # Resolve and validate BEFORE the checkout below, while the workspace is
-      # still empty. `cargo sbom` compiles and runs third-party build scripts, and
-      # it must never do that for a ref that is not a published release — a
-      # dispatch can name any ref. This also turns a typo into a 404 in seconds
-      # instead of a wasted multi-minute generation run that only fails later, in
-      # the other job.
-      - name: Resolve target release
-        id: target
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
-        env:
-          # Via env, never inline ${{ }} in the script body: a dispatch input is
-          # caller-supplied.
-          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
-        with:
-          script: |
-            const tag = process.env.RELEASE_TAG;
-            if (!tag) {
-              core.setFailed('No release tag resolved: the release event carried none and release_tag was empty');
-              return;
-            }
-            // Throws on 404 — fails closed if the tag has no published release.
-            const { data: release } = await github.rest.repos.getReleaseByTag({ ...context.repo, tag });
-
-            // Immutable releases are enabled on this repo, and immutability is
-            // applied at publish: a published release permanently refuses new
-            // assets ("Cannot upload assets to an immutable release"). Fail here
-            // rather than spending a generation run on an SBOM that provably
-            // cannot be attached. See LAB-983 — this needs a decision, not a
-            // retry: either turn the setting off (Settings > Code and automation
-            // > Releases), or create releases as drafts, upload, then publish.
-            if (release.immutable) {
-              core.setFailed(
-                `Release ${tag} is immutable, so assets cannot be attached after publish. ` +
-                `Publishing an SBOM asset requires either disabling immutable releases for ` +
-                `this repository, or attaching assets while the release is still a draft.`,
-              );
-              return;
-            }
-
-            core.setOutput('tag', tag);
-            // The upload job attaches by id instead of re-resolving the tag, so a
-            // tag repointed between the two jobs cannot land this SBOM on a
-            // different release than the one it was generated from.
-            core.setOutput('release_id', release.id);
-            core.info(`Target: ${tag} (release ${release.id})`);
-
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          # SBOM the code that was actually released, not whatever main holds now.
-          # On a backfill dispatch those are different commits, and an SBOM that
-          # describes the wrong tree is worse than a missing one.
-          ref: ${{ steps.target.outputs.tag }}
-          persist-credentials: false
-
-      - name: Generate SBOM
-        # No cargo install, no rust-toolchain, no cargo cache: the cachekit runner
-        # image bakes Rust stable AND cargo-sbom (cachekit-io/runner Dockerfile,
-        # which verifies `cargo sbom --help` at build time), and that image's own
-        # guidance is that workflows on this runner should not re-install them. A
-        # plain `cargo install cargo-sbom` would also exit 101 whenever the binary
-        # is already present. This step compiles nothing, so there is no build
-        # cache worth restoring either.
-        # cyclone_dx_json_1_6 matches the SBOM release.yml attests, so the asset
-        # published here and the attested document are the same format.
-        run: cargo sbom --output-format cyclone_dx_json_1_6 > cachekit-core-sbom.json
-
-      - name: Verify SBOM is not empty
-        # Fail closed. An empty-but-valid CycloneDX document is worse than no
-        # asset at all: it looks like a verified supply chain and isn't. python3
-        # is on the runner image's PATH; jq and gh are not — do not reach for them.
-        run: |
-          # The `||` is load-bearing: without it a parse failure leaves count
-          # empty, `[ "" -lt 1 ]` errors instead of comparing, the if takes the
-          # false branch and the step exits 0 — publishing the broken SBOM. A
-          # guard that can't tell "zero components" from "couldn't read it" is
-          # not a guard. Same fail-open shape as the old Kani `|| echo`.
-          count=$(python3 -c 'import json; print(len(json.load(open("cachekit-core-sbom.json")).get("components") or []))') || {
-            echo "::error::could not parse cachekit-core-sbom.json as a CycloneDX document"
-            exit 1
-          }
-          echo "SBOM components: $count"
-          # ponytail: a floor of 1 only catches a wholly-unresolved graph. Raise it
-          # to a real minimum if a partially-resolved SBOM ever slips through.
-          if [ "$count" -lt 1 ]; then
-            echo "::error::SBOM lists $count components — refusing to publish an empty SBOM"
-            exit 1
-          fi
-
-      - name: Upload SBOM as workflow artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: sbom
-          path: cachekit-core-sbom.json
-          if-no-files-found: error
-          # Artifacts are immutable per run, so a "re-run all jobs" would otherwise
-          # 409 on the name from the first attempt and never reach the upload job.
-          overwrite: true
-
-  sbom-upload:
-    name: Attach SBOM to Release
-    needs: sbom
-    runs-on: cachekit
-    # The only write token in this workflow, held by the only job that runs no
-    # third-party code — download-artifact and github-script are both first-party.
-    permissions:
-      contents: write
-    steps:
-      - name: Download SBOM artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: sbom
-
-      - name: Attach SBOM to release
-        # github-script, NOT `gh`: the self-hosted cachekit runner has no gh CLI
-        # (LAB-899, same reason release.yml uses github-script). It replaces the
-        # upload-release-asset action GitHub archived on 2021-03-03, which was
-        # additionally failing here because the old single job inherited the repo's
-        # read-only default token: "Resource not accessible by integration" on
-        # every release (LAB-983).
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
-        env:
-          # Resolved and validated by the sbom job, before any third-party code
-          # ran. Attaching by id rather than re-resolving the tag here keeps the
-          # SBOM bound to the release it was actually generated from.
-          RELEASE_ID: ${{ needs.sbom.outputs.release_id }}
-          RELEASE_TAG: ${{ needs.sbom.outputs.tag }}
-          ASSET_NAME: cachekit-core-sbom.json
-        with:
-          script: |
-            const fs = require('fs');
-            const name = process.env.ASSET_NAME;
-            const release_id = Number(process.env.RELEASE_ID);
-            const { owner, repo } = context.repo;
-
-            // POST .../releases/{id}/assets returns 422 when an asset of this
-            // filename already exists, so re-running over a previous attempt has
-            // to delete first. Idempotent by construction, rather than by
-            // swallowing a 422 we would then have to tell apart from a real one.
-            const existing = (await github.paginate(github.rest.repos.listReleaseAssets, {
-              owner,
-              repo,
-              release_id,
-            })).find((asset) => asset.name === name);
-            if (existing) {
-              await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: existing.id });
-              core.info(`Replacing existing ${name} (asset ${existing.id})`);
-            }
-
-            // Read as a utf8 string: octokit JSON.stringify's plain objects and
-            // arrays only, so a string body is sent verbatim. uploadReleaseAsset
-            // carries baseUrl: uploads.github.com in its own endpoint defaults, so
-            // it lands on the upload host without any override here.
-            const data = fs.readFileSync(name, 'utf8');
-            const { data: asset } = await github.rest.repos.uploadReleaseAsset({
-              owner,
-              repo,
-              release_id,
-              name,
-              data,
-              headers: {
-                'content-type': 'application/json',
-                'content-length': Buffer.byteLength(data),
-              },
-            });
-            core.info(`Attached ${asset.name} (${asset.size} bytes) to ${process.env.RELEASE_TAG}`);
