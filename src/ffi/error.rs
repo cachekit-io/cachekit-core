@@ -58,7 +58,9 @@ impl From<EncryptionError> for CachekitError {
             EncryptionError::UnsupportedAlgorithm(_) => CachekitError::InvalidInput,
             EncryptionError::AuthenticationFailed => CachekitError::DecryptionFailed,
             EncryptionError::NonceCounterExhausted => CachekitError::CounterExhausted,
-            EncryptionError::NotImplemented(_) => CachekitError::InvalidInput,
+            EncryptionError::InvalidMasterKeyLength(_) => CachekitError::InvalidKeyLength,
+            EncryptionError::KeyringCapExceeded(_) => CachekitError::InvalidInput,
+            EncryptionError::CurrentKeyInDecryptOnlyList => CachekitError::InvalidInput,
         }
     }
 }
