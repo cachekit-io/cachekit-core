@@ -61,6 +61,10 @@ impl From<EncryptionError> for CachekitError {
             EncryptionError::InvalidMasterKeyLength(_) => CachekitError::InvalidKeyLength,
             EncryptionError::KeyringCapExceeded(_) => CachekitError::InvalidInput,
             EncryptionError::CurrentKeyInDecryptOnlyList => CachekitError::InvalidInput,
+            // Caller bugs / config errors — deliberately NOT DecryptionFailed,
+            // so fail-open callers cannot mistake them for cache misses.
+            EncryptionError::KeyringIndexOutOfRange { .. } => CachekitError::InvalidInput,
+            EncryptionError::KeyDerivation(e) => e.into(),
         }
     }
 }

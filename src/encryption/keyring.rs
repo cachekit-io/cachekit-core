@@ -119,13 +119,12 @@ impl Keyring {
     }
 
     /// Total number of keyring entries (1 current + decrypt-only keys).
-    pub fn entry_count(&self) -> usize {
+    ///
+    /// Private on purpose: bindings that need the count get it as
+    /// `encryption_fingerprints().len()`, which they must fetch for selection
+    /// anyway.
+    fn entry_count(&self) -> usize {
         1 + self.decrypt_only.len()
-    }
-
-    /// Number of decrypt-only keys.
-    pub fn decrypt_only_count(&self) -> usize {
-        self.decrypt_only.len()
     }
 
     /// Keyring entries in attempt order: current key first.
@@ -165,9 +164,14 @@ impl Keyring {
     ///
     /// # Errors
     ///
-    /// [`EncryptionError::DecryptionFailed`] for an out-of-range index or a
-    /// key-derivation failure; [`EncryptionError::AuthenticationFailed`] (or a
-    /// structural ciphertext error) from the underlying AES-GCM decrypt.
+    /// - [`EncryptionError::KeyringIndexOutOfRange`] for an out-of-range index
+    ///   — a caller bug, deliberately distinct from any crypto failure.
+    /// - [`EncryptionError::KeyDerivation`] if per-tenant key derivation fails
+    ///   (e.g. an invalid `tenant_id`) — a configuration error, not a miss.
+    /// - [`EncryptionError::AuthenticationFailed`] when this entry's key does
+    ///   not authenticate the ciphertext, or a structural ciphertext error
+    ///   (e.g. [`EncryptionError::InvalidCiphertext`]) from the underlying
+    ///   AES-GCM decrypt.
     pub fn decrypt_at(
         &self,
         index: usize,
@@ -176,12 +180,13 @@ impl Keyring {
         tenant_id: &str,
         aad: &[u8],
     ) -> Result<Vec<u8>, EncryptionError> {
-        let master = self.entries().nth(index).ok_or_else(|| {
-            EncryptionError::DecryptionFailed(format!(
-                "keyring entry index {index} out of range (entry count {})",
-                self.entry_count()
-            ))
-        })?;
+        let master = self
+            .entries()
+            .nth(index)
+            .ok_or(EncryptionError::KeyringIndexOutOfRange {
+                index,
+                count: self.entry_count(),
+            })?;
         let mut key = derive_encryption_key(master, tenant_id)?;
         let result = encryptor.decrypt_aes_gcm(ciphertext, &key, aad);
         key.zeroize();
@@ -198,9 +203,12 @@ impl Keyring {
     ///
     /// # Errors
     ///
-    /// [`EncryptionError::AuthenticationFailed`] when no keyring key decrypts
-    /// the ciphertext — the caller's existing fail-open / fail-closed policy
-    /// applies, no new failure mode.
+    /// - [`EncryptionError::AuthenticationFailed`] when no keyring key decrypts
+    ///   the ciphertext — the caller's existing fail-open / fail-closed policy
+    ///   applies, no new failure mode.
+    /// - Terminal (never retried across keys): structural ciphertext errors
+    ///   ([`EncryptionError::InvalidCiphertext`]) and configuration errors
+    ///   ([`EncryptionError::KeyDerivation`], e.g. an invalid `tenant_id`).
     pub fn decrypt(
         &self,
         encryptor: &ZeroKnowledgeEncryptor,
@@ -225,8 +233,14 @@ impl Keyring {
 /// HKDF construction, same salt/domain — so keyring-derived keys and
 /// fingerprints agree byte-for-byte with single-key operation.
 fn derive_encryption_key(master: &[u8], tenant_id: &str) -> Result<[u8; 32], EncryptionError> {
-    derive_domain_key(master, KeyDomain::Encryption.as_str(), tenant_id.as_bytes())
-        .map_err(|e| EncryptionError::DecryptionFailed(format!("key derivation failed: {e}")))
+    // Surfaces as EncryptionError::KeyDerivation — a configuration error kept
+    // deliberately distinct from AuthenticationFailed/DecryptionFailed so a bad
+    // tenant_id cannot masquerade as a cache miss under fail-open policies.
+    Ok(derive_domain_key(
+        master,
+        KeyDomain::Encryption.as_str(),
+        tenant_id.as_bytes(),
+    )?)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -367,7 +381,23 @@ mod tests {
         let ciphertext = encrypt_under(&K2, b"x");
 
         let result = keyring.decrypt_at(1, &encryptor, &ciphertext, TENANT, AAD);
-        assert!(matches!(result, Err(EncryptionError::DecryptionFailed(_))));
+        assert!(matches!(
+            result,
+            Err(EncryptionError::KeyringIndexOutOfRange { index: 1, count: 1 })
+        ));
+    }
+
+    #[test]
+    fn test_bad_tenant_id_is_config_error_not_miss() {
+        // A derivation failure (empty tenant_id) must surface as KeyDerivation,
+        // never as AuthenticationFailed — a bad config cannot masquerade as a
+        // cache miss under a fail-open SDK policy.
+        let ciphertext = encrypt_under(&K2, b"x");
+        let encryptor = ZeroKnowledgeEncryptor::new().unwrap();
+        let keyring = Keyring::new(&K2, &[&K1]).unwrap();
+
+        let result = keyring.decrypt(&encryptor, &ciphertext, "", AAD);
+        assert!(matches!(result, Err(EncryptionError::KeyDerivation(_))));
     }
 
     #[test]
@@ -388,16 +418,5 @@ mod tests {
         // Compile-time proof the drop guarantee exists at all.
         fn assert_zeroize_on_drop<T: ZeroizeOnDrop>() {}
         assert_zeroize_on_drop::<Keyring>();
-    }
-
-    #[test]
-    fn test_entry_counts() {
-        let keyring = Keyring::new(&K2, &[&K1]).unwrap();
-        assert_eq!(keyring.entry_count(), 2);
-        assert_eq!(keyring.decrypt_only_count(), 1);
-
-        let solo = Keyring::new(&K2, &[]).unwrap();
-        assert_eq!(solo.entry_count(), 1);
-        assert_eq!(solo.decrypt_only_count(), 0);
     }
 }

@@ -167,6 +167,12 @@ pub enum EncryptionError {
         "Current key must not appear in the decrypt-only list (forward-only rotation invariant)"
     )]
     CurrentKeyInDecryptOnlyList,
+
+    #[error("Keyring entry index {index} out of range (entry count {count})")]
+    KeyringIndexOutOfRange { index: usize, count: usize },
+
+    #[error("Key derivation failed: {0}")]
+    KeyDerivation(#[from] super::key_derivation::KeyDerivationError),
 }
 
 /// Zero-knowledge encryptor using AES-256-GCM with hardware acceleration detection
