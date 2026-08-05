@@ -21,9 +21,8 @@ on:
   # — every release since v0.1.0 has zero assets (LAB-983). The SBOM is generated
   # and attested in release.yml via actions/attest-sbom; that attestation is the
   # verifiable artifact, and a plain release asset would be an unsigned weaker
-  # copy of it. Re-adding this trigger without a job gated on it only produces an
-  # empty run per release; re-adding the asset upload needs the release created as
-  # a draft, assets attached, then published.
+  # copy of it. Re-adding this alone only makes empty runs; the asset upload would
+  # additionally need the release created as a draft, attached, then published.
   # On-demand: lets the schedule-only jobs (e.g. Kani) be run and verified
   # without waiting for the weekly cron. A plain dispatch does NOT trigger the
   # heavy deep-fuzz matrix — set run_deep_fuzz=true to opt into that.
