@@ -169,9 +169,8 @@ impl Keyring {
     /// - [`EncryptionError::KeyDerivation`] if per-tenant key derivation fails
     ///   (e.g. an invalid `tenant_id`) — a configuration error, not a miss.
     /// - [`EncryptionError::AuthenticationFailed`] when this entry's key does
-    ///   not authenticate the ciphertext, or a structural ciphertext error
-    ///   (e.g. [`EncryptionError::InvalidCiphertext`]) from the underlying
-    ///   AES-GCM decrypt.
+    ///   not authenticate the ciphertext.
+    /// - [`EncryptionError::InvalidCiphertext`] for malformed ciphertext.
     pub fn decrypt_at(
         &self,
         index: usize,
