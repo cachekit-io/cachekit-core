@@ -5,102 +5,326 @@ on:
     - cron: '23 3 * * 1'  # Weekly Monday 3:23am UTC
   workflow_dispatch:
 
+# Never cancel: a dispatch landing during the Monday cron would otherwise leave two
+# runs racing to file the same failure issue.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   verify:
     name: Verify Latest Release Attestations
-    runs-on: cachekit
+    # ubuntu-latest, NOT the self-hosted `cachekit` runner: the ARC pods have no `gh`
+    # binary (LAB-899) and unreliable Sigstore (Fulcio/Rekor) egress — the same reason
+    # release.yml's publish job is hosted. `gh attestation verify` is the only tool
+    # that does Sigstore bundle verification, so moving this job back to ARC silently
+    # re-breaks it (LAB-984: every `gh` call exited 127 into `|| echo ""`, and the job
+    # reported green while verifying nothing for weeks).
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       issues: write
+    env:
+      # crates.io answers 403 to a generic user agent (verified — plain `curl/8.x`
+      # gets 403). One descriptive UA, shared by every crates.io call in this job.
+      CRATES_IO_UA: cachekit-core-attestation-check (+https://github.com/${{ github.repository }})
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Get latest release tag
+      # github-script, not `gh`, for API calls — the convention release.yml documents
+      # on its "Assign release PR" step. `gh` is confined to Sigstore verification below.
+      - name: Resolve latest release
         id: release
-        run: |
-          TAG=$(gh release list --repo ${{ github.repository }} --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "")
-          if [ -z "$TAG" ]; then
-            echo "No releases found, skipping"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            let tagName;
+            try {
+              const { data } = await github.rest.repos.getLatestRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+              });
+              tagName = data.tag_name;
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+              // A 404 here does NOT mean "no releases". getLatestRelease returns the
+              // latest non-draft, non-prerelease release, so a repo whose releases are
+              // all drafts or prereleases 404s too. Skipping on a bare 404 would be a
+              // silent green — the exact fail-open this file was rewritten to remove.
+              // Only a genuinely empty release list may skip.
+              const { data: releases } = await github.rest.repos.listReleases({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 1,
+              });
+              if (releases.length > 0) {
+                core.setFailed(
+                  'No published full release, but the repository has draft/prerelease releases. ' +
+                  'Nothing verifiable — refusing to report green.',
+                );
+                return;
+              }
+              core.info('Repository has no releases at all — nothing to verify.');
+              core.setOutput('skip', 'true');
+              return;
+            }
+            // release-please tags this crate `<package-name>-v<semver>`
+            // (release-please-config.json: package-name cachekit-core, release-type rust).
+            // The character classes are deliberately tight: these values build a URL and
+            // a file path, so `/` and shell metacharacters must not survive parsing.
+            const match = /^(?<crate>[A-Za-z0-9_-]+)-v(?<version>\d+\.\d+\.\d+[0-9A-Za-z.+-]*)$/
+              .exec(tagName);
+            if (!match) {
+              core.setFailed(`Cannot derive crate name and version from release tag '${tagName}'`);
+              return;
+            }
+            core.setOutput('skip', 'false');
+            core.setOutput('tag', tagName);
+            core.setOutput('crate', match.groups.crate);
+            core.setOutput('version', match.groups.version);
+            core.info(`Latest release ${tagName} -> crate ${match.groups.crate} version ${match.groups.version}`);
 
-      - name: Download release asset
+      # The attestation subject is the `.crate` release.yml hands to
+      # attest-build-provenance / attest-sbom (`target/package/*.crate`) — the identical
+      # file `cargo publish` uploads. crates.io holds that byte-identical copy, and this
+      # repo publishes no GitHub release assets, so crates.io is the artifact source.
+      #
+      # `curl -f` with no `|| true`: a tagged release whose crate never reached crates.io
+      # is a real supply-chain gap, so it must fail the job rather than degrade to a skip.
+      - name: Download attested crate from crates.io
         if: steps.release.outputs.skip != 'true'
-        id: asset
-        run: |
-          TAG="${{ steps.release.outputs.tag }}"
-          mkdir -p /tmp/release-assets
-          gh release download "$TAG" --repo ${{ github.repository }} \
-            --pattern "*.crate" --dir /tmp/release-assets 2>/dev/null || true
-          CRATE=$(find /tmp/release-assets -name '*.crate' -print -quit)
-          if [ -z "$CRATE" ]; then
-            echo "::warning::No .crate asset found for $TAG, checking repo-level attestations"
-            echo "has_asset=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "asset=$CRATE" >> "$GITHUB_OUTPUT"
-            echo "has_asset=true" >> "$GITHUB_OUTPUT"
-          fi
+        id: artifact
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CRATE: ${{ steps.release.outputs.crate }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          mkdir -p release-assets
+          ARTIFACT="release-assets/${CRATE}-${VERSION}.crate"
+          # -A is mandatory, not politeness — see CRATES_IO_UA at the job level.
+          curl -fsSL --retry 3 --retry-connrefused \
+            -A "$CRATES_IO_UA" \
+            "https://crates.io/api/v1/crates/${CRATE}/${VERSION}/download" \
+            -o "$ARTIFACT"
+          test -s "$ARTIFACT"
+          echo "path=$ARTIFACT" >> "$GITHUB_OUTPUT"
+          echo "Downloaded $ARTIFACT ($(wc -c < "$ARTIFACT") bytes, sha256 $(sha256sum "$ARTIFACT" | cut -d' ' -f1))"
 
+      # Identity pinning takes BOTH flags. `--signer-workflow` is an unanchored prefix
+      # match on the certificate SAN (verified: a truncated `.../release` with no `.yml`
+      # also passes), so on its own it pins neither the ref nor the full filename — an
+      # actor with push access could mint provenance from a modified release.yml on any
+      # branch and this check would bless it. `--source-ref` is what asserts "built by
+      # the release pipeline on main", which is the only claim worth making here.
+      #
+      # `--format json --jq` is the evidence trail, not decoration: verified by
+      # redirecting output, a passing `gh attestation verify` prints NOTHING and exits 0,
+      # which in a log is indistinguishable from the skip this job used to do. The jq
+      # line names the digest that was actually verified.
       - name: Verify provenance attestation
         if: steps.release.outputs.skip != 'true'
-        run: |
-          TAG="${{ steps.release.outputs.tag }}"
-          echo "Verifying provenance attestation for $TAG"
-          if [ "${{ steps.asset.outputs.has_asset }}" = "true" ]; then
-            gh attestation verify "${{ steps.asset.outputs.asset }}" \
-              --repo ${{ github.repository }} \
-              --predicate-type https://slsa.dev/provenance/v1
-          else
-            # No downloadable .crate asset — verify attestations exist for the repo
-            PROVENANCE=$(gh attestation list --repo ${{ github.repository }} \
-              --predicate-type https://slsa.dev/provenance/v1 --limit 1 --jq 'length')
-            if [ "$PROVENANCE" = "0" ] || [ -z "$PROVENANCE" ]; then
-              echo "::error::No provenance attestation found"
-              exit 1
-            fi
-          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACT: ${{ steps.artifact.outputs.path }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          echo "Verifying SLSA provenance for $TAG"
+          gh attestation verify "$ARTIFACT" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main \
+            --predicate-type https://slsa.dev/provenance/v1 \
+            --format json \
+            --jq '.[] | "verified provenance: digest=\(.verificationResult.statement.subject[0].digest.sha256) predicate=\(.verificationResult.statement.predicateType) signer=\(.verificationResult.signature.certificate.buildSignerURI)"'
 
+      # Predicate type is the UNVERSIONED `https://cyclonedx.org/bom` — that is what
+      # actions/attest-sbom emits for the CycloneDX 1.6 document release.yml generates.
+      # Do not "fix" this to `.../bom/v1.6`: nothing matches that, nor SPDX. There is no
+      # second SBOM predicate to fall back to, so there is no fallback — verified or red.
       - name: Verify SBOM attestation
         if: steps.release.outputs.skip != 'true'
-        run: |
-          TAG="${{ steps.release.outputs.tag }}"
-          echo "Verifying SBOM attestation for $TAG"
-          if [ "${{ steps.asset.outputs.has_asset }}" = "true" ]; then
-            gh attestation verify "${{ steps.asset.outputs.asset }}" \
-              --repo ${{ github.repository }} \
-              --predicate-type https://spdx.dev/Document/v2.3 || \
-            gh attestation verify "${{ steps.asset.outputs.asset }}" \
-              --repo ${{ github.repository }} \
-              --predicate-type https://cyclonedx.org/bom/v1.6
-          else
-            SBOM=$(gh attestation list --repo ${{ github.repository }} \
-              --predicate-type https://cyclonedx.org/bom/v1.6 --limit 1 --jq 'length' 2>/dev/null || echo "0")
-            SPDX=$(gh attestation list --repo ${{ github.repository }} \
-              --predicate-type https://spdx.dev/Document/v2.3 --limit 1 --jq 'length' 2>/dev/null || echo "0")
-            if [ "$SBOM" = "0" ] && [ "$SPDX" = "0" ]; then
-              echo "::error::No SBOM attestation found (checked CycloneDX and SPDX)"
-              exit 1
-            fi
-          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACT: ${{ steps.artifact.outputs.path }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          echo "Verifying CycloneDX SBOM attestation for $TAG"
+          gh attestation verify "$ARTIFACT" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main \
+            --predicate-type https://cyclonedx.org/bom \
+            --format json \
+            --jq '.[] | "verified SBOM: digest=\(.verificationResult.statement.subject[0].digest.sha256) predicate=\(.verificationResult.statement.predicateType) signer=\(.verificationResult.signature.certificate.buildSignerURI)"'
 
+      # Verification above proves the latest GitHub release's crate is authentic — but
+      # says nothing about whether that is the version `cargo add` actually resolves.
+      # A hand-published version, a prerelease-skipped release, or a yank all leave
+      # the steps above green while users install something this job never checked
+      # (LAB-1036). max_stable_version is what cargo resolves by default, so
+      # verified != max_stable is a false green and must go red — unconditionally.
+      #
+      # Deliberately NO tolerance for the release→publish window (release.yml tags
+      # before `cargo publish`): that window cannot reach this comparison. While it
+      # is open the crate is not on crates.io yet, so the job has already gone red at
+      # the download step above. And an "is release.yml in flight?" tolerance here
+      # would itself be a fail-open — release.yml runs on every push to main, so an
+      # unrelated queued run would green-light a dead publish or a yanked version
+      # (expert panel, LAB-1036). A crate that downloaded successfully but mismatches
+      # max_stable is always a real defect: yanked, hand-published, prerelease-
+      # skipped, or a publish that died after the tag.
+      - name: Check crates.io serves the verified version
+        if: steps.release.outputs.skip != 'true'
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          CRATE: ${{ steps.release.outputs.crate }}
+          VERSION: ${{ steps.release.outputs.version }}
+        with:
+          script: |
+            const crate = process.env.CRATE;
+            const version = process.env.VERSION;
+            // try/catch so a network-level failure (DNS, connection reset) or a
+            // non-JSON body fails with a descriptive message instead of a raw
+            // unhandled-rejection trace. Red either way — diagnostics, not a swallow.
+            let data;
+            try {
+              const res = await fetch(`https://crates.io/api/v1/crates/${crate}`, {
+                headers: { 'User-Agent': process.env.CRATES_IO_UA },
+              });
+              if (!res.ok) {
+                core.setFailed(`crates.io API answered ${res.status} for crate '${crate}' — cannot confirm what users install.`);
+                return;
+              }
+              data = await res.json();
+            } catch (error) {
+              core.setFailed(`crates.io API request for '${crate}' failed: ${error.message} — cannot confirm what users install.`);
+              return;
+            }
+
+            // Fail closed if the response shape shifts under us: an error-shaped 200
+            // without a `crate` object, or a missing `versions` array, must fail with
+            // a message, not a TypeError — `|| []`/optional chaining here would
+            // silently degrade the checks to no-ops, `|| echo ""` in JS clothing.
+            if (!data.crate) {
+              core.setFailed(`crates.io response for '${crate}' has no crate object — cannot confirm what users install.`);
+              return;
+            }
+            if (!Array.isArray(data.versions)) {
+              core.setFailed(`crates.io response for '${crate}' has no versions array — cannot check yank status.`);
+              return;
+            }
+            // The explicit yank branch is not redundant with the mismatch below: it
+            // names the actual cause. Yanked crates stay downloadable, so the download
+            // step above cannot catch this case.
+            const entry = data.versions.find((v) => v.num === version);
+            if (entry && entry.yanked) {
+              core.setFailed(
+                `Verified version ${version} is YANKED on crates.io — this check just green-lit ` +
+                'a version users are steered away from, so the latest GitHub release no longer matches a servable crate.',
+              );
+              return;
+            }
+
+            const maxStable = data.crate.max_stable_version;
+            if (!maxStable) {
+              core.setFailed(`crates.io reports no stable version of '${crate}' at all (every version yanked or prerelease).`);
+              return;
+            }
+            if (maxStable !== version) {
+              core.setFailed(
+                `crates.io max_stable_version is ${maxStable} but this check verified ${version}. ` +
+                `Users running 'cargo add ${crate}' get ${maxStable}, a version this job never verified — a false green (LAB-1036).`,
+              );
+              return;
+            }
+            core.info(`crates.io max_stable_version ${maxStable} == verified ${version} — the verified crate is what 'cargo add ${crate}' installs.`);
+
+      # GitHub silently disables `schedule:` triggers in public repos after ~60 days
+      # without repository activity — after which this job's failure mode becomes
+      # "not running at all", indistinguishable from passing quietly (LAB-1036). Fail
+      # while the schedule is still alive so the auto-disable is preceded by a red run
+      # and a tracking issue instead of a quiet death. The threshold is 43 days: the
+      # cron is weekly AND GitHub documents that scheduled runs can be delayed or
+      # dropped under load, so the margin must fit TWO weekly attempts, not one —
+      # 60 − 43 = 17 days ≥ two cron periods, so even one dropped Monday still leaves
+      # a red run before the disable. (A margin under 7 days could be jumped over
+      # entirely: green at day 54, disabled before the next run at day 61.) No `if:`
+      # on the release skip output: liveness is independent of whether releases exist.
+      - name: Assert schedule liveness
+        id: liveness
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const { data: repo } = await github.rest.repos.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const staleDays = (Date.now() - Date.parse(repo.pushed_at)) / 86400000;
+            // `!(x <= 43)`, not `x > 43`: Date.parse of a malformed pushed_at is NaN,
+            // and NaN must fail closed, not log "not at risk" and pass.
+            if (!(staleDays <= 43)) {
+              core.setFailed(
+                `Last repository push was ${staleDays.toFixed(1)} days ago; GitHub auto-disables this schedule at ` +
+                '~60 days of inactivity, after which the check stops running with no signal at all. ' +
+                'Push activity (or re-enable the workflow) before it goes dark.',
+              );
+              return;
+            }
+            core.info(`Last push ${staleDays.toFixed(1)} days ago — schedule is not at risk of the 60-day auto-disable.`);
+
+      # Weekly job: without dedupe one unfixed break files a fresh issue every Monday,
+      # and a muted `bug` label is itself a fail-open alert channel. The marker is
+      # per-failure-class: per-tag for verification breaks (a NEW tag's failure still
+      # alerts instead of hiding behind the open issue for the old one), and a
+      # dedicated `liveness` marker for staleness — the two classes are mutually
+      # exclusive in one run (liveness only executes after verification succeeded),
+      # and a shared marker would let an open staleness issue swallow a later real
+      # attestation break for the same tag. Matched on body, not title or label, so a
+      # human retitling or relabelling the issue cannot break dedupe. The 100-issue
+      # page is ample here; worst case is a duplicate issue, never a missed alert.
       - name: Open issue on failure
         if: failure()
-        run: |
-          gh issue create \
-            --repo ${{ github.repository }} \
-            --title "Attestation verification failed for ${{ steps.release.outputs.tag }}" \
-            --body "Weekly attestation health check failed. Verify that the release workflow produced valid provenance and SBOM attestations." \
-            --label "bug"
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+          LIVENESS_OUTCOME: ${{ steps.liveness.outcome }}
+        with:
+          script: |
+            const tag = process.env.TAG || 'unresolved-release';
+            const liveness = process.env.LIVENESS_OUTCOME === 'failure';
+            const marker = liveness ? '<!-- attestation-check:liveness -->' : `<!-- attestation-check:${tag} -->`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const existing = open.find((i) => !i.pull_request && (i.body || '').includes(marker));
+            if (existing) {
+              core.info(`Issue #${existing.number} already tracks ${tag}; not filing a duplicate. Run: ${runUrl}`);
+              return;
+            }
+            const { data: created } = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: liveness
+                ? 'Attestation health check schedule is at risk of auto-disable'
+                : `Attestation verification failed for ${tag}`,
+              body: [
+                marker,
+                liveness
+                  ? 'The repository has had no push activity for >43 days; GitHub auto-disables this workflow\'s `schedule:` trigger at ~60 days, after which the check silently stops running.'
+                  : `The weekly attestation health check failed for \`${tag}\`.`,
+                '',
+                `Run: ${runUrl}`,
+                '',
+                'Check that release.yml produced valid SLSA provenance and CycloneDX SBOM',
+                'attestations for the published `.crate`, that it ran on `main`, that the',
+                'crate actually reached crates.io for this tag, that crates.io\'s',
+                '`max_stable_version` still matches this release (nothing hand-published,',
+                'yanked, or prerelease-skipped), and that the repository has push activity',
+                'within the last 43 days (GitHub auto-disables the schedule at ~60).',
+              ].join('\n'),
+              labels: ['bug'],
+            });
+            core.info(`Opened tracking issue #${created.number}`);
