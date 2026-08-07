@@ -17,7 +17,7 @@
 //!
 //! Fixture provenance: vendored from
 //! <https://github.com/cachekit-io/protocol> `test-vectors/wire-format.json`
-//! at commit `6863495d3565ccd9f28827baa1351782575e770d`, integrity-pinned by
+//! at commit `f601f01cb4c6837354987c09c801d68beb30f7ab`, integrity-pinned by
 //! sha256 below. To update: copy the file from a newer protocol ref, update
 //! `FIXTURE_SHA256` and this comment's commit hash together.
 
@@ -31,7 +31,7 @@ use sha2::{Digest, Sha256};
 const FIXTURE: &str = include_str!("vectors/wire-format.json");
 
 /// sha256 of the vendored fixture — must match the protocol repo's copy.
-const FIXTURE_SHA256: &str = "d6184a945d8cb22491b5c937414fe4d01e682d084ccec9dae9526d0ffba650cb";
+const FIXTURE_SHA256: &str = "71b1facb3a031a3e10093d398335ec6240c721f073cd858f56ff36d4458889f1";
 
 #[derive(serde::Deserialize)]
 struct WireFormatFixture {
@@ -87,7 +87,7 @@ fn fixture_integrity_pinned_sha256() {
 #[test]
 fn fixture_is_current_version_with_vectors() {
     let fixture = load_fixture();
-    assert_eq!(fixture.version, "1.1.0");
+    assert_eq!(fixture.version, "1.1.1");
     let legacy = fixture.vectors.iter().filter(|v| v.is_legacy()).count();
     let bin = fixture.vectors.len() - legacy;
     assert!(
