@@ -2,7 +2,7 @@
   "checksum": "xxHash3-64, 8 bytes big-endian, computed on uncompressed input",
   "compression": "LZ4 block format (NOT frame)",
   "envelope_format": "MessagePack positional array (rmp_serde::to_vec): [compressed_data, checksum, original_size, format]. Vectors without an 'envelope_encoding' field use the legacy array-of-integers encoding for compressed_data and are retained forever as legacy-read proof; their '*_bin' twins use msgpack bin (canonical for protocol 1.1+ writers). checksum always encodes as an array of 8 integers. Normative rules: spec/wire-format.md, 'Byte Layout' / 'Encoding compatibility'.",
-  "generator": "legacy vectors: cachekit-core v0.2.0 (unchanged since); *_bin vectors: tools/wire-format-reference.py generate - deterministic re-encode of the legacy fields, byte-verified against rmp-serde 1.3.1 + serde_bytes 0.11.19 output (LAB-783)",
+  "generator": "six original legacy vectors: cachekit-core v0.2.0; width_boundary_bin16 legacy vector: cachekit-core v0.5.0 real writer; *_bin vectors: tools/wire-format-reference.py generate - deterministic re-encode of the legacy fields, byte-verified against rmp-serde 1.3.1 + serde_bytes 0.11.19 output (LAB-783)",
   "limits": {
     "max_compressed_size": 536870912,
     "max_compression_ratio": 1000,
@@ -64,7 +64,7 @@
       "name": "single_byte"
     },
     {
-      "description": "300-byte deterministic xorshift64* incompressible payload (real writer bin16 width boundary)",
+      "description": "300-byte deterministic xorshift64* incompressible payload (seed 0x9e3779b97f4a7c15, multiplier 0x2545f4914f6cdd1d; little-endian u64 output truncated to 300 bytes; real writer bin16 width boundary)",
       "envelope_hex": "94dc012fccf0ccff1ecc9925cc9acc8ccca2ccd103745ecccbcc8eccab39ccf370ccdd1ecca10e523348cc977d244dcc80cca41841cc8f54ccbc38cc97142004ccd6ccfbccb5ccf12e5acc91cc9c5528733454ccc2ccc652cce2ccfbcc82cccccce2ccebccff51ccd6ccadccbfcca8cc8d011a0627cca416cc9fcca54a5ecc9a66ccdf61cc82cce87571ccbd25ccf7571a68cc8e1221ccd257cca97230cc906acca41ccca1cce6ccf76dcca7cce1ccfc0ecc9ecc83cc96324bcc8720ccef20cce3ccd6ccd77a713bcc951eccd8ccfa38ccfc6bccf8ccf6ccca4177102dcca9211f26ccf3ccba2c20cca2ccf0ccd1ccaaccd5095b302838192b5922226acca7027c3c13cce03268cc90ccd1ccaaccecccf2ccce1c442445cc916a26cc8c72cce4cced381a3b69cc9accc8ccb0cca9cc935614ccd4ccdccc83ccd6ccde44ccb1462747ccf7ccf8711fcc9a27234fcca6cc9c3c5f5ccc8319ccc6ccb239cc9d2dccde6a290831cc86cca46b3accb03b1ecca8ccdbccb4cc98ccdecce5ccc1cc97ccbe39ccfdccb8ccf1cccb324b542bcca01a6131ccbcccd67540273accc90fccd9164941ccd42669404a5dcc85ccefccc6cc9f2f2fccde1c78ccd2ccef404accf205ccefccd96f98cc8ecccfccde50524bcc886dcd012ca76d73677061636b",
       "envelope_size": 478,
       "format": "msgpack",
