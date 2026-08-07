@@ -698,18 +698,16 @@ mod tests {
 
     #[test]
     fn test_tenant_keyring_derived_keys_zeroize() {
-        // AC: the derived ring is ZeroizeOnDrop. Verify the explicit zeroize()
-        // covers every derived key (reading freed memory after a real drop
-        // would be UB), and prove the drop guarantee exists at compile time.
+        // AC: the derived ring is ZeroizeOnDrop. Vec::zeroize wipes every
+        // element then clears the vec, so the observable post-condition of the
+        // explicit zeroize() covering the field is an emptied ring; the
+        // compile-time bound below proves the drop guarantee itself.
         let mut ring = Keyring::new(&K2, &[&K1])
             .unwrap()
             .for_tenant(TENANT)
             .unwrap();
         ring.zeroize();
-        assert!(ring
-            .keys
-            .iter()
-            .all(|key| key.iter().all(|&b| b == 0) || key.is_empty()));
+        assert!(ring.keys.is_empty());
 
         fn assert_zeroize_on_drop<T: ZeroizeOnDrop>() {}
         assert_zeroize_on_drop::<TenantKeyring>();
