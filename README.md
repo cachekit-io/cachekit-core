@@ -215,7 +215,7 @@ gcc -o example example.c -L target/release -lcachekit_core -I include
 │  Each tenant key provides:                                       │
 │  • Cryptographic isolation (compromise one ≠ compromise all)    │
 │  • Domain separation (cache vs auth vs sessions)                │
-│  • Forward secrecy with key rotation                            │
+│  • Master-key rotation via decrypt-only keyring (grace window)  │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -263,7 +263,7 @@ cachekit-core/
 │   │   ├── mod.rs          # Module exports
 │   │   ├── core.rs         # AES-256-GCM implementation
 │   │   ├── key_derivation.rs # HKDF-SHA256 + tenant isolation
-│   │   └── key_rotation.rs # Graceful key rotation support
+│   │   └── keyring.rs      # Multi-key decrypt keyring (master-key rotation)
 │   │
 │   └── ffi/                # (feature = "ffi")
 │       ├── mod.rs          # FFI exports

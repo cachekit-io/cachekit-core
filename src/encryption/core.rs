@@ -154,8 +154,25 @@ pub enum EncryptionError {
     #[error("Nonce counter exhausted - key rotation required")]
     NonceCounterExhausted,
 
-    #[error("Key rotation not yet implemented")]
-    NotImplemented(String),
+    #[error("Invalid master key length: expected at least 16 bytes, got {0}")]
+    InvalidMasterKeyLength(usize),
+
+    #[error(
+        "Keyring cap exceeded: at most {max} decrypt-only keys allowed, got {0}",
+        max = super::keyring::MAX_DECRYPT_ONLY_KEYS
+    )]
+    KeyringCapExceeded(usize),
+
+    #[error(
+        "Current key must not appear in the decrypt-only list (forward-only rotation invariant)"
+    )]
+    CurrentKeyInDecryptOnlyList,
+
+    #[error("Keyring entry index {index} out of range (entry count {count})")]
+    KeyringIndexOutOfRange { index: usize, count: usize },
+
+    #[error("Key derivation failed: {0}")]
+    KeyDerivation(#[from] super::key_derivation::KeyDerivationError),
 }
 
 /// Zero-knowledge encryptor using AES-256-GCM with hardware acceleration detection
@@ -478,22 +495,6 @@ impl ZeroKnowledgeEncryptor {
             .lock()
             .map(|metrics| metrics.clone())
             .unwrap_or_else(|_| OperationMetrics::new())
-    }
-
-    /// Key rotation API (stub for future implementation)
-    ///
-    /// This method will support gradual key migration to allow rotating encryption keys
-    /// without downtime. Future implementation will:
-    /// - Support dual-key mode (read from both old and new key, write with new key only)
-    /// - Add version byte to ciphertext header indicating which key was used
-    /// - Implement gradual migration strategy
-    ///
-    /// Currently returns NotImplemented error.
-    pub fn rotate_key(&mut self, _new_master_key: &[u8]) -> Result<(), EncryptionError> {
-        Err(EncryptionError::NotImplemented(
-            "Key rotation will be implemented in a future release with gradual migration support"
-                .into(),
-        ))
     }
 
     /// Encrypt data using AES-256-GCM with authenticated additional data (wasm32)

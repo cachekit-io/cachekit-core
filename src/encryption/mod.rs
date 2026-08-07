@@ -12,15 +12,12 @@
 
 pub mod core;
 pub mod key_derivation;
-pub mod key_rotation;
+pub mod keyring;
 
 // Re-exports for convenience
 pub use core::{EncryptionError, ZeroKnowledgeEncryptor};
 pub use key_derivation::{derive_domain_key, KeyDerivationError};
-pub use key_rotation::{KeyRotationState, RotationAwareHeader};
-
-// RotationAwareHeader is the canonical encryption header
-pub type EncryptionHeader = RotationAwareHeader;
+pub use keyring::{Keyring, MAX_DECRYPT_ONLY_KEYS};
 
 /// Domain contexts for key derivation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,32 +43,6 @@ impl KeyDomain {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_encryption_header_roundtrip() {
-        // RotationAwareHeader (now canonical EncryptionHeader) with version 0 for non-rotated
-        let header = RotationAwareHeader::new([0x12; 16], [0x34; 8], *b"ench", 0);
-
-        let bytes = header.to_bytes();
-        let decoded = RotationAwareHeader::from_bytes(&bytes).unwrap();
-
-        assert_eq!(decoded.version, 1);
-        assert_eq!(decoded.key_fingerprint, [0x12; 16]);
-        assert_eq!(decoded.domain, *b"ench");
-        assert_eq!(decoded.key_version, 0); // Non-rotated data
-                                            // Verify algorithm is always AES-256-GCM (byte value 0)
-        assert_eq!(bytes[1], 0);
-    }
-
-    #[test]
-    fn test_unsupported_algorithm_rejected() {
-        let mut bytes = [0u8; RotationAwareHeader::SIZE];
-        bytes[0] = 1; // version
-        bytes[1] = 99; // unsupported algorithm
-
-        let result = RotationAwareHeader::from_bytes(&bytes);
-        assert!(result.is_err());
-    }
 
     #[test]
     fn test_domain_strings() {

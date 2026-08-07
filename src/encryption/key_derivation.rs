@@ -160,7 +160,7 @@ pub fn derive_tenant_keys(
 // Allow unused_assignments: Zeroize derive macro generates assignment code for #[zeroize(skip)]
 // fields that triggers false positive in Rust 1.92+. The tenant_id field IS read in tests/fuzz.
 #[allow(unused_assignments)]
-#[derive(Debug, Zeroize, ZeroizeOnDrop)]
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct TenantKeys {
     pub encryption_key: [u8; 32],
     pub authentication_key: [u8; 32],
@@ -168,6 +168,18 @@ pub struct TenantKeys {
     #[zeroize(skip)]
     #[allow(unused_assignments)] // False positive: field IS read, Zeroize derive triggers lint
     pub tenant_id: String,
+}
+
+// Manual Debug: key material must never reach logs via `{:?}` (CWE-215).
+// Only the tenant id and the encryption-key fingerprint are printed.
+impl std::fmt::Debug for TenantKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TenantKeys")
+            .field("tenant_id", &self.tenant_id)
+            .field("encryption_fingerprint", &self.encryption_fingerprint())
+            .field("keys", &"<redacted>")
+            .finish()
+    }
 }
 
 impl TenantKeys {
