@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.4.0...cachekit-core-v0.5.0) (2026-08-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* public items EncryptionHeader, KeyRotationState, RotationAwareHeader, and ZeroKnowledgeEncryptor::rotate_key() are removed (EncryptionError::NotImplemented variant included). Use Keyring for master-key rotation.
+
+### Features
+
+* replace dead key-rotation machinery with keyring decrypt helper (LAB-683) ([#67](https://github.com/cachekit-io/cachekit-core/issues/67)) ([327f993](https://github.com/cachekit-io/cachekit-core/commit/327f993877a3c409ba86dc0f76431ba4bb64d575))
+
 ## [0.4.0](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.3.0...cachekit-core-v0.4.0) (2026-07-27)
 
 
