@@ -253,18 +253,22 @@ impl Keyring {
     ///
     /// ```
     /// use cachekit_core::{derive_domain_key, Keyring, ZeroKnowledgeEncryptor};
+    /// use zeroize::Zeroize;
     ///
-    /// let k1 = [0x11u8; 32]; // retiring master key
-    /// let k2 = [0x22u8; 32]; // current master key after rotation
+    /// let mut k1 = [0x11u8; 32]; // retiring master key
+    /// let mut k2 = [0x22u8; 32]; // current master key after rotation
     /// let encryptor = ZeroKnowledgeEncryptor::new()?;
     ///
     /// // Encrypted under k1, before the rotation...
-    /// let tenant_key = derive_domain_key(&k1, "encryption", b"tenant-123")?;
+    /// let mut tenant_key = derive_domain_key(&k1, "encryption", b"tenant-123")?;
     /// let ciphertext = encryptor.encrypt_aes_gcm(b"cached value", &tenant_key, b"aad")?;
+    /// tenant_key.zeroize();
     ///
     /// // ...a keyring [current=k2, decrypt-only=[k1]] serves it from entry 1:
     /// // the retiring key is still draining, not yet safe to drop.
     /// let keyring = Keyring::new(&k2, &[&k1])?;
+    /// k1.zeroize(); // the keyring holds copies — wipe the caller-owned buffers
+    /// k2.zeroize();
     /// let (plaintext, index) = keyring.decrypt_indexed(&encryptor, &ciphertext, "tenant-123", b"aad")?;
     /// assert_eq!(plaintext, b"cached value");
     /// assert_eq!(index, 1);
