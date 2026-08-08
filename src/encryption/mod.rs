@@ -17,7 +17,7 @@ pub mod keyring;
 // Re-exports for convenience
 pub use core::{EncryptionError, ZeroKnowledgeEncryptor};
 pub use key_derivation::{derive_domain_key, KeyDerivationError};
-pub use keyring::{Keyring, MAX_DECRYPT_ONLY_KEYS};
+pub use keyring::{Keyring, TenantKeyring, MAX_DECRYPT_ONLY_KEYS};
 
 /// Domain contexts for key derivation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

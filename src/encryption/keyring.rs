@@ -15,6 +15,11 @@
 //! All master-key material held by the keyring zeroizes on drop, decrypt-only
 //! entries included, so SDK bindings can keep every keyring key behind the
 //! native boundary.
+//!
+//! For steady-state decryption, bind the keyring to its tenant with
+//! [`Keyring::for_tenant`]: per-tenant key derivation runs exactly once, at
+//! construction, and the resulting [`TenantKeyring`] decrypts with no
+//! per-attempt HKDF and no master keys left resident.
 
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -223,6 +228,152 @@ impl Keyring {
         }
         Err(EncryptionError::AuthenticationFailed)
     }
+
+    /// Bind this keyring to one tenant, deriving every per-tenant encryption
+    /// key exactly once and consuming the master keys.
+    ///
+    /// This is the steady-state decrypt surface: [`Keyring::decrypt`] re-runs
+    /// HKDF per attempt on every call, so a client that decrypts through the
+    /// keyring pays a fresh derivation on every read — L1 hits included, since
+    /// L1 stores ciphertext. `for_tenant` moves that cost to construction: the
+    /// returned [`TenantKeyring`] holds only the ≤ 1 + [`MAX_DECRYPT_ONLY_KEYS`]
+    /// derived per-tenant keys and performs **no** HKDF on decrypt.
+    ///
+    /// Consuming `self` drops the keyring, zeroizing all master-key material —
+    /// after construction only derived per-tenant keys remain resident. One
+    /// tenant per binding: build a fresh `Keyring` to bind another tenant.
+    ///
+    /// Attempt order, AAD handling, and error classes are identical to the
+    /// unbound keyring; only the timing of derivation errors moves — an invalid
+    /// `tenant_id` surfaces here as [`EncryptionError::KeyDerivation`] instead
+    /// of at first decrypt.
+    ///
+    /// # Errors
+    ///
+    /// - [`EncryptionError::KeyDerivation`] if per-tenant key derivation fails
+    ///   (e.g. an invalid `tenant_id`) — a configuration error, not a miss.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit_core::{derive_domain_key, Keyring, ZeroKnowledgeEncryptor};
+    ///
+    /// let k1 = [0x11u8; 32]; // retiring master key
+    /// let k2 = [0x22u8; 32]; // current master key after rotation
+    /// let encryptor = ZeroKnowledgeEncryptor::new()?;
+    ///
+    /// // Encrypted under k1, before the rotation...
+    /// let tenant_key = derive_domain_key(&k1, "encryption", b"tenant-123")?;
+    /// let ciphertext = encryptor.encrypt_aes_gcm(b"cached value", &tenant_key, b"aad")?;
+    ///
+    /// // ...still decrypts through the tenant-bound ring: derivation ran once,
+    /// // at for_tenant; this decrypt (and every one after) performs no HKDF.
+    /// let ring = Keyring::new(&k2, &[&k1])?.for_tenant("tenant-123")?;
+    /// let plaintext = ring.decrypt(&encryptor, &ciphertext, b"aad")?;
+    /// assert_eq!(plaintext, b"cached value");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn for_tenant(self, tenant_id: &str) -> Result<TenantKeyring, EncryptionError> {
+        let mut keys: Vec<[u8; 32]> = Vec::with_capacity(self.entry_count());
+        for master in self.entries() {
+            match derive_encryption_key(master, tenant_id) {
+                Ok(key) => keys.push(key),
+                Err(err) => {
+                    // Wipe any keys already derived before surfacing the error.
+                    keys.zeroize();
+                    return Err(err);
+                }
+            }
+        }
+        Ok(TenantKeyring { keys })
+        // `self` drops here: ZeroizeOnDrop wipes the master keys.
+    }
+}
+
+/// A keyring bound to one tenant: derived per-tenant encryption keys only.
+///
+/// Built by [`Keyring::for_tenant`]. Holds the HKDF-derived per-tenant
+/// encryption key for each keyring entry, in attempt order (current key
+/// first) — no master-key material. Decrypt semantics are byte-identical to
+/// the unbound [`Keyring`]: same attempt order, identical AAD per attempt,
+/// only [`EncryptionError::AuthenticationFailed`] advances, structural errors
+/// terminal, exhaustion = plain `AuthenticationFailed`. All derived keys
+/// zeroize on drop.
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub struct TenantKeyring {
+    /// Derived per-tenant encryption keys in attempt order (current first).
+    keys: Vec<[u8; 32]>,
+}
+
+impl TenantKeyring {
+    /// Per-entry fingerprints of the derived per-tenant encryption keys, in
+    /// attempt order (current key first).
+    ///
+    /// Byte-identical to [`Keyring::encryption_fingerprints`] for the bound
+    /// tenant — same derived keys, same fingerprint construction — but
+    /// infallible and derivation-free: the keys were derived at construction.
+    pub fn encryption_fingerprints(&self) -> Vec<[u8; 16]> {
+        self.keys.iter().map(|key| key_fingerprint(key)).collect()
+    }
+
+    /// Decrypt with a specific keyring entry (0 = current key).
+    ///
+    /// Same fingerprint-binding contract as [`Keyring::decrypt_at`]: a
+    /// fingerprint match is binding — if the matched key fails AES-GCM
+    /// authentication the failure is terminal; do not fall back.
+    ///
+    /// # Errors
+    ///
+    /// - [`EncryptionError::KeyringIndexOutOfRange`] for an out-of-range index
+    ///   — a caller bug, deliberately distinct from any crypto failure.
+    /// - [`EncryptionError::AuthenticationFailed`] when this entry's key does
+    ///   not authenticate the ciphertext.
+    /// - [`EncryptionError::InvalidCiphertext`] for malformed ciphertext.
+    pub fn decrypt_at(
+        &self,
+        index: usize,
+        encryptor: &ZeroKnowledgeEncryptor,
+        ciphertext: &[u8],
+        aad: &[u8],
+    ) -> Result<Vec<u8>, EncryptionError> {
+        let key = self
+            .keys
+            .get(index)
+            .ok_or(EncryptionError::KeyringIndexOutOfRange {
+                index,
+                count: self.keys.len(),
+            })?;
+        encryptor.decrypt_aes_gcm(ciphertext, key, aad)
+    }
+
+    /// Decrypt by sequential attempts against the derived ring: current key
+    /// first, then each decrypt-only entry in order, identical `aad` per
+    /// attempt — no HKDF anywhere on this path.
+    ///
+    /// Only an AES-GCM authentication failure advances to the next key;
+    /// structural errors are terminal immediately (they would fail identically
+    /// under every key).
+    ///
+    /// # Errors
+    ///
+    /// - [`EncryptionError::AuthenticationFailed`] when no entry decrypts the
+    ///   ciphertext.
+    /// - Terminal (never retried across keys): structural ciphertext errors
+    ///   ([`EncryptionError::InvalidCiphertext`]).
+    pub fn decrypt(
+        &self,
+        encryptor: &ZeroKnowledgeEncryptor,
+        ciphertext: &[u8],
+        aad: &[u8],
+    ) -> Result<Vec<u8>, EncryptionError> {
+        for index in 0..self.keys.len() {
+            match self.decrypt_at(index, encryptor, ciphertext, aad) {
+                Err(EncryptionError::AuthenticationFailed) => continue,
+                other => return other,
+            }
+        }
+        Err(EncryptionError::AuthenticationFailed)
+    }
 }
 
 /// Derive the per-tenant encryption key for one keyring entry.
@@ -232,6 +383,11 @@ impl Keyring {
 /// HKDF construction, same salt/domain — so keyring-derived keys and
 /// fingerprints agree byte-for-byte with single-key operation.
 fn derive_encryption_key(master: &[u8], tenant_id: &str) -> Result<[u8; 32], EncryptionError> {
+    // Thread-local so parallel tests can't pollute each other's counts; this
+    // is the single choke point every keyring HKDF derivation routes through.
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    tests::HKDF_DERIVATIONS.with(|count| count.set(count.get() + 1));
+
     // Surfaces as EncryptionError::KeyDerivation — a configuration error kept
     // deliberately distinct from AuthenticationFailed/DecryptionFailed so a bad
     // tenant_id cannot masquerade as a cache miss under fail-open policies.
@@ -246,6 +402,19 @@ fn derive_encryption_key(master: &[u8], tenant_id: &str) -> Result<[u8; 32], Enc
 mod tests {
     use super::super::key_derivation::derive_tenant_keys;
     use super::*;
+
+    thread_local! {
+        /// Count of HKDF derivations performed by this thread's keyring calls
+        /// (incremented inside `derive_encryption_key`). Thread-local because
+        /// `cargo test` runs tests on separate threads — counts can't bleed
+        /// across tests.
+        pub(super) static HKDF_DERIVATIONS: std::cell::Cell<usize> =
+            const { std::cell::Cell::new(0) };
+    }
+
+    fn hkdf_derivations() -> usize {
+        HKDF_DERIVATIONS.with(|count| count.get())
+    }
 
     const K1: [u8; 32] = [0x11; 32];
     const K2: [u8; 32] = [0x22; 32];
@@ -397,6 +566,151 @@ mod tests {
 
         let result = keyring.decrypt(&encryptor, &ciphertext, "", AAD);
         assert!(matches!(result, Err(EncryptionError::KeyDerivation(_))));
+    }
+
+    // ---- TenantKeyring (tenant-bound, derivation cached at construction) ----
+
+    #[test]
+    fn test_tenant_keyring_derives_exactly_once() {
+        // AC: derivation happens once per entry at construction; steady-state
+        // decrypts perform NO HKDF. Counter is thread-local, so parallel tests
+        // can't pollute this count.
+        let ciphertext_current = encrypt_under(&K2, b"fresh");
+        let ciphertext_previous = encrypt_under(&K1, b"old");
+        let encryptor = ZeroKnowledgeEncryptor::new().unwrap();
+
+        let before = hkdf_derivations();
+        let ring = Keyring::new(&K2, &[&K1])
+            .unwrap()
+            .for_tenant(TENANT)
+            .unwrap();
+        assert_eq!(
+            hkdf_derivations() - before,
+            2,
+            "construction derives exactly one key per keyring entry"
+        );
+
+        let at_steady_state = hkdf_derivations();
+        for _ in 0..10 {
+            ring.decrypt(&encryptor, &ciphertext_current, AAD).unwrap();
+            ring.decrypt(&encryptor, &ciphertext_previous, AAD).unwrap();
+            ring.decrypt_at(0, &encryptor, &ciphertext_current, AAD)
+                .unwrap();
+            ring.encryption_fingerprints();
+        }
+        assert_eq!(
+            hkdf_derivations(),
+            at_steady_state,
+            "steady-state decrypts and fingerprints perform zero HKDF derivations"
+        );
+    }
+
+    #[test]
+    fn test_tenant_keyring_sequential_semantics_match_keyring() {
+        // Same contract as Keyring::decrypt: current first, previous-key entry
+        // decrypts after rotation, hard cut-over fails plain AuthenticationFailed.
+        let ciphertext = encrypt_under(&K1, b"secret");
+        let encryptor = ZeroKnowledgeEncryptor::new().unwrap();
+
+        let ring = Keyring::new(&K2, &[&K1])
+            .unwrap()
+            .for_tenant(TENANT)
+            .unwrap();
+        assert_eq!(
+            ring.decrypt(&encryptor, &ciphertext, AAD).unwrap(),
+            b"secret"
+        );
+
+        let cut_over = Keyring::new(&K2, &[]).unwrap().for_tenant(TENANT).unwrap();
+        assert!(matches!(
+            cut_over.decrypt(&encryptor, &ciphertext, AAD),
+            Err(EncryptionError::AuthenticationFailed)
+        ));
+
+        // Identical AAD required across attempts, exactly like the unbound path.
+        assert!(matches!(
+            ring.decrypt(&encryptor, &ciphertext, b"different_aad"),
+            Err(EncryptionError::AuthenticationFailed)
+        ));
+    }
+
+    #[test]
+    fn test_tenant_keyring_structural_error_is_terminal() {
+        let encryptor = ZeroKnowledgeEncryptor::new().unwrap();
+        let ring = Keyring::new(&K2, &[&K1])
+            .unwrap()
+            .for_tenant(TENANT)
+            .unwrap();
+
+        let result = ring.decrypt(&encryptor, b"too short", AAD);
+        assert!(matches!(result, Err(EncryptionError::InvalidCiphertext(_))));
+    }
+
+    #[test]
+    fn test_tenant_keyring_decrypt_at_out_of_range() {
+        // KeyringIndexOutOfRange stays config-class on the bound path — never
+        // folded into AuthenticationFailed (LAB-683 no-collapse rule).
+        let encryptor = ZeroKnowledgeEncryptor::new().unwrap();
+        let ring = Keyring::new(&K2, &[]).unwrap().for_tenant(TENANT).unwrap();
+        let ciphertext = encrypt_under(&K2, b"x");
+
+        let result = ring.decrypt_at(1, &encryptor, &ciphertext, AAD);
+        assert!(matches!(
+            result,
+            Err(EncryptionError::KeyringIndexOutOfRange { index: 1, count: 1 })
+        ));
+    }
+
+    #[test]
+    fn test_tenant_keyring_bad_tenant_id_is_config_error_at_construction() {
+        // On the bound path a bad tenant_id surfaces at for_tenant — same
+        // KeyDerivation class as the unbound path, moved to construction time.
+        let result = Keyring::new(&K2, &[&K1]).unwrap().for_tenant("");
+        assert!(matches!(result, Err(EncryptionError::KeyDerivation(_))));
+    }
+
+    #[test]
+    fn test_tenant_keyring_fingerprints_match_unbound_keyring() {
+        // AC: fingerprints from the cached derivation are byte-identical to
+        // Keyring::encryption_fingerprints (and thus to derive_tenant_keys).
+        let keyring = Keyring::new(&K2, &[&K1]).unwrap();
+        let unbound = keyring.encryption_fingerprints(TENANT).unwrap();
+        let bound = keyring
+            .for_tenant(TENANT)
+            .unwrap()
+            .encryption_fingerprints();
+
+        assert_eq!(bound, unbound);
+        assert_eq!(bound.len(), 2);
+        assert_eq!(
+            bound[0],
+            derive_tenant_keys(&K2, TENANT)
+                .unwrap()
+                .encryption_fingerprint()
+        );
+        assert_eq!(
+            bound[1],
+            derive_tenant_keys(&K1, TENANT)
+                .unwrap()
+                .encryption_fingerprint()
+        );
+    }
+
+    #[test]
+    fn test_tenant_keyring_derived_keys_zeroize() {
+        // AC: the derived ring is ZeroizeOnDrop. Vec::zeroize wipes every
+        // element then clears the vec, so the observable post-condition of the
+        // explicit zeroize() covering the field is an emptied ring; the
+        // compile-time bound below proves the drop guarantee itself.
+        let mut ring = Keyring::new(&K2, &[&K1])
+            .unwrap()
+            .for_tenant(TENANT)
+            .unwrap();
+        ring.zeroize();
+        assert!(ring.keys.is_empty());
+
+        fn assert_zeroize_on_drop<T: ZeroizeOnDrop>() {}
+        assert_zeroize_on_drop::<TenantKeyring>();
     }
 
     #[test]

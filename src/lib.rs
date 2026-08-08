@@ -80,7 +80,7 @@ pub use byte_storage::{ByteStorage, StorageEnvelope};
 pub mod encryption;
 #[cfg(feature = "encryption")]
 pub use encryption::{
-    derive_domain_key, EncryptionError, KeyDerivationError, KeyDomain, Keyring,
+    derive_domain_key, EncryptionError, KeyDerivationError, KeyDomain, Keyring, TenantKeyring,
     ZeroKnowledgeEncryptor, MAX_DECRYPT_ONLY_KEYS,
 };
 
