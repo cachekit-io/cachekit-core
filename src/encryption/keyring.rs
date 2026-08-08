@@ -220,10 +220,43 @@ impl Keyring {
         tenant_id: &str,
         aad: &[u8],
     ) -> Result<Vec<u8>, EncryptionError> {
+        self.decrypt_indexed(encryptor, ciphertext, tenant_id, aad)
+            .map(|(plaintext, _)| plaintext)
+    }
+
+    /// [`decrypt`](Self::decrypt), additionally reporting **which keyring
+    /// entry** satisfied the read (0 = current key, 1.. = decrypt-only keys in
+    /// list order).
+    ///
+    /// This is the rotation **drain-observability** surface: during a rotation
+    /// grace window, count reads that return a non-zero index (previous-key
+    /// hits). When that rate reaches zero — every live entry has aged out via
+    /// TTL or been re-encrypted on write — the retiring key is no longer
+    /// serving reads and can be dropped from the decrypt-only list safely,
+    /// instead of guessing and risking a hard cut-over.
+    ///
+    /// Attempt sequencing is identical to [`decrypt`](Self::decrypt) — same
+    /// order, identical AAD per attempt, only
+    /// [`EncryptionError::AuthenticationFailed`] advances, structural and
+    /// configuration errors terminal, exhaustion yields plain
+    /// `AuthenticationFailed`. The index reveals only the position that
+    /// decrypted; no key material or fingerprint accompanies it.
+    ///
+    /// # Errors
+    ///
+    /// Identical to [`decrypt`](Self::decrypt).
+    pub fn decrypt_indexed(
+        &self,
+        encryptor: &ZeroKnowledgeEncryptor,
+        ciphertext: &[u8],
+        tenant_id: &str,
+        aad: &[u8],
+    ) -> Result<(Vec<u8>, usize), EncryptionError> {
         for index in 0..self.entry_count() {
             match self.decrypt_at(index, encryptor, ciphertext, tenant_id, aad) {
+                Ok(plaintext) => return Ok((plaintext, index)),
                 Err(EncryptionError::AuthenticationFailed) => continue,
-                other => return other,
+                Err(err) => return Err(err),
             }
         }
         Err(EncryptionError::AuthenticationFailed)
@@ -366,10 +399,43 @@ impl TenantKeyring {
         ciphertext: &[u8],
         aad: &[u8],
     ) -> Result<Vec<u8>, EncryptionError> {
+        self.decrypt_indexed(encryptor, ciphertext, aad)
+            .map(|(plaintext, _)| plaintext)
+    }
+
+    /// [`decrypt`](Self::decrypt), additionally reporting **which keyring
+    /// entry** satisfied the read (0 = current key, 1.. = decrypt-only keys in
+    /// list order).
+    ///
+    /// This is the rotation **drain-observability** surface on the tenant-bound
+    /// (steady-state) path — the same contract as
+    /// [`Keyring::decrypt_indexed`]: during a rotation grace window, count
+    /// reads that return a non-zero index (previous-key hits). When that rate
+    /// reaches zero, the retiring key is no longer serving reads and can be
+    /// dropped from the decrypt-only list safely, instead of guessing and
+    /// risking a hard cut-over.
+    ///
+    /// Attempt sequencing is identical to [`decrypt`](Self::decrypt) — same
+    /// order, identical AAD per attempt, only
+    /// [`EncryptionError::AuthenticationFailed`] advances, structural errors
+    /// terminal, exhaustion yields plain `AuthenticationFailed`, no HKDF
+    /// anywhere on the path. The index reveals only the position that
+    /// decrypted; no key material or fingerprint accompanies it.
+    ///
+    /// # Errors
+    ///
+    /// Identical to [`decrypt`](Self::decrypt).
+    pub fn decrypt_indexed(
+        &self,
+        encryptor: &ZeroKnowledgeEncryptor,
+        ciphertext: &[u8],
+        aad: &[u8],
+    ) -> Result<(Vec<u8>, usize), EncryptionError> {
         for index in 0..self.keys.len() {
             match self.decrypt_at(index, encryptor, ciphertext, aad) {
+                Ok(plaintext) => return Ok((plaintext, index)),
                 Err(EncryptionError::AuthenticationFailed) => continue,
-                other => return other,
+                Err(err) => return Err(err),
             }
         }
         Err(EncryptionError::AuthenticationFailed)
@@ -566,6 +632,85 @@ mod tests {
 
         let result = keyring.decrypt(&encryptor, &ciphertext, "", AAD);
         assert!(matches!(result, Err(EncryptionError::KeyDerivation(_))));
+    }
+
+    // ---- decrypt_indexed (rotation drain observability, LAB-1645) ----
+
+    #[test]
+    fn test_decrypt_indexed_reports_winning_entry() {
+        // AC: index 0 for a current-key hit, 1 for the first decrypt-only key,
+        // plaintext identical to plain decrypt in both cases.
+        let ciphertext_current = encrypt_under(&K2, b"fresh");
+        let ciphertext_previous = encrypt_under(&K1, b"old");
+        let encryptor = ZeroKnowledgeEncryptor::new().unwrap();
+        let keyring = Keyring::new(&K2, &[&K1]).unwrap();
+
+        let (plaintext, index) = keyring
+            .decrypt_indexed(&encryptor, &ciphertext_current, TENANT, AAD)
+            .unwrap();
+        assert_eq!((plaintext.as_slice(), index), (b"fresh".as_slice(), 0));
+
+        let (plaintext, index) = keyring
+            .decrypt_indexed(&encryptor, &ciphertext_previous, TENANT, AAD)
+            .unwrap();
+        assert_eq!((plaintext.as_slice(), index), (b"old".as_slice(), 1));
+    }
+
+    #[test]
+    fn test_decrypt_indexed_exhaustion_and_terminal_errors_match_decrypt() {
+        // AC: exhaustion still yields plain AuthenticationFailed; structural
+        // and configuration errors stay terminal — identical to decrypt.
+        let ciphertext = encrypt_under(&K1, b"secret");
+        let encryptor = ZeroKnowledgeEncryptor::new().unwrap();
+
+        let cut_over = Keyring::new(&K2, &[]).unwrap();
+        assert!(matches!(
+            cut_over.decrypt_indexed(&encryptor, &ciphertext, TENANT, AAD),
+            Err(EncryptionError::AuthenticationFailed)
+        ));
+
+        let keyring = Keyring::new(&K2, &[&K1]).unwrap();
+        assert!(matches!(
+            keyring.decrypt_indexed(&encryptor, b"too short", TENANT, AAD),
+            Err(EncryptionError::InvalidCiphertext(_))
+        ));
+        assert!(matches!(
+            keyring.decrypt_indexed(&encryptor, &ciphertext, "", AAD),
+            Err(EncryptionError::KeyDerivation(_))
+        ));
+    }
+
+    #[test]
+    fn test_tenant_keyring_decrypt_indexed_matches_unbound() {
+        // AC: same contract on the tenant-bound (SDK steady-state) path.
+        let ciphertext_current = encrypt_under(&K2, b"fresh");
+        let ciphertext_previous = encrypt_under(&K1, b"old");
+        let encryptor = ZeroKnowledgeEncryptor::new().unwrap();
+        let ring = Keyring::new(&K2, &[&K1])
+            .unwrap()
+            .for_tenant(TENANT)
+            .unwrap();
+
+        let (plaintext, index) = ring
+            .decrypt_indexed(&encryptor, &ciphertext_current, AAD)
+            .unwrap();
+        assert_eq!((plaintext.as_slice(), index), (b"fresh".as_slice(), 0));
+
+        let (plaintext, index) = ring
+            .decrypt_indexed(&encryptor, &ciphertext_previous, AAD)
+            .unwrap();
+        assert_eq!((plaintext.as_slice(), index), (b"old".as_slice(), 1));
+
+        // Exhaustion: plain AuthenticationFailed, structural errors terminal.
+        let cut_over = Keyring::new(&K2, &[]).unwrap().for_tenant(TENANT).unwrap();
+        assert!(matches!(
+            cut_over.decrypt_indexed(&encryptor, &ciphertext_previous, AAD),
+            Err(EncryptionError::AuthenticationFailed)
+        ));
+        assert!(matches!(
+            ring.decrypt_indexed(&encryptor, b"too short", AAD),
+            Err(EncryptionError::InvalidCiphertext(_))
+        ));
     }
 
     // ---- TenantKeyring (tenant-bound, derivation cached at construction) ----
