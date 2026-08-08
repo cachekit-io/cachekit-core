@@ -245,6 +245,31 @@ impl Keyring {
     /// # Errors
     ///
     /// Identical to [`decrypt`](Self::decrypt).
+    ///
+    /// # Examples
+    ///
+    /// A read served by the retiring key reports a non-zero index — the drain
+    /// signal that says the grace window is still live:
+    ///
+    /// ```
+    /// use cachekit_core::{derive_domain_key, Keyring, ZeroKnowledgeEncryptor};
+    ///
+    /// let k1 = [0x11u8; 32]; // retiring master key
+    /// let k2 = [0x22u8; 32]; // current master key after rotation
+    /// let encryptor = ZeroKnowledgeEncryptor::new()?;
+    ///
+    /// // Encrypted under k1, before the rotation...
+    /// let tenant_key = derive_domain_key(&k1, "encryption", b"tenant-123")?;
+    /// let ciphertext = encryptor.encrypt_aes_gcm(b"cached value", &tenant_key, b"aad")?;
+    ///
+    /// // ...a keyring [current=k2, decrypt-only=[k1]] serves it from entry 1:
+    /// // the retiring key is still draining, not yet safe to drop.
+    /// let keyring = Keyring::new(&k2, &[&k1])?;
+    /// let (plaintext, index) = keyring.decrypt_indexed(&encryptor, &ciphertext, "tenant-123", b"aad")?;
+    /// assert_eq!(plaintext, b"cached value");
+    /// assert_eq!(index, 1);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn decrypt_indexed(
         &self,
         encryptor: &ZeroKnowledgeEncryptor,
@@ -407,20 +432,11 @@ impl TenantKeyring {
     /// entry** satisfied the read (0 = current key, 1.. = decrypt-only keys in
     /// list order).
     ///
-    /// This is the rotation **drain-observability** surface on the tenant-bound
-    /// (steady-state) path — the same contract as
-    /// [`Keyring::decrypt_indexed`]: during a rotation grace window, count
-    /// reads that return a non-zero index (previous-key hits). When that rate
-    /// reaches zero, the retiring key is no longer serving reads and can be
-    /// dropped from the decrypt-only list safely, instead of guessing and
-    /// risking a hard cut-over.
-    ///
-    /// Attempt sequencing is identical to [`decrypt`](Self::decrypt) — same
-    /// order, identical AAD per attempt, only
-    /// [`EncryptionError::AuthenticationFailed`] advances, structural errors
-    /// terminal, exhaustion yields plain `AuthenticationFailed`, no HKDF
-    /// anywhere on the path. The index reveals only the position that
-    /// decrypted; no key material or fingerprint accompanies it.
+    /// The rotation drain-observability surface on the tenant-bound
+    /// (steady-state) path — same contract and purpose as
+    /// [`Keyring::decrypt_indexed`], with this type's deltas: no HKDF anywhere
+    /// on the path, and no `KeyDerivation` class (derivation already happened
+    /// at [`Keyring::for_tenant`]).
     ///
     /// # Errors
     ///
