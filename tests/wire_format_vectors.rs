@@ -17,7 +17,7 @@
 //!
 //! Fixture provenance: vendored from
 //! <https://github.com/cachekit-io/protocol> `test-vectors/wire-format.json`
-//! at commit `6863495d3565ccd9f28827baa1351782575e770d`, integrity-pinned by
+//! at commit `5be35d5240817617275e3983de486a5826a587af`, integrity-pinned by
 //! sha256 below. To update: copy the file from a newer protocol ref, update
 //! `FIXTURE_SHA256` and this comment's commit hash together.
 
@@ -31,7 +31,7 @@ use sha2::{Digest, Sha256};
 const FIXTURE: &str = include_str!("vectors/wire-format.json");
 
 /// sha256 of the vendored fixture — must match the protocol repo's copy.
-const FIXTURE_SHA256: &str = "d6184a945d8cb22491b5c937414fe4d01e682d084ccec9dae9526d0ffba650cb";
+const FIXTURE_SHA256: &str = "b902db88fb9b2c4a2d0def7266f8199a858fcb921262c1eaf2c2c03412b5b56a";
 
 #[derive(serde::Deserialize)]
 struct WireFormatFixture {
@@ -87,7 +87,7 @@ fn fixture_integrity_pinned_sha256() {
 #[test]
 fn fixture_is_current_version_with_vectors() {
     let fixture = load_fixture();
-    assert_eq!(fixture.version, "1.1.0");
+    assert_eq!(fixture.version, "1.1.1");
     let legacy = fixture.vectors.iter().filter(|v| v.is_legacy()).count();
     let bin = fixture.vectors.len() - legacy;
     assert!(
@@ -97,6 +97,10 @@ fn fixture_is_current_version_with_vectors() {
     assert!(
         bin >= 6,
         "protocol 1.1 pins a *_bin twin per legacy vector; expected at least 6, got {bin}"
+    );
+    assert_eq!(
+        legacy, bin,
+        "each legacy vector must have exactly one *_bin twin"
     );
 }
 
@@ -259,24 +263,26 @@ fn bin_twins_are_bin_encoded_and_field_identical_to_legacy() {
             });
 
         let twin_bytes = hex::decode(&twin.envelope_hex).expect("envelope_hex must decode");
+        let twin_env: StorageEnvelope = rmp_serde::from_slice(&twin_bytes)
+            .unwrap_or_else(|e| panic!("[{}] twin must deserialize: {e}", twin.name));
         assert_eq!(
             twin_bytes[0], 0x94,
             "[{}] outer fixarray(4) marker",
             twin.name
         );
         assert_eq!(
-            // 0xc4 = msgpack bin8. Every pinned twin is small enough to be
-            // bin8; a wider marker here is a width-selection regression.
             twin_bytes[1],
-            0xc4,
-            "[{}] compressed_data is not bin8-encoded: marker 0x{:02x}",
+            match twin_env.compressed_data.len() {
+                0..=255 => 0xc4,
+                256..=65_535 => 0xc5,
+                _ => 0xc6,
+            },
+            "[{}] compressed_data does not use the shortest bin marker: 0x{:02x}",
             twin.name,
             twin_bytes[1]
         );
 
         let parent_bytes = hex::decode(&parent.envelope_hex).expect("envelope_hex must decode");
-        let twin_env: StorageEnvelope = rmp_serde::from_slice(&twin_bytes)
-            .unwrap_or_else(|e| panic!("[{}] twin must deserialize: {e}", twin.name));
         let parent_env: StorageEnvelope = rmp_serde::from_slice(&parent_bytes)
             .unwrap_or_else(|e| panic!("[{parent_name}] parent must deserialize: {e}"));
         assert_eq!(
