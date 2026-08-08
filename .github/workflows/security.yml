@@ -14,8 +14,15 @@ on:
     # regressions promptly; deep fuzz is for finding bugs, not gating merges.
     # Off-minute (:07) avoids the cron pile-up that GitHub schedules at :00.
     - cron: '7 11 * * 6'
-  release:
-    types: [published]
+  # Deliberately no `release:` trigger. It existed only for an SBOM job that
+  # attached a release asset, and that can never work here: immutable releases
+  # are enabled on this repo and GitHub seals a release's assets at publish, so
+  # the upload always failed with "Cannot upload assets to an immutable release"
+  # — every release since v0.1.0 has zero assets (LAB-983). The SBOM is generated
+  # and attested in release.yml via actions/attest-sbom; that attestation is the
+  # verifiable artifact, and a plain release asset would be an unsigned weaker
+  # copy of it. Re-adding this alone only makes empty runs; the asset upload would
+  # additionally need the release created as a draft, attached, then published.
   # On-demand: lets the schedule-only jobs (e.g. Kani) be run and verified
   # without waiting for the weekly cron. A plain dispatch does NOT trigger the
   # heavy deep-fuzz matrix — set run_deep_fuzz=true to opt into that.
@@ -315,45 +322,3 @@ jobs:
 
       - name: Run cargo vet
         run: cargo vet
-
-  sbom:
-    name: Generate SBOM
-    runs-on: cachekit
-    if: github.event_name == 'release'
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
-        with:
-          toolchain: "1.85"
-
-      - name: Cache Rust dependencies
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-sbom-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-sbom-
-            ${{ runner.os }}-cargo-
-
-      - name: Install cargo-sbom
-        run: cargo install cargo-sbom --locked
-
-      - name: Generate SBOM
-        run: cargo sbom > cachekit-core-sbom.json
-
-      - name: Upload SBOM as release asset
-        uses: actions/upload-release-asset@e8f9f06c4b078e705bd2ea027f0926603fc9b4d5 # v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: ./cachekit-core-sbom.json
-          asset_name: cachekit-core-sbom.json
-          asset_content_type: application/json
