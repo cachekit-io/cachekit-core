@@ -23,6 +23,8 @@
 
 #![cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
 
+use std::collections::{HashMap, HashSet};
+
 use cachekit_core::{ByteStorage, StorageEnvelope};
 use sha2::{Digest, Sha256};
 
@@ -88,20 +90,55 @@ fn fixture_integrity_pinned_sha256() {
 fn fixture_is_current_version_with_vectors() {
     let fixture = load_fixture();
     assert_eq!(fixture.version, "1.1.1");
-    let legacy = fixture.vectors.iter().filter(|v| v.is_legacy()).count();
-    let bin = fixture.vectors.len() - legacy;
+    let legacy: HashSet<&str> = fixture
+        .vectors
+        .iter()
+        .filter(|v| v.is_legacy())
+        .map(|v| v.name.as_str())
+        .collect();
+    let bin = fixture.vectors.len() - legacy.len();
     assert!(
-        legacy >= 6,
-        "legacy vectors are retained forever as legacy-read proof; expected at least the original 6, got {legacy}"
+        legacy.len() >= 6,
+        "legacy vectors are retained forever as legacy-read proof; expected at least the original 6, got {}",
+        legacy.len()
     );
     assert!(
         bin >= 6,
         "protocol 1.1 pins a *_bin twin per legacy vector; expected at least 6, got {bin}"
     );
-    assert_eq!(
-        legacy, bin,
-        "each legacy vector must have exactly one *_bin twin"
-    );
+    // Equal totals alone would admit duplicate twins or orphaned parents, so
+    // key every *_bin vector by `derived_from` and require exactly one twin
+    // per legacy vector.
+    let mut twins: HashMap<&str, usize> = HashMap::new();
+    for vector in fixture.vectors.iter().filter(|v| !v.is_legacy()) {
+        let parent = vector.derived_from.as_deref().unwrap_or_else(|| {
+            panic!(
+                "[{}] bin vector must name its legacy parent in derived_from",
+                vector.name
+            )
+        });
+        assert!(
+            legacy.contains(parent),
+            "[{}] derived_from {parent:?} names no legacy vector",
+            vector.name
+        );
+        *twins.entry(parent).or_insert(0) += 1;
+    }
+    for name in &legacy {
+        assert_eq!(
+            twins.get(name).copied().unwrap_or(0),
+            1,
+            "legacy vector {name:?} must have exactly one *_bin twin"
+        );
+    }
+    // LAB-868's deliverable, pinned by name: the bin16 width-boundary pair
+    // must survive any future re-vendor.
+    for required in ["width_boundary_bin16", "width_boundary_bin16_bin"] {
+        assert!(
+            fixture.vectors.iter().any(|v| v.name == required),
+            "fixture must retain the {required:?} vector"
+        );
+    }
 }
 
 #[test]
