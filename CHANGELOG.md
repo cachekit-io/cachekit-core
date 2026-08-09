@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.5.0...cachekit-core-v0.6.0) (2026-08-08)
+
+
+### Features
+
+* cache keyring per-tenant derivation at construction via TenantKeyring (LAB-1638) ([#71](https://github.com/cachekit-io/cachekit-core/issues/71)) ([d3f0eb0](https://github.com/cachekit-io/cachekit-core/commit/d3f0eb05f6861c4c10a3f44e920f0f34c1aa1508))
+* expose winning-key index via decrypt_indexed for rotation drain observability (LAB-1645) ([#73](https://github.com/cachekit-io/cachekit-core/issues/73)) ([d834f74](https://github.com/cachekit-io/cachekit-core/commit/d834f74ede16bfc9ca812f6881f341caabe6e3c4))
+
 ## [0.5.0](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.4.0...cachekit-core-v0.5.0) (2026-08-07)
 
 
