@@ -302,7 +302,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
-          toolchain: "1.85"
+          toolchain: "1.97"
 
       - name: Cache Rust dependencies
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
