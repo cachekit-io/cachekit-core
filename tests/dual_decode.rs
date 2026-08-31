@@ -20,10 +20,9 @@
 //! attached to the decision memo on that issue); throughput evidence lives in
 //! the LAB-510 harness (`benches/hot_path.rs`, 64 MiB incompressible group).
 //!
-//! Width boundaries: the fixture's `*_bin` twins all fit in a bin8 header
-//! (`0xc4`, ≤ 255 B). The `width_boundary_*` tests cover the bin16 (`0xc5`)
-//! and bin32 (`0xc6`) headers with real LZ4 output from the real writer, per
-//! the MUST recorded in the decision record.
+//! Width boundaries: the fixture pins both bin8 (`0xc4`) and bin16 (`0xc5`)
+//! twins. The `width_boundary_*` tests additionally cover the bin32 (`0xc6`)
+//! header with real LZ4 output from the real writer, per the decision record.
 
 #![cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
 
@@ -123,27 +122,29 @@ fn dual_decode_matrix_against_legacy_vectors() {
             v.name
         );
         assert_eq!(
-            // 0xc4 = msgpack bin8. Every pinned twin's compressed_data is small
-            // enough to be bin8; a wider marker here is a width-selection
-            // regression that would break cross-SDK byte-identity.
             new_wire[1],
-            0xc4,
-            "[{}] compressed_data not bin8-encoded: 0x{:02x}",
+            match new_from_old.compressed_data.len() {
+                0..=255 => 0xc4,
+                256..=65_535 => 0xc5,
+                _ => 0xc6,
+            },
+            "[{}] compressed_data does not use the shortest bin marker: 0x{:02x}",
             v.name,
             new_wire[1]
         );
         // Documented micro-regression: bin costs at most +1 B, and only on the
         // smallest envelopes. A <=15 B compressed_data goes from a 1 B fixarray
         // header to a 2 B bin8 header (+1); any array >=16 B already carried a
-        // 3 B array16 header, so bin8's 2 B header shrinks it. Measured worst
-        // case on the pinned set is exactly +1 (`empty`, 25 -> 26 B); every
-        // other vector ties or shrinks. This +1 B ceiling is the micro-
+        // 3 B array16 header, so bin8's 2 B header shrinks it. The bin16 tier
+        // uses the same three-byte header as array16, so it cannot grow either.
+        // Measured worst case on the pinned set is exactly +1 (`empty`, 25 ->
+        // 26 B); every other vector ties or shrinks. This +1 B ceiling is the micro-
         // regression contract accepted by the writer flip (LAB-764/LAB-866),
         // so keep it tight — a +2/+3 bloat regression must not slip through
         // green.
         assert!(
             new_wire.len() <= old_wire.len() + 1,
-            "[{}] new wire exceeds the +1 B bin8-header ceiling",
+            "[{}] new wire exceeds the +1 B bin-header ceiling",
             v.name
         );
 
@@ -212,9 +213,8 @@ fn assert_width_tier(name: &str, payload_len: usize, expected_marker: u8) {
     assert_all_readers_decode(name, &wire, &payload);
 }
 
-/// bin8/bin16 boundary: the fixture twins never leave bin8 territory (all
-/// compressed_data <= 255 B), so sweep real LZ4 outputs across the 255/256 B
-/// boundary and prove both header widths decode through every reader shape.
+/// bin8/bin16 boundary: the fixture pins one bin16 twin, and this sweep covers
+/// real LZ4 outputs across the 255/256 B boundary through every reader shape.
 /// LZ4 adds a few bytes of literal-run overhead on incompressible input, so
 /// the sweep brackets the boundary regardless of the exact overhead.
 #[test]
