@@ -70,20 +70,20 @@ This crate does **not** protect against:
 | `MAX_UNCOMPRESSED_SIZE` | 512 MiB | declared `original_size` |
 | `MAX_COMPRESSION_RATIO` | 1000:1 | `original_size` vs `compressed_data.len()` |
 
-The ratio check uses integer arithmetic (`checked_mul`, overflow treated as a
-bomb) so a floating-point rounding bypass is not available, and zero-length
-compressed data with a non-zero `original_size` is rejected outright. The
-allocation is sized from `original_size` and `lz4_flex` returns
-`OutputTooSmall` rather than growing past it, so the decompressed output is
-bounded by `min(512 MiB, 1000 × compressed_len)` regardless of what the
-envelope claims. `extract` re-checks the produced length afterwards.
+The ratio product is computed in `u64` via `checked_mul` (overflow is treated
+as a bomb), and zero-length compressed data with a non-zero `original_size` is
+rejected outright. `lz4_flex` returns `OutputTooSmall` rather than growing past
+the allocation, so the decompressed output is bounded by
+`min(512 MiB, 1000 × compressed_len)` regardless of what the envelope claims,
+and `extract` re-checks the produced length afterwards — a decompressor's
+size argument sizes a buffer, it never asserts the decoded length.
 
-Two properties of this bound are worth stating explicitly, because both are
-easy to assume and wrong:
-
-- **`original_size` is not trusted.** It is attacker-controlled on any
-  backend an attacker can write to. It sizes the allocation only *after* the
-  absolute and ratio checks have already constrained it.
+- **`original_size` does not act as a bound.** It is attacker-controlled on any
+  backend an attacker can write to. It *does* size the allocation, but only
+  within the absolute and ratio limits already checked above — so a forged
+  envelope can still make a reader allocate up to `1000 ×` its wire size before
+  the LZ4 stream is validated. That allocation amplification is the sizing
+  question in LAB-2505, not a bypass of the bound.
 - **xxHash3-64 is not a control here.** It is unkeyed, so anyone who can
   forge an envelope recomputes it. It detects accidental corruption, not
   forgery. Authentication comes from AES-256-GCM, and only for secure caches.
@@ -91,18 +91,26 @@ easy to assume and wrong:
 **The ceiling is server-class.** 512 MiB assumes a host that can absorb a
 512 MiB allocation. It does *not* prevent an out-of-memory kill in a
 constrained runtime — a Cloudflare Workers isolate has ~128 MiB, so a payload
-well inside these limits can still exhaust it. Deployments on constrained
-runtimes must bound payload size at the caller. Making these constants
-environment-aware or configurable is tracked separately (LAB-2505); do not
-treat the current values as tuned for anything but a server.
+well inside these limits can still exhaust it, and on `wasm32` the allocation
+is an eager `memory.grow` that needs no valid LZ4 stream behind it. Deployments
+on constrained runtimes must bound payload size at the caller. Making these
+constants environment-aware or configurable is tracked in LAB-2505.
 
-These properties are pinned by the `compression_bomb` fuzz target
+These properties are exercised by the `compression_bomb` fuzz target
 (`fuzz/fuzz_targets/compression_bomb.rs`), which asserts that `extract` never
-panics, never emits more than 512 MiB, and fails with `DecompressionBomb` or
-`InputTooLarge`. It runs in CI on every push and pull request as part of the
-`quick-fuzz` matrix in `.github/workflows/security.yml` (corpus-only, 120 s per
-target), plus a weekly deep-fuzz run — it is a merge-time guard, not an ad hoc
-script.
+panics and never emits more than 512 MiB, and that rejections are one of
+`DecompressionBomb`, `InputTooLarge`, or `DecompressionFailed`. Its
+`compressed_size` is a `u16`, so it caps compressed input at 64 KiB and
+therefore exercises the **ratio** bound, not the 512 MiB absolute one.
+
+Be precise about how much CI coverage that buys: the `quick-fuzz` matrix in
+`.github/workflows/security.yml` runs on pull requests and on pushes to `main`
+(not on feature-branch pushes), and `fuzz/.gitignore` excludes `corpus/*/`, so
+on a fresh checkout the corpus is empty and `cargo fuzz run … -runs=0`
+generates no inputs. At PR time the job therefore proves the target still
+**builds**; the input coverage comes from the weekly deep-fuzz run, and from
+the unit tests and Kani proofs in `src/byte_storage.rs`, which do assert the
+bound directly.
 
 ### Dependencies
 
