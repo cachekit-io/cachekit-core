@@ -144,8 +144,10 @@ Be precise about how much CI coverage that buys: the `quick-fuzz` matrix in
 on a fresh checkout the corpus is empty. libFuzzer seeds an empty corpus with a
 single newline input and executes it before the run-limit check, so `-runs=0`
 is not literally zero executions — but it performs no mutation, so the job
-generates no inputs of its own. At PR time it therefore proves little beyond
-the target still **building**.
+generates no inputs of its own. At PR time it is therefore **single-seed smoke
+coverage**: it will catch a build break or a panic on that one newline input,
+and nothing else. It produces no boundary coverage; the merge-time coverage for
+the boundary cases is the unit tests below.
 
 Input coverage comes from the weekly deep-fuzz run — though that job does not
 persist its corpus either (it uploads `fuzz/artifacts/` only, and the cache key
@@ -156,14 +158,22 @@ that executes the bound at merge time.
 
 **The Kani proofs are weaker than they look, and are not a merge-time gate.**
 The `kani` job runs only on `schedule` and `workflow_dispatch`, never on a pull
-request. More importantly, three of the four size/ratio harnesses assign the
-same predicate to two bindings and assert the two are equal — for example
-`let exceeds_limit = size > MAX_UNCOMPRESSED_SIZE; let should_reject = size >
-MAX_UNCOMPRESSED_SIZE; assert_eq!(exceeds_limit, should_reject);`. That is a
-tautology: it holds for any predicate, and would still pass if the comparison
-were inverted or the constant were wrong. `verify_decompression_bomb_protection`
-additionally assumes `compressed_size <= 1000`, which makes `checked_mul`
-infallible and leaves its overflow branch unreachable and stubbed `assert!(true)`.
+request. More importantly, none of the four size/ratio harnesses can fail on a
+wrong predicate — though they get there by two different routes:
+
+- `verify_input_size_limits` and `verify_compressed_size_limits` are literal
+  self-comparisons: `let exceeds_limit = size > MAX_UNCOMPRESSED_SIZE; let
+  should_reject = size > MAX_UNCOMPRESSED_SIZE; assert_eq!(exceeds_limit,
+  should_reject);`. That holds for any predicate, and would still pass with the
+  comparison inverted or the constant wrong.
+- `verify_decompression_bomb_protection` compares the `checked_mul` result
+  against the same product computed directly — equal by construction, and its
+  `kani::assume(compressed_size <= 1000)` makes the multiplication infallible,
+  so the overflow branch it exists to check is unreachable and stubbed
+  `assert!(true)`.
+- `verify_compression_ratio_calculation_safety` derives `is_bomb = original_size
+  > max_allowed` and then asserts that same comparison in both branches of
+  `if original_size <= max_allowed`, which restates its own definition.
 
 What Kani does buy is its default check set — no panic, no arithmetic overflow —
 over the harness bodies. What it does not buy is any evidence that the predicates
