@@ -49,7 +49,7 @@ This crate protects against:
 - **Data tampering**: GCM authentication tags (when encryption enabled); xxHash3 detects accidental corruption only
 - **Data disclosure**: AES-256-GCM encryption (when enabled)
 - **Key compromise isolation**: HKDF domain separation per tenant
-- **Decompression bombs**: Size limits + ratio validation
+- **Decompression bombs**: Size limits + ratio validation (see [Decompression limits](#decompression-limits))
 - **Memory disclosure**: `zeroize` on drop for key material
 
 This crate does **not** protect against:
@@ -58,6 +58,51 @@ This crate does **not** protect against:
 - Compromise of the master key
 - Denial of service via resource exhaustion (partial protection only)
 - Attacks requiring physical access
+
+### Decompression limits
+
+`StorageEnvelope::extract` bounds LZ4 decompression **before** calling
+`lz4_flex::decompress`, so a forged envelope cannot expand without limit:
+
+| Limit | Value | Enforced on |
+|:------|:------|:------------|
+| `MAX_COMPRESSED_SIZE` | 512 MiB | `compressed_data.len()` |
+| `MAX_UNCOMPRESSED_SIZE` | 512 MiB | declared `original_size` |
+| `MAX_COMPRESSION_RATIO` | 1000:1 | `original_size` vs `compressed_data.len()` |
+
+The ratio check uses integer arithmetic (`checked_mul`, overflow treated as a
+bomb) so a floating-point rounding bypass is not available, and zero-length
+compressed data with a non-zero `original_size` is rejected outright. The
+allocation is sized from `original_size` and `lz4_flex` returns
+`OutputTooSmall` rather than growing past it, so the decompressed output is
+bounded by `min(512 MiB, 1000 × compressed_len)` regardless of what the
+envelope claims. `extract` re-checks the produced length afterwards.
+
+Two properties of this bound are worth stating explicitly, because both are
+easy to assume and wrong:
+
+- **`original_size` is not trusted.** It is attacker-controlled on any
+  backend an attacker can write to. It sizes the allocation only *after* the
+  absolute and ratio checks have already constrained it.
+- **xxHash3-64 is not a control here.** It is unkeyed, so anyone who can
+  forge an envelope recomputes it. It detects accidental corruption, not
+  forgery. Authentication comes from AES-256-GCM, and only for secure caches.
+
+**The ceiling is server-class.** 512 MiB assumes a host that can absorb a
+512 MiB allocation. It does *not* prevent an out-of-memory kill in a
+constrained runtime — a Cloudflare Workers isolate has ~128 MiB, so a payload
+well inside these limits can still exhaust it. Deployments on constrained
+runtimes must bound payload size at the caller. Making these constants
+environment-aware or configurable is tracked separately (LAB-2505); do not
+treat the current values as tuned for anything but a server.
+
+These properties are pinned by the `compression_bomb` fuzz target
+(`fuzz/fuzz_targets/compression_bomb.rs`), which asserts that `extract` never
+panics, never emits more than 512 MiB, and fails with `DecompressionBomb` or
+`InputTooLarge`. It runs in CI on every push and pull request as part of the
+`quick-fuzz` matrix in `.github/workflows/security.yml` (corpus-only, 120 s per
+target), plus a weekly deep-fuzz run — it is a merge-time guard, not an ad hoc
+script.
 
 ### Dependencies
 
