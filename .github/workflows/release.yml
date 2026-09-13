@@ -20,8 +20,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # GitHub-hosted: this job inherits contents+PR write and mints an App
+  # installation token. The self-hosted `cachekit` pool shares a writable
+  # hostPath build cache (/cache) across all pods and every cachekit-io repo,
+  # and job-level `permissions:` does not isolate that filesystem — untrusted
+  # build-script/proc-macro code can poison the cache a later credentialed
+  # job runs against (LAB-1040). release-please needs no warm cache anyway.
   release-please:
-    runs-on: cachekit
+    runs-on: ubuntu-latest
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
@@ -41,8 +47,9 @@ jobs:
       # release PR here. outputs.pr is set whenever the release PR was created
       # OR updated, so this re-runs on every push to main while a release PR is
       # open — adding an already-present assignee is a no-op, so that's safe.
-      # github-script, NOT `gh`: the self-hosted cachekit runner has no gh CLI
-      # (LAB-899). outputs.pr is passed raw via env and parsed in JS — never
+      # github-script, NOT `gh`: chosen when this job ran on the self-hosted
+      # cachekit runner, which has no gh CLI (LAB-899); it works identically on
+      # a hosted runner. outputs.pr is passed raw via env and parsed in JS — never
       # through template-position fromJson, which is evaluated even when if: is
       # false and crashes on '' for no-release pushes (LAB-865).
       - name: Assign release PR to 27Bslash6
@@ -103,10 +110,9 @@ jobs:
           subject-path: target/package/*.crate
 
       - name: Install cargo-sbom
-        # --force is required: the self-hosted runner's CARGO_HOME (/cache/cargo) is a
-        # persistent volume, so the binary survives between runs and a plain install
-        # exits 101 ("binary `cargo-sbom` already exists"). --force reinstalls the
-        # --locked pinned version idempotently.
+        # --force kept from when this job ran self-hosted with a persistent
+        # CARGO_HOME (/cache/cargo), where a plain install exits 101 ("binary
+        # `cargo-sbom` already exists"). Harmless no-op cost on a hosted runner.
         run: cargo install cargo-sbom --locked --force
 
       - name: Generate SBOM

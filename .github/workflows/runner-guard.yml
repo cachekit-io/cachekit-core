@@ -1,0 +1,35 @@
+name: Runner Guard
+
+# Drift protection (LAB-1161 stage 1 / LAB-3501): every job in this repo must run
+# on a GitHub-hosted runner. This job fails the workflow if any `runs-on` or matrix
+# `os:`/`runner:` value in .github/workflows/ is not a hosted label — an allow-list,
+# so a NEW self-hosted pool label nobody has named yet still fails (Alaya 999a8af5).
+#
+# This is protection against MAINTAINER drift on trusted branches only. It is NOT a
+# fork-PR control: a fork runs its own copy of this file and can delete the guard.
+# The server-side control is runner group `cachekit-private` (LAB-1161 stage 2).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  assert-hosted-runners:
+    name: Assert all runners are GitHub-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Self-test the guard, then scan every workflow
+        run: |
+          python3 .github/scripts/assert_hosted_runners.py --selftest
+          python3 .github/scripts/assert_hosted_runners.py
