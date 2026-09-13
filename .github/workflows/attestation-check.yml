@@ -14,12 +14,13 @@ concurrency:
 jobs:
   verify:
     name: Verify Latest Release Attestations
-    # ubuntu-latest, NOT the self-hosted `cachekit` runner: the ARC pods have no `gh`
-    # binary (LAB-899) and unreliable Sigstore (Fulcio/Rekor) egress — the same reason
-    # release.yml's publish job is hosted. `gh attestation verify` is the only tool
-    # that does Sigstore bundle verification, so moving this job back to ARC silently
-    # re-breaks it (LAB-984: every `gh` call exited 127 into `|| echo ""`, and the job
-    # reported green while verifying nothing for weeks).
+    # Must stay GitHub-hosted: this job needs `gh` (preinstalled on ubuntu-latest)
+    # and reliable Sigstore (Fulcio/Rekor) egress. `gh attestation verify` is the
+    # only tool that does Sigstore bundle verification. The whole repo is on
+    # ubuntu-latest (LAB-3501) and runner-guard.yml keeps it there, but the point
+    # is load-bearing here specifically: LAB-984 showed that when this ran on an
+    # ARC pod with no `gh` binary, every `gh` call exited 127 into `|| echo ""` and
+    # the job reported green while verifying nothing for weeks.
     runs-on: ubuntu-latest
     permissions:
       contents: read
