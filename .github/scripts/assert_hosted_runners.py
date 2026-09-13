@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Fail if any workflow job could run on a non-GitHub-hosted runner.
 
-This is an ALLOW-LIST that FAILS CLOSED: every job's `runs-on` must resolve to a
-known GitHub-hosted label family (`ubuntu-*`, `macos-*`, `windows-*`). Anything
-the scanner cannot *prove* is hosted — `cachekit`, `self-hosted`, a future pool
+This is an ALLOW-LIST that FAILS CLOSED: every job's `runs-on` must resolve to an
+allow-listed GitHub-hosted label (`ubuntu-latest`, `macos-latest`, `windows-latest`;
+see HOSTED_LABELS). Anything the scanner cannot *prove* is hosted — `cachekit`,
+`self-hosted`, a custom `ubuntu-private` label on a self-hosted runner, a future pool
 label nobody has invented yet, a runner-group object, or a `${{ }}` expression it
 can't resolve — is a violation. A deny-list of today's bad names would fail open
 the day someone adds a new one, or reformats the drift into a shape the deny-list
@@ -79,9 +80,15 @@ import glob
 import re
 import sys
 
-# GitHub-hosted label families. Versioned and ARM variants are allowed
-# (ubuntu-24.04, macos-14, ubuntu-24.04-arm, windows-2022, *-latest, …).
-HOSTED = re.compile(r"^(ubuntu|macos|windows)-[a-z0-9._-]+$")
+# GitHub-hosted runner labels this repository permits — a finite, source-controlled
+# allow-list, NOT an `(ubuntu|macos|windows)-.*` family pattern. A family pattern fails
+# OPEN: it accepts a custom label such as `ubuntu-private` (or a misspelling like
+# `ubuntu-lates`) which GitHub Actions will happily route to a *self-hosted* runner
+# registered under that label, laundering it through this hosted-only guard (CodeRabbit,
+# PR #76). Pinning a specific image version (`ubuntu-24.04`, `macos-14`, `windows-2022`)
+# is a deliberate future decision that must extend this set explicitly — exactly as a
+# hosted larger-runner group would (see the `runs-on.group` handling below).
+HOSTED_LABELS = frozenset({"ubuntu-latest", "macos-latest", "windows-latest"})
 
 # The ONE expression this scanner blesses, and only as the complete scalar value of
 # `runs-on`: the two matrix keys whose values are scanned directly below, which is
@@ -132,8 +139,8 @@ def _labels_from_inline(value: str) -> list[str]:
 
 
 def _bad_label(label: str) -> bool:
-    """True if this concrete label is not a known hosted label."""
-    return HOSTED.match(label) is None
+    """True if this concrete label is not an allow-listed GitHub-hosted label."""
+    return label not in HOSTED_LABELS
 
 
 def _indent(line: str) -> int:
@@ -167,7 +174,11 @@ def find_violations(text: str) -> list[tuple[int, str, str]]:
 
         if key == "uses":
             v = _unquote(value)
-            if not v or v[0] in ">|":
+            # `>`/`|` are block scalars whose body is on later lines; `*` is a YAML
+            # alias that resolves to an anchored value this line scanner cannot see —
+            # `uses: *remote` would run an anchored remote reusable workflow on this
+            # repo's runner pool undetected (CodeRabbit, PR #76). All fail closed.
+            if not v or v[0] in ">|*":
                 out.append((i + 1, "uses (unverifiable form)", v))
             elif ".github/workflows/" in v and not v.startswith("./"):
                 out.append((i + 1, "uses (remote reusable workflow)", v))
@@ -255,7 +266,8 @@ def main() -> int:
         for lineno, what, value in find_violations(text):
             print(
                 f"::error file={path},line={lineno}::{what}: '{value}' is not provably "
-                f"GitHub-hosted. Every job must run on ubuntu-*/macos-*/windows-* as a "
+                f"GitHub-hosted. Every job must run on an allow-listed hosted label "
+                f"(ubuntu-latest/macos-latest/windows-latest) as a "
                 f"plain scalar, `[a, b]`, block list, or `${{{{ matrix.os }}}}` over a "
                 f"static block matrix; self-hosted pools, runner groups, other ${{{{ }}}} "
                 f"expressions, flow mappings, generated matrices and remote reusable "
@@ -277,6 +289,15 @@ _CASES: list[tuple[str, list[str]]] = [
     ("    runs-on: cachekit-lean\n", ["cachekit-lean"]),
     ("    runs-on: self-hosted\n", ["self-hosted"]),
     ("    runs-on: cachekit-turbo\n", ["cachekit-turbo"]),
+    # A custom label under a hosted-sounding family: the family-regex fail-open the
+    # allow-list closes (CodeRabbit, PR #76). ubuntu-private / windows-cachekit route to
+    # a self-hosted runner registered under that label; ubuntu-lates is a typo that must
+    # not silently pass; a pinned version is a deliberate opt-in this repo has not made.
+    ("    runs-on: ubuntu-private\n", ["ubuntu-private"]),
+    ("    runs-on: windows-cachekit\n", ["windows-cachekit"]),
+    ("    runs-on: ubuntu-lates\n", ["ubuntu-lates"]),
+    ("    runs-on: ubuntu-24.04\n", ["ubuntu-24.04"]),
+    ("    runs-on: ubuntu-24.04-arm\n", ["ubuntu-24.04-arm"]),
     ("    runs-on: [self-hosted, linux, x64]\n", ["self-hosted", "linux", "x64"]),
     ("    runs-on:\n      - self-hosted\n      - linux\n", ["self-hosted", "linux"]),
     ("        runner: cachekit\n", ["cachekit"]),
@@ -367,6 +388,10 @@ _CASES: list[tuple[str, list[str]]] = [
     ),
     ("    uses: >-\n      org/repo/.github/workflows/ci.yml@main\n", [">-"]),
     ("    uses:\n      org/repo/.github/workflows/ci.yml@main\n", [""]),
+    # A YAML alias resolves to an anchored value the line scanner cannot see; an anchored
+    # remote reusable workflow through `uses: *remote` would run on our pool undetected
+    # (CodeRabbit, PR #76). Rejected as an unverifiable form.
+    ("    uses: *remote\n", ["*remote"]),
     # The on: block is skipped, but jobs after it are still scanned.
     (
         "on:\n  workflow_dispatch:\n    inputs:\n      os:\n        type: choice\n"
@@ -377,8 +402,6 @@ _CASES: list[tuple[str, list[str]]] = [
     ("    runs-on: ubuntu-latest\n", []),
     ("    runs-on: macos-latest\n", []),
     ("    runs-on: windows-latest\n", []),
-    ("    runs-on: ubuntu-24.04\n", []),
-    ("    runs-on: ubuntu-24.04-arm\n", []),
     ("    runs-on: [ubuntu-latest]\n", []),
     ("    runs-on: ${{ matrix.os }}\n", []),
     ("    runs-on: ${{ matrix.runner }}\n", []),
