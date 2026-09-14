@@ -18,8 +18,8 @@ jobs:
     # and reliable Sigstore (Fulcio/Rekor) egress. `gh attestation verify` is the
     # only tool that does Sigstore bundle verification. The whole repo is on
     # ubuntu-latest (LAB-3501) and runner-guard.yml keeps it there, but the point
-    # is load-bearing here specifically: LAB-984 showed that when this ran on an
-    # ARC pod with no `gh` binary, every `gh` call exited 127 into `|| echo ""` and
+    # is load-bearing here specifically: when this once ran on a self-hosted runner
+    # with no `gh` binary, every `gh` call exited 127 into `|| echo ""` and
     # the job reported green while verifying nothing for weeks.
     runs-on: ubuntu-latest
     permissions:

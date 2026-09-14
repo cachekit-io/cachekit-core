@@ -9,7 +9,7 @@ on:
     # Saturday 11:07 UTC = Sat 21:07 AEST / 22:07 AEDT (Sydney night, year-round).
     # Weekly cadence: deep fuzz at 1h/target × 16 targets. Each matrix target is a
     # separate GitHub-hosted job, so they run in parallel (bounded by GitHub's
-    # concurrency limit) rather than serialising on one pool — and hosted minutes
+    # concurrency limit) rather than serialising on shared runners — and hosted minutes
     # are free for public repos. The longer opt-in run is via workflow_dispatch
     # (run_deep_fuzz). PR-time coverage (cargo audit/deny, Cargo Vet, Quick Fuzz,
     # CodeQL) catches regressions promptly; deep fuzz is for finding bugs, not
