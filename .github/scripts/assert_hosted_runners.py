@@ -4,11 +4,11 @@
 This is an ALLOW-LIST that FAILS CLOSED: every job's `runs-on` must resolve to an
 allow-listed GitHub-hosted label (`ubuntu-latest`, `macos-latest`, `windows-latest`;
 see HOSTED_LABELS). Anything the scanner cannot *prove* is hosted — `cachekit`,
-`self-hosted`, a custom `ubuntu-private` label on a self-hosted runner, a future pool
+`self-hosted`, a custom `ubuntu-private` label on a self-hosted runner, any future
 label nobody has invented yet, a runner-group object, or a `${{ }}` expression it
 can't resolve — is a violation. A deny-list of today's bad names would fail open
 the day someone adds a new one, or reformats the drift into a shape the deny-list
-doesn't grep (Alaya 999a8af5, selecta PR #72 lesson).
+doesn't grep.
 
 Forms handled, and how each stays fail-closed:
   - scalar / inline `[a, b]` / block-sequence `runs-on` -> every label allow-listed.
@@ -19,8 +19,8 @@ Forms handled, and how each stays fail-closed:
     `runs-on: ${{ matrix.os }}` or `${{ matrix.runner }}` (quotes optional), allowed
     ONLY because every matrix `os:` / `runner:` value in the file is scanned directly
     (a non-hosted value anywhere fails the whole file). EVERY other `${{ }}` in a
-    runner-target position is a violation — e.g. `os: ${{ vars.POOL }}` would launder
-    a self-hosted pool through the blessed indirection.
+    runner-target position is a violation — e.g. `os: ${{ vars.TARGET }}` would launder
+    a self-hosted label through the blessed indirection.
   - `matrix:` / `include:` must be static block mappings. A generated matrix
     (`matrix: ${{ fromJSON(…) }}`) or a flow mapping (`matrix: {os: […]}`) hides its
     `os:` values from the scanner, so any inline value on those keys is a violation.
@@ -45,7 +45,7 @@ Forms handled, and how each stays fail-closed:
     plain-scalar or `[…]` continuation line, a nested mapping — and is a violation.
     Write the value inline instead.
   - a job-level `uses:` of a REMOTE reusable workflow runs that workflow's jobs on this
-    repo's runner pool with a `runs-on` this scanner cannot see -> violation, as is a
+    repo's runners with a `runs-on` this scanner cannot see -> violation, as is a
     `uses:` whose value is not inline (`uses: >-`). Local callees
     (`./.github/workflows/…`) are scanned like any other file.
   - the top-level `on:` block (triggers, `workflow_dispatch` inputs) is skipped whole:
@@ -57,10 +57,10 @@ Forms handled, and how each stays fail-closed:
 
 SCOPE / what this is NOT. This runs inside the workflow, so it only protects against
 *maintainer drift on a trusted branch*: a fork PR runs the fork's own copy of this
-file and can simply delete the guard, so it is not a fork-PR control. The server-side
-control (runner group `cachekit-private`, allows_public_repositories=false) is
-LAB-1161 stage 2. Nor does it defend its own workflow (`runner-guard.yml`) against an
-`if: false` — that is branch protection's job (required status check + CODEOWNERS).
+file and can simply delete the guard, so it is not a fork-PR control; the control for
+that lives in repository and org runner settings, outside this file. Its own workflow
+(`runner-guard.yml`) is kept honest by branch protection (required status check +
+CODEOWNERS), not by this script.
 
 Deliberately dependency-free (stdlib only): it must behave identically on a hosted
 runner and a laptop, with no PyYAML — the ubuntu-latest image does not ship it, and a
@@ -177,7 +177,7 @@ def find_violations(text: str) -> list[tuple[int, str, str]]:
             # `>`/`|` are block scalars whose body is on later lines; `*` is a YAML
             # alias that resolves to an anchored value this line scanner cannot see —
             # `uses: *remote` would run an anchored remote reusable workflow on this
-            # repo's runner pool undetected (CodeRabbit, PR #76). All fail closed.
+            # repo's runners undetected (CodeRabbit review). All fail closed.
             if not v or v[0] in ">|*":
                 out.append((i + 1, "uses (unverifiable form)", v))
             elif ".github/workflows/" in v and not v.startswith("./"):
@@ -269,9 +269,9 @@ def main() -> int:
                 f"GitHub-hosted. Every job must run on an allow-listed hosted label "
                 f"(ubuntu-latest/macos-latest/windows-latest) as a "
                 f"plain scalar, `[a, b]`, block list, or `${{{{ matrix.os }}}}` over a "
-                f"static block matrix; self-hosted pools, runner groups, other ${{{{ }}}} "
+                f"static block matrix; self-hosted labels, runner groups, other ${{{{ }}}} "
                 f"expressions, flow mappings, generated matrices and remote reusable "
-                f"workflows fail closed (LAB-1161 / LAB-3501; see the docstring of "
+                f"workflows fail closed (see the docstring of "
                 f".github/scripts/assert_hosted_runners.py)."
             )
             failed = True
@@ -284,7 +284,7 @@ def main() -> int:
 # (workflow snippet, expected offending values). Table-driven rather than `assert`
 # so the self-test cannot be silently neutered by `python3 -O` / PYTHONOPTIMIZE.
 _CASES: list[tuple[str, list[str]]] = [
-    # --- MUST FAIL: direct pool labels and future names -------------------
+    # --- MUST FAIL: direct self-hosted labels and future names -------------------
     ("    runs-on: cachekit\n", ["cachekit"]),
     ("    runs-on: cachekit-lean\n", ["cachekit-lean"]),
     ("    runs-on: self-hosted\n", ["self-hosted"]),
@@ -302,12 +302,12 @@ _CASES: list[tuple[str, list[str]]] = [
     ("    runs-on:\n      - self-hosted\n      - linux\n", ["self-hosted", "linux"]),
     ("        runner: cachekit\n", ["cachekit"]),
     ('        os: "self-hosted"  # quoted + comment\n', ["self-hosted"]),
-    # --- MUST FAIL: the fail-open forms the expert panel found ------------
-    # runner-group object form (LAB-1161 stage 2's own mechanism).
-    ("    runs-on:\n      group: cachekit-private\n", ["cachekit-private"]),
+    # --- MUST FAIL: fail-open forms found in review -----------------------
+    # runner-group object form.
+    ("    runs-on:\n      group: private-runners\n", ["private-runners"]),
     (
-        "    runs-on:\n      group: cachekit-private\n      labels: [self-hosted]\n",
-        ["cachekit-private", "self-hosted"],
+        "    runs-on:\n      group: private-runners\n      labels: [self-hosted]\n",
+        ["private-runners", "self-hosted"],
     ),
     # A hosted-*sounding* group name is still rejected: groups are not used here.
     ("    runs-on:\n      group: ubuntu-big\n", ["ubuntu-big"]),
@@ -317,11 +317,11 @@ _CASES: list[tuple[str, list[str]]] = [
     # indirection through a key the scanner does not resolve → fail closed.
     ("    runs-on: ${{ matrix.platform }}\n", ["${{ matrix.platform }}"]),
     ("    runs-on: ${{ vars.RUNNER }}\n", ["${{ vars.RUNNER }}"]),
-    ("    runs-on: ${{ env.POOL }}\n", ["${{ env.POOL }}"]),
+    ("    runs-on: ${{ env.TARGET }}\n", ["${{ env.TARGET }}"]),
     # --- MUST FAIL: expressions anywhere but the one blessed runs-on scalar --
     # (Kody critical / CodeRabbit on PR #76.) An expression as the os:/runner:
-    # VALUE would launder a self-hosted pool through `runs-on: ${{ matrix.os }}`.
-    ("        os: ${{ vars.POOL }}\n", ["${{ vars.POOL }}"]),
+    # VALUE would launder a self-hosted label through `runs-on: ${{ matrix.os }}`.
+    ("        os: ${{ vars.TARGET }}\n", ["${{ vars.TARGET }}"]),
     (
         "    runs-on: ${{ matrix.os }}\n    strategy:\n      matrix:\n"
         "        os: ${{ fromJSON(inputs.oses) }}\n",
@@ -339,7 +339,7 @@ _CASES: list[tuple[str, list[str]]] = [
     ),
     ("        include: ${{ fromJSON(inputs.include) }}\n", ["${{ fromJSON(inputs.include) }}"]),
     ("      matrix: {os: [cachekit]}\n", ["{os: [cachekit]}"]),
-    # --- MUST FAIL: shapes the panel review of PR #76 found skipped ----------
+    # --- MUST FAIL: shapes review of PR #76 found skipped --------------------
     # Flow mappings anywhere: the standard Rust cross-compile include idiom, a
     # compact strategy, a whole job in flow form (scalar, group object, alias, uses).
     (
@@ -352,10 +352,10 @@ _CASES: list[tuple[str, list[str]]] = [
     ),
     ("jobs: {build: {runs-on: cachekit}}\n", ["jobs: {build: {runs-on: cachekit}}"]),
     (
-        "jobs: {build: {runs-on: {group: cachekit-private}}}\n",
-        ["jobs: {build: {runs-on: {group: cachekit-private}}}"],
+        "jobs: {build: {runs-on: {group: private-runners}}}\n",
+        ["jobs: {build: {runs-on: {group: private-runners}}}"],
     ),
-    ("jobs: {build: {runs-on: *pool}}\n", ["jobs: {build: {runs-on: *pool}}"]),
+    ("jobs: {build: {runs-on: *shared}}\n", ["jobs: {build: {runs-on: *shared}}"]),
     (
         "jobs: {ci: {uses: org/repo/.github/workflows/ci.yml@main}}\n",
         ["jobs: {ci: {uses: org/repo/.github/workflows/ci.yml@main}}"],
@@ -381,7 +381,7 @@ _CASES: list[tuple[str, list[str]]] = [
     ("    runs-on:\n      cachekit\n", ["cachekit"]),
     ("    runs-on:\n      [self-hosted, linux]\n", ["[self-hosted, linux]"]),
     ("    runs-on:\n      labels:\n        [self-hosted]\n", ["[self-hosted]"]),
-    # Remote reusable workflow: its runs-on is invisible here but runs on our pool.
+    # Remote reusable workflow: its runs-on is invisible here but runs on this repo's runners.
     (
         "    uses: cachekit-io/tooling/.github/workflows/ci.yml@main\n",
         ["cachekit-io/tooling/.github/workflows/ci.yml@main"],
@@ -389,7 +389,7 @@ _CASES: list[tuple[str, list[str]]] = [
     ("    uses: >-\n      org/repo/.github/workflows/ci.yml@main\n", [">-"]),
     ("    uses:\n      org/repo/.github/workflows/ci.yml@main\n", [""]),
     # A YAML alias resolves to an anchored value the line scanner cannot see; an anchored
-    # remote reusable workflow through `uses: *remote` would run on our pool undetected
+    # remote reusable workflow through `uses: *remote` would run on this repo's runners undetected
     # (CodeRabbit, PR #76). Rejected as an unverifiable form.
     ("    uses: *remote\n", ["*remote"]),
     # The on: block is skipped, but jobs after it are still scanned.
@@ -411,7 +411,7 @@ _CASES: list[tuple[str, list[str]]] = [
     ("    runs-on:\n      labels:\n        - ubuntu-latest\n", []),  # object form, block labels
     # A comment after runs-on before a block list must not be read as a label.
     ("    runs-on:  # pick per matrix\n      - ubuntu-latest\n", []),
-    # A comment line that merely mentions a pool name must not trip the scanner.
+    # A comment line that merely mentions a self-hosted label must not trip the scanner.
     ("    # runs-on: cachekit was the old value\n    runs-on: ubuntu-latest\n", []),
     # runs-on via matrix.os, with a static block matrix defining only hosted values.
     (
