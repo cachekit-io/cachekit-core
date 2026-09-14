@@ -1,6 +1,10 @@
 # Rust build artifacts
 /target/
 
+# Python bytecode from .github/scripts/ (the runner-guard drift check)
+__pycache__/
+*.py[cod]
+
 # Generated files (keep .gitkeep but ignore generated header)
 include/cachekit.h
 
