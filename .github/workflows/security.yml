@@ -7,12 +7,13 @@ on:
     branches: [main]
   schedule:
     # Saturday 11:07 UTC = Sat 21:07 AEST / 22:07 AEDT (Sydney night, year-round).
-    # Weekly cadence: deep fuzz at 1h/target × 16 targets is ~16 runner-hours, which
-    # drains in a few hours overnight instead of monopolising the shared ARC pool for
-    # ~32h. The full 8h/target run is opt-in via workflow_dispatch (run_deep_fuzz).
-    # PR-time coverage (cargo audit/deny, Cargo Vet, Quick Fuzz, CodeQL) catches
-    # regressions promptly; deep fuzz is for finding bugs, not gating merges.
-    # Off-minute (:07) avoids the cron pile-up that GitHub schedules at :00.
+    # Weekly cadence: deep fuzz at 1h/target × 16 targets. Each matrix target is a
+    # separate GitHub-hosted job, so they run in parallel (bounded by GitHub's
+    # concurrency limit) rather than serialising on shared runners — and hosted minutes
+    # are free for public repos. The longer opt-in run is via workflow_dispatch
+    # (run_deep_fuzz). PR-time coverage (cargo audit/deny, Cargo Vet, Quick Fuzz,
+    # CodeQL) catches regressions promptly; deep fuzz is for finding bugs, not
+    # gating merges. Off-minute (:07) avoids the cron pile-up GitHub schedules at :00.
     - cron: '7 11 * * 6'
   # Deliberately no `release:` trigger. It existed only for an SBOM job that
   # attached a release asset, and that can never work here: immutable releases
@@ -29,13 +30,13 @@ on:
   workflow_dispatch:
     inputs:
       run_deep_fuzz:
-        description: "Run the full deep-fuzz matrix (heavy — occupies the ARC pool)"
+        description: "Run the full deep-fuzz matrix (heavy — one hosted job per target)"
         type: boolean
         default: false
       fuzz_seconds:
-        description: "Seconds per target for an on-demand deep fuzz (default 8h)"
+        description: "Seconds per target for an on-demand deep fuzz (default 5h; hard cap 18000s to fit GitHub's 6h job limit)"
         type: string
-        default: "28800"
+        default: "18000"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -44,16 +45,11 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # Cap cargo parallelism so cold builds (incl. ASAN fuzz-target builds) don't
-  # OOM-kill the linker in the 5Gi cachekit runner — see cachekit-rs #25/#26.
-  # NOTE: -j bounds parallel codegen, not ASAN's absolute footprint; it's a
-  # strong mitigation for the fuzz builds, a full fix for normal cargo builds.
-  CARGO_BUILD_JOBS: "4"
 
 jobs:
   fast-security:
     name: Fast Security Checks
-    runs-on: cachekit
+    runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     steps:
       - name: Checkout code
@@ -98,7 +94,7 @@ jobs:
 
   quick-fuzz:
     name: Quick Fuzz (Corpus Only)
-    runs-on: cachekit
+    runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     strategy:
       fail-fast: false
@@ -160,13 +156,13 @@ jobs:
 
   deep-fuzz:
     name: Deep Fuzzing
-    runs-on: cachekit
-    # Scheduled weekly run is light (1h/target) so it can't monopolise the shared
-    # ARC pool. The full 8h/target run is opt-in via workflow_dispatch (run_deep_fuzz).
+    runs-on: ubuntu-latest
+    # Scheduled weekly run is light (1h/target). The longer on-demand run is opt-in
+    # via workflow_dispatch (run_deep_fuzz) and clamped to fit the hosted 6h cap.
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_deep_fuzz)
-    # 540min cap accommodates the on-demand 8h path; the inner timeout governs the
-    # actual scheduled (1h) vs dispatched (configurable) duration.
-    timeout-minutes: 540
+    # 360min = GitHub's hosted job cap. The inner timeout governs the actual
+    # scheduled (1h) vs dispatched (<=5h, clamped below) duration.
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
@@ -214,18 +210,20 @@ jobs:
         run: cargo install cargo-fuzz
 
       - name: Run deep fuzz
-        # Scheduled runs use 1h/target (keeps the ARC pool free for PR CI); a manual
-        # workflow_dispatch can request the full 8h (or any duration) via fuzz_seconds.
+        # Scheduled runs use 1h/target; a manual workflow_dispatch can request a
+        # longer duration (up to the 5h clamp below) via fuzz_seconds.
         env:
           FUZZ_SECONDS: ${{ (github.event_name == 'workflow_dispatch' && inputs.fuzz_seconds) || '3600' }}
         run: |
           # Validate the dispatch-supplied duration before it reaches shell arithmetic
-          # and the fuzzer. Must be a positive integer and within the 540min job cap.
+          # and the fuzzer. Must be a positive integer within the hosted 6h job cap.
+          # Ceiling is 18000s (5h): +180s hang slack (below) still leaves headroom
+          # under timeout-minutes 360 (21600s), so a dispatched job cannot exceed 6h.
           case "$FUZZ_SECONDS" in
             ''|*[!0-9]*) echo "::error::fuzz_seconds must be a positive integer (got '$FUZZ_SECONDS')"; exit 1 ;;
           esac
-          if [ "$FUZZ_SECONDS" -lt 1 ] || [ "$FUZZ_SECONDS" -gt 32400 ]; then
-            echo "::error::fuzz_seconds must be 1..32400 (<= 540min job cap), got $FUZZ_SECONDS"; exit 1
+          if [ "$FUZZ_SECONDS" -lt 1 ] || [ "$FUZZ_SECONDS" -gt 18000 ]; then
+            echo "::error::fuzz_seconds must be 1..18000 (<= 6h hosted job cap), got $FUZZ_SECONDS"; exit 1
           fi
           cd fuzz
           # Build first - fail fast on compile errors
@@ -249,7 +247,7 @@ jobs:
 
   kani:
     name: Kani Formal Verification
-    runs-on: cachekit
+    runs-on: ubuntu-latest
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read # least-privilege: the job only checks out and verifies
@@ -293,7 +291,7 @@ jobs:
 
   cargo-vet:
     name: Cargo Vet (Supply Chain)
-    runs-on: cachekit
+    runs-on: ubuntu-latest
     if: github.event_name == 'schedule' || github.event_name == 'pull_request'
     steps:
       - name: Checkout code
