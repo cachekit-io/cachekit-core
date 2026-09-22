@@ -6,7 +6,7 @@
 //! # Features
 //! - **AES-256-GCM. Not configurable by design.** Authenticated encryption with ring library
 //! - HKDF-SHA256 key derivation with domain separation (RFC 5869)
-//! - Hardware acceleration detection and usage (AES-NI)
+//! - Hardware acceleration capability detection (AES-NI / Armv8 Crypto Extension)
 //! - Per-tenant key isolation with cryptographic guarantees
 //! - Zero-knowledge guarantees: storage never sees plaintext or keys
 
