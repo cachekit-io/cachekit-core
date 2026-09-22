@@ -20,7 +20,8 @@ pub struct OperationMetrics {
     /// Encryption operation time in microseconds (None if not performed)
     pub encryption_time_micros: Option<u64>,
 
-    /// Whether hardware acceleration was used (for SHA, AES, etc.)
+    /// Whether the CPU reports AES hardware (AES-NI / Armv8 Crypto Extension).
+    /// Informational only: the crypto backend dispatches on its own detection.
     pub hardware_accelerated: bool,
 }
 

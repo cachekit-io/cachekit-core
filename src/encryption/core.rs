@@ -283,12 +283,11 @@ impl ZeroKnowledgeEncryptor {
                 true
             }
 
-            // Runtime detection for AArch64 crypto extensions
+            // NEON is default on every aarch64 target, so a cfg!(target_feature = "neon")
+            // check is const true and says nothing about AES (Cortex-A72 / Pi 3-4: NEON, no AES).
             #[cfg(not(target_feature = "aes"))]
             {
-                // ARM crypto extensions are usually available on modern ARM64
-                // ring library will use them automatically if available
-                return cfg!(target_feature = "neon");
+                std::arch::is_aarch64_feature_detected!("aes")
             }
         }
 
@@ -604,6 +603,21 @@ impl ZeroKnowledgeEncryptor {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+
+    // Both probes fold to const true under compile-time aes, so the cfg short-circuit is pinned too.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
+    #[test]
+    fn test_hardware_acceleration_matches_platform_probe() {
+        let reported = ZeroKnowledgeEncryptor::new()
+            .unwrap()
+            .hardware_acceleration_enabled();
+
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        assert_eq!(reported, std::arch::is_x86_feature_detected!("aes"));
+
+        #[cfg(target_arch = "aarch64")]
+        assert_eq!(reported, std::arch::is_aarch64_feature_detected!("aes"));
+    }
 
     #[test]
     fn test_encrypt_decrypt_roundtrip() {
