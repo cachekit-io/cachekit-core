@@ -49,7 +49,7 @@ This crate protects against:
 - **Data tampering**: GCM authentication tags (when encryption enabled); xxHash3 detects accidental corruption only
 - **Data disclosure**: AES-256-GCM encryption (when enabled)
 - **Key compromise isolation**: HKDF domain separation per tenant
-- **Decompression bombs**: Size limits + ratio validation
+- **Decompression bombs**: Size limits + ratio validation (see [Decompression limits](#decompression-limits))
 - **Memory disclosure**: `zeroize` on drop for key material
 
 This crate does **not** protect against:
@@ -58,6 +58,67 @@ This crate does **not** protect against:
 - Compromise of the master key
 - Denial of service via resource exhaustion (partial protection only)
 - Attacks requiring physical access
+
+### Decompression limits
+
+`StorageEnvelope::extract` bounds LZ4 decompression **before** calling
+`lz4_flex::decompress`, so a forged envelope cannot expand without limit:
+
+| Limit | Value | Enforced on |
+|:------|:------|:------------|
+| `MAX_COMPRESSED_SIZE` | 512 MiB | `compressed_data.len()` |
+| `MAX_UNCOMPRESSED_SIZE` | 512 MiB | declared `original_size` |
+| `MAX_COMPRESSION_RATIO` | 1000:1 | `original_size` vs `compressed_data.len()` |
+
+The same `MAX_COMPRESSED_SIZE` constant also bounds the *serialized* envelope
+before MessagePack deserialization — but that check lives in
+`ByteStorage::retrieve` and `ByteStorage::validate`, not on `StorageEnvelope`.
+`StorageEnvelope` is public with public fields, so a caller who deserializes it
+directly gets no such bound and must impose one.
+
+The ratio product is computed in `u64` via `checked_mul`, and overflow is
+treated as a bomb. Zero-length compressed data is rejected unconditionally,
+including when the envelope declares `original_size == 0`.
+
+`lz4_flex` returns `OutputTooSmall` rather than growing past the allocation, so
+the decompressed output is bounded by `min(512 MiB, 1000 × compressed_data.len())`
+regardless of what the envelope claims. `extract` then re-checks the produced
+length, because a decompressor's size argument sizes a buffer; it never asserts
+the decoded length. Keep `lz4_flex`'s default `safe-decode` feature on: it
+decodes into a zero-filled fixed-length buffer, where the non-safe decoder uses
+`with_capacity` + `set_len`.
+
+- **`original_size` does not act as a bound.** It is attacker-controlled on any
+  backend an attacker can write to. It *does* size the allocation, but only
+  within the absolute and ratio limits already checked above — so a forged
+  envelope can still make a reader allocate up to `1000 × compressed_data.len()`
+  before the LZ4 stream is validated. That is allocation amplification within
+  the bound, not a bypass of it. Note that `ByteStorage::validate()` reaches the
+  same allocation — it calls `extract()` and discards the result — so it is
+  *not* a cheap structural pre-screen for untrusted envelopes.
+- **xxHash3-64 is not a control here.** It is unkeyed, so anyone who can
+  forge an envelope recomputes it. It detects accidental corruption, not
+  forgery. Authentication comes from AES-256-GCM, and only for secure caches.
+
+**The ceiling is server-class.** `ByteStorage::retrieve` holds the serialized
+envelope, the deserialized `compressed_data` copy and the decompressed output at
+the same time, so a single call can peak well above 512 MiB — up to roughly
+1.5 GiB at the limits. That does *not* fit a constrained runtime: a Cloudflare
+Workers isolate has ~128 MiB, so a payload well inside these limits can still
+exhaust it, and on `wasm32` the allocation is an eager `memory.grow` that needs
+no valid LZ4 stream behind it. On `wasm32` that is worse than a spike: linear
+memory never shrinks, so a single large extract permanently raises the
+isolate's floor for every subsequent request it serves. Deployments on
+constrained runtimes must bound payload size at the caller. Making these
+constants environment-aware or configurable is tracked as a follow-up.
+
+**Test coverage.** The unit tests in `src/byte_storage.rs` call `extract`
+directly and are the only merge-time enforcement of the bound. The
+`compression_bomb` fuzz target (`fuzz/fuzz_targets/compression_bomb.rs`) is a
+build-and-smoke check at pull-request time, and its weekly deep run restarts
+from an empty corpus. The Kani harnesses never run on pull requests, never
+execute `StorageEnvelope::extract`, and cannot detect a wrong predicate. Treat both as
+smoke checks, not as verification of the bound.
 
 ### Dependencies
 
