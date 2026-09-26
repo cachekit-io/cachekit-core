@@ -270,7 +270,11 @@ impl ByteStorage {
         Ok(data.len() as f64 / compressed.len() as f64)
     }
 
-    /// Validate envelope without extracting data
+    /// Validate an envelope by fully extracting it and discarding the result
+    ///
+    /// This runs `StorageEnvelope::extract`, so it decompresses the payload and
+    /// allocates up to the decompression bound. It is not a cheap structural
+    /// pre-screen for untrusted envelopes.
     #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
     pub fn validate(&self, envelope_bytes: &[u8]) -> bool {
         // Security: Check size before validating
