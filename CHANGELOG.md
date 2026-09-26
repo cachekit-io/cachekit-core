@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.6.0...cachekit-core-v0.6.1) (2026-09-26)
+
+
+### Bug Fixes
+
+* **encryption:** probe the Armv8 Crypto Extension on aarch64 instead of NEON (LAB-4650) ([#77](https://github.com/cachekit-io/cachekit-core/issues/77)) ([77b18db](https://github.com/cachekit-io/cachekit-core/commit/77b18db184c74254a52b8bed0be76e9f7a38fea5))
+
 ## [0.6.0](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.5.0...cachekit-core-v0.6.0) (2026-08-08)
 
 
