@@ -268,10 +268,7 @@ impl ZeroKnowledgeEncryptor {
             // Runtime detection fallback
             #[cfg(not(target_feature = "aes"))]
             {
-                if is_x86_feature_detected!("aes") {
-                    return true;
-                }
-                false
+                is_x86_feature_detected!("aes")
             }
         }
 
