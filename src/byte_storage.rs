@@ -218,6 +218,15 @@ impl ByteStorage {
     /// Retrieve and validate stored bytes
     ///
     /// Returns (original_data, format_identifier)
+    ///
+    /// # Errors
+    ///
+    /// `envelope_bytes` is untrusted. Before it is decoded, a structural
+    /// pre-scan bounds its nesting depth and rejects any header that declares
+    /// more than the input can back (protocol Retrieve Flow, step 2). A
+    /// pre-scan rejection is `DeserializationFailed` whose message starts with
+    /// `decode pre-scan: `, the same variant as any other bytes that do not
+    /// decode as a `StorageEnvelope`.
     #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
     pub fn retrieve(&self, envelope_bytes: &[u8]) -> Result<(Vec<u8>, String), ByteStorageError> {
         // Security: Check envelope size before deserializing
@@ -225,9 +234,7 @@ impl ByteStorage {
             return Err(ByteStorageError::InputTooLarge);
         }
 
-        // Deserialize envelope
-        let envelope: StorageEnvelope = rmp_serde::from_slice(envelope_bytes)
-            .map_err(|e| ByteStorageError::DeserializationFailed(e.to_string()))?;
+        let envelope = decode_envelope(envelope_bytes)?;
 
         // Time decompression and checksum operations (wasm32: Instant unavailable, use 0)
         #[cfg(not(target_arch = "wasm32"))]
@@ -282,7 +289,7 @@ impl ByteStorage {
             return false; // Invalid due to size limit
         }
 
-        match rmp_serde::from_slice::<StorageEnvelope>(envelope_bytes) {
+        match decode_envelope(envelope_bytes) {
             Ok(envelope) => envelope.extract().is_ok(),
             Err(_) => false,
         }
@@ -316,6 +323,20 @@ impl Default for ByteStorage {
     fn default() -> Self {
         Self::new(None)
     }
+}
+
+/// Decode untrusted envelope bytes: structural pre-scan first, then the typed
+/// decode. Serde's derive skips an unknown map key with `IgnoredAny`, which
+/// recurses, so the depth bound has to hold before `rmp_serde` sees the bytes.
+#[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
+fn decode_envelope(envelope_bytes: &[u8]) -> Result<StorageEnvelope, ByteStorageError> {
+    use crate::msgpack_bounds::{check_msgpack_structure, MAX_DEPTH};
+
+    check_msgpack_structure(envelope_bytes, MAX_DEPTH).map_err(|what| {
+        ByteStorageError::DeserializationFailed(format!("decode pre-scan: {what}"))
+    })?;
+    rmp_serde::from_slice(envelope_bytes)
+        .map_err(|e| ByteStorageError::DeserializationFailed(e.to_string()))
 }
 
 #[cfg(all(

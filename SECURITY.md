@@ -120,6 +120,40 @@ from an empty corpus. The Kani harnesses never run on pull requests, never
 execute `StorageEnvelope::extract`, and cannot detect a wrong predicate. Treat both as
 smoke checks, not as verification of the bound.
 
+### Envelope decode bounds
+
+`ByteStorage::retrieve` and `ByteStorage::validate` decode envelope bytes that
+come from a backend the caller may not control. Before `rmp_serde` materialises
+a `StorageEnvelope`, both run a header-only structural pre-scan over those bytes
+(protocol `spec/wire-format.md` → Retrieve Flow, step 2; the bounds themselves
+are `spec/interop-mode.md` → Decode bounds). The pre-scan rejects:
+
+| Rule | Bound |
+|:-----|:------|
+| Nesting depth | 100 levels; every array or map header on a path counts, an empty one included |
+| Declared slots | pending collection elements never exceed the bytes left to back them; str/bin/ext lengths never exceed the bytes left |
+| Framing | the reserved marker `0xc1`, and input that ends before the document is complete |
+
+A legitimate envelope nests two levels deep, so the depth bound only ever
+rejects forged input. It still matters: serde's derive skips an unknown map key
+with a recursive `IgnoredAny`, so without the pre-scan the input, not this
+crate, would set how deep the decode recurses. All counts are `u64`, and the
+walk skips str/bin/ext payloads by offset: it allocates one `u64` per open
+collection and nothing proportional to a declared length.
+
+A rejection is `ByteStorageError::DeserializationFailed` with a message that
+starts with `decode pre-scan: `, the same variant as any other bytes that do
+not decode as an envelope, so bindings that map on the variant see no change.
+Trailing bytes after the envelope are still ignored, as before.
+
+`tests/decode_bounds_vectors.rs` drives every vector in the protocol's
+`test-vectors/decode-bounds.json` (vendored sha256-pinned in `tests/vectors/`)
+through `retrieve`, and asserts the pre-scan's message prefix, not merely that
+the call fails. It also decodes a real envelope nested exactly at the depth
+bound on 2 MiB and 1 MiB threads. As with the size bound above, a caller that
+deserializes `StorageEnvelope` directly bypasses the pre-scan and must impose
+its own.
+
 ### Dependencies
 
 Security-critical dependencies are audited via `cargo-deny`:
