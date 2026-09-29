@@ -261,31 +261,15 @@ impl ZeroKnowledgeEncryptor {
         // On x86/x86_64, check for AES-NI instruction support
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
-            // Use std::arch to detect CPU features
-            #[cfg(target_feature = "aes")]
-            return true;
-
-            // Runtime detection fallback
-            #[cfg(not(target_feature = "aes"))]
-            {
-                is_x86_feature_detected!("aes")
-            }
+            is_x86_feature_detected!("aes")
         }
 
         // On ARM64, check for crypto extensions
         #[cfg(target_arch = "aarch64")]
         {
-            #[cfg(target_feature = "aes")]
-            {
-                true
-            }
-
             // NEON is default on every aarch64 target, so a cfg!(target_feature = "neon")
             // check is const true and says nothing about AES (Cortex-A72 / Pi 3-4: NEON, no AES).
-            #[cfg(not(target_feature = "aes"))]
-            {
-                std::arch::is_aarch64_feature_detected!("aes")
-            }
+            std::arch::is_aarch64_feature_detected!("aes")
         }
 
         // For other architectures, assume software implementation
@@ -601,7 +585,7 @@ impl ZeroKnowledgeEncryptor {
 mod tests {
     use super::*;
 
-    // Both probes fold to const true under compile-time aes, so the cfg short-circuit is pinned too.
+    // The reported flag is exactly the platform AES probe (const true under compile-time aes).
     #[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
     #[test]
     fn test_hardware_acceleration_matches_platform_probe() {
