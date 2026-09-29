@@ -52,10 +52,6 @@ getrandom = { version = "0.2", features = ["js"], optional = true }
 aes-gcm = { version = "0.10", features = ["zeroize"], optional = true }
 aes = { version = "0.8", features = ["zeroize"], optional = true }
 
-# Byte utilities
-bytes = "1.5"
-byteorder = "1.5"
-
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # ring: hardware-accelerated AES-256-GCM for native targets only.
 # Does NOT compile on wasm32-unknown-unknown (requires clang for C asm).

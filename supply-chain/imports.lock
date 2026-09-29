@@ -341,6 +341,12 @@ criteria = "safe-to-deploy"
 delta = "0.9.15 -> 0.9.18"
 notes = "Nontrivial update but mostly around dependencies and how `unsafe` code is managed. Everything looks the same shape as before."
 
+[[audits.bytecode-alliance.audits.crossbeam-epoch]]
+who = "Alex Crichton <alex@alexcrichton.com>"
+criteria = "safe-to-deploy"
+delta = "0.9.18 -> 0.9.20"
+notes = "Minor updates, nothing out of place."
+
 [[audits.bytecode-alliance.audits.errno]]
 who = "Dan Gohman <dev@sunfishcode.online>"
 criteria = "safe-to-deploy"
@@ -503,13 +509,6 @@ think this justifies marking this crate as `ub-risk-1`.
 
 Additional review comments can be found at https://crrev.com/c/4723145/31
 """
-aggregated-from = "https://chromium.googlesource.com/chromium/src/+/main/third_party/rust/chromium_crates_io/supply-chain/audits.toml?format=TEXT"
-
-[[audits.google.audits.byteorder]]
-who = "danakj <danakj@chromium.org>"
-criteria = "safe-to-deploy"
-version = "1.5.0"
-notes = "Unsafe review in https://crrev.com/c/5838022"
 aggregated-from = "https://chromium.googlesource.com/chromium/src/+/main/third_party/rust/chromium_crates_io/supply-chain/audits.toml?format=TEXT"
 
 [[audits.google.audits.cast]]
