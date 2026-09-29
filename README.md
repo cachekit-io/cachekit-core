@@ -247,6 +247,19 @@ Malicious payloads claiming `original_size: 500GB` with 100 bytes of data are re
 
 </details>
 
+<details>
+<summary><strong>Envelope Decode Bounds</strong></summary>
+
+`retrieve()` and `validate()` run a header-only structural pre-scan over the
+envelope bytes **before** MessagePack decoding: nesting deeper than 100 levels,
+headers declaring more elements or bytes than the input can back, the reserved
+marker `0xc1` and truncated input are all rejected before decoding, without
+allocating in proportion to any declared length. A rejection is
+`ByteStorageError::DeserializationFailed` with the message prefix
+`decode pre-scan: `. See [`SECURITY.md`](SECURITY.md#envelope-decode-bounds).
+
+</details>
+
 ---
 
 ## Architecture
@@ -256,6 +269,7 @@ cachekit-core/
 ├── src/
 │   ├── lib.rs              # Public API exports
 │   ├── byte_storage.rs     # LZ4 + xxHash3 storage envelope
+│   ├── msgpack_bounds.rs   # Structural pre-scan run before the envelope decode
 │   ├── checksum.rs         # Standalone xxHash3 checksum/verify primitive (feature = "checksum")
 │   ├── metrics.rs          # Operation timing & statistics
 │   │
@@ -350,6 +364,12 @@ including bin16/bin32 width headers. The fixture is vendored at
 `tests/vectors/wire-format.json` and integrity-pinned by sha256 — to update
 it, re-copy from the protocol repo and change the pinned hash in the same
 commit.
+
+`tests/decode_bounds_vectors.rs` drives every reject and accept vector in the
+protocol's `test-vectors/decode-bounds.json` (vendored the same way, at
+`tests/vectors/decode-bounds.json`) through `retrieve()`. Each reject vector
+must fail with the pre-scan's `decode pre-scan: ` message prefix; failing
+somewhere inside the decoder does not count.
 
 ---
 
