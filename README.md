@@ -253,8 +253,9 @@ Malicious payloads claiming `original_size: 500GB` with 100 bytes of data are re
 `retrieve()` and `validate()` run a header-only structural pre-scan over the
 envelope bytes **before** MessagePack decoding: nesting deeper than 100 levels,
 headers declaring more elements or bytes than the input can back, the reserved
-marker `0xc1` and truncated input are all rejected without allocating. A
-rejection is `ByteStorageError::DeserializationFailed` with the message prefix
+marker `0xc1` and truncated input are all rejected before decoding, without
+allocating in proportion to any declared length. A rejection is
+`ByteStorageError::DeserializationFailed` with the message prefix
 `decode pre-scan: `. See [`SECURITY.md`](SECURITY.md#envelope-decode-bounds).
 
 </details>

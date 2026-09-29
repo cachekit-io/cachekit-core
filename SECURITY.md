@@ -149,10 +149,8 @@ Trailing bytes after the envelope are still ignored, as before.
 `tests/decode_bounds_vectors.rs` drives every vector in the protocol's
 `test-vectors/decode-bounds.json` (vendored sha256-pinned in `tests/vectors/`)
 through `retrieve`, and asserts the pre-scan's message prefix, not merely that
-the call fails. It also decodes a real envelope nested exactly at the depth
-bound on 2 MiB and 1 MiB threads. As with the size bound above, a caller that
-deserializes `StorageEnvelope` directly bypasses the pre-scan and must impose
-its own.
+the call fails. As with the size bound above, a caller that deserializes
+`StorageEnvelope` directly bypasses the pre-scan and must impose its own.
 
 ### Dependencies
 

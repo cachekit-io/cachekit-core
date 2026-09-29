@@ -1,12 +1,13 @@
 //! Decode-bounds vectors through `ByteStorage::retrieve`.
 //!
-//! `retrieve` is the untrusted envelope decode every SDK reaches, so the
-//! protocol requires it to pre-scan the envelope bytes before materialising a
-//! `StorageEnvelope` (`protocol/spec/wire-format.md` → Retrieve Flow, step 2;
-//! the bounds are `spec/interop-mode.md` → Decode bounds). Asserting only that
-//! a reject vector fails would not show that: a bare decoder fails on every one
-//! of them too, after it has started materialising. Each reject vector must
-//! therefore fail with the message prefix that only the pre-scan produces.
+//! `retrieve` is the untrusted envelope decode that cachekit-py and cachekit-ts
+//! (NAPI and wasm) reach, so the protocol requires it to pre-scan the envelope
+//! bytes before materialising a `StorageEnvelope` (`protocol/spec/wire-format.md`
+//! → Retrieve Flow, step 2; the bounds are `spec/interop-mode.md` → Decode
+//! bounds). Asserting only that a reject vector fails would not show that: a
+//! bare decoder fails on every one of them too, after it has started
+//! materialising. Each reject vector must therefore fail with the message
+//! prefix that only the pre-scan produces.
 //!
 //! Fixture provenance: vendored from
 //! <https://github.com/cachekit-io/protocol> `test-vectors/decode-bounds.json`

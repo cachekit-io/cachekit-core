@@ -5,7 +5,8 @@
 //! → Retrieve Flow, step 2; the bounds are `spec/interop-mode.md` → Decode
 //! bounds, pinned by `tests/vectors/decode-bounds.json`). The opcode table
 //! matches cachekit-py's `check_msgpack_structure` and cachekit-rs's
-//! `check_structure`, so the SDKs reject the same documents.
+//! `check_structure`. Unlike those two, this walk also counts an empty
+//! collection as a nesting level, which is how the spec defines depth.
 
 /// Nesting bound for the envelope decode. The protocol requires 32..=1024; 100
 /// matches cachekit-rs and cachekit-ts. A legitimate envelope nests 2 deep.
@@ -84,8 +85,8 @@ pub(crate) fn check_msgpack_structure(bytes: &[u8], max_depth: usize) -> Result<
         if payload > remaining {
             return Err("declares more bytes than the input holds".to_owned());
         }
-        // <= remaining, so this cannot fail; `try_from` rather than `as usize`
-        // keeps a 32-bit target honest.
+        // Unreachable while the check above holds (`remaining` came from a
+        // usize); checked rather than cast so a future edit cannot truncate.
         pos += usize::try_from(payload)
             .map_err(|_| "declares more bytes than the input holds".to_owned())?;
         if children > 0 {
@@ -214,7 +215,8 @@ mod tests {
 
     #[test]
     fn widest_claims_do_not_overflow() {
-        // 2 × (2^32 − 1) pairs and a u32::MAX ext length, computed in u64.
+        // 2^32 − 1 pairs (2 × (2^32 − 1) slots) and a u32::MAX ext length,
+        // computed in u64.
         assert_eq!(
             check(&[0xdf, 0xff, 0xff, 0xff, 0xff]),
             Err("declares more elements than the input can back".to_owned())
