@@ -5,8 +5,9 @@
 //! → Retrieve Flow, step 2; the bounds are `spec/interop-mode.md` → Decode
 //! bounds, pinned by `tests/vectors/decode-bounds.json`). The opcode table
 //! matches cachekit-py's `check_msgpack_structure` and cachekit-rs's
-//! `check_structure`. Unlike those two, this walk also counts an empty
-//! collection as a nesting level, which is how the spec defines depth.
+//! `check_structure`. Unlike cachekit-py's walk, this one counts an empty
+//! collection as a nesting level, which is how the spec defines depth;
+//! cachekit-rs bounds depth in `rmp_serde` rather than in its walk.
 
 /// Nesting bound for the envelope decode. The protocol requires 32..=1024; 100
 /// matches cachekit-rs and cachekit-ts. A legitimate envelope nests 2 deep.
