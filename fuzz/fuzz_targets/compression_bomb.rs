@@ -19,7 +19,7 @@ const MAX_COMPRESSION_RATIO: u64 = 1000;
 
 /// Smallest compressed length whose 1000:1 allowance exceeds the
 /// `original_size` cap, so the cap alone can reject a declared size.
-const MIN_LEN_FOR_ORIGINAL_CAP: usize = 536_871;
+const MIN_LEN_FOR_ORIGINAL_CAP: usize = MAX_UNCOMPRESSED_SIZE / MAX_COMPRESSION_RATIO as usize + 1;
 
 #[derive(Arbitrary, Debug)]
 enum Case {
@@ -38,18 +38,14 @@ enum Case {
         checksum_xor: [u8; 8],
     },
     /// `compressed_data.len()` over its cap; nothing else rejects it.
-    CompressedOverCap {
-        extra: u8,
-        original_size: u16,
-        fill: u8,
-    },
+    CompressedOverCap { extra: u8, original_size: u16 },
     /// `compressed_data.len()` exactly at its cap: `extract` gets past the
-    /// bound, but the serialized envelope exceeds `retrieve`'s length check.
-    CompressedAtCap { original_size: u16, fill: u8 },
+    /// bound and fails at decompression.
+    CompressedAtCap { original_size: u16, extra: u8 },
     /// `original_size` in (cap, 1000 × len]; nothing else rejects it.
-    OriginalOverCap { extra_len: u16, size: u32, fill: u8 },
+    OriginalOverCap { extra_len: u16, size: u32 },
     /// Both sizes within their caps, ratio over 1000:1.
-    RatioOver { len: u16, excess: u32, fill: u8 },
+    RatioOver { len: u16, excess: u32 },
 }
 
 /// The bound, in `extract`'s check order.
@@ -101,7 +97,7 @@ fn expected_valid(
     Ok(data.to_vec())
 }
 
-/// Debug form that never prints a payload (they reach 512 MiB).
+/// Debug form that prints the variant, not the payload bytes.
 fn describe<T>(result: &Result<T, ByteStorageError>) -> String {
     match result {
         Ok(_) => "Ok(..)".to_string(),
@@ -109,39 +105,54 @@ fn describe<T>(result: &Result<T, ByteStorageError>) -> String {
     }
 }
 
+fn assert_extract(envelope: &StorageEnvelope, expected: &Result<Vec<u8>, ByteStorageError>) {
+    let extracted = envelope.extract();
+    assert!(
+        extracted == *expected,
+        "extract: expected {}, got {} (compressed_len={} original_size={})",
+        describe(expected),
+        describe(&extracted),
+        envelope.compressed_data.len(),
+        envelope.original_size
+    );
+}
+
+fn assert_retrieve(
+    storage: &ByteStorage,
+    envelope_bytes: &[u8],
+    expected: Result<(Vec<u8>, String), ByteStorageError>,
+) {
+    let retrieved = storage.retrieve(envelope_bytes);
+    assert!(
+        retrieved == expected,
+        "retrieve: expected {}, got {} (envelope_len={})",
+        describe(&expected),
+        describe(&retrieved),
+        envelope_bytes.len()
+    );
+}
+
+/// Both calls on an envelope small enough to serialize cheaply.
 fn assert_outcome(
     storage: &ByteStorage,
     envelope: &StorageEnvelope,
     expected: Result<Vec<u8>, ByteStorageError>,
 ) {
-    let context = format!(
-        "compressed_len={} original_size={}",
-        envelope.compressed_data.len(),
-        envelope.original_size
-    );
-
-    let extracted = envelope.extract();
-    assert!(
-        extracted == expected,
-        "extract: expected {}, got {} ({context})",
-        describe(&expected),
-        describe(&extracted)
-    );
-
+    assert_extract(envelope, &expected);
     let bytes = rmp_serde::to_vec(envelope).expect("envelope serializes");
-    let expected = if bytes.len() > MAX_COMPRESSED_SIZE {
-        Err(ByteStorageError::InputTooLarge)
-    } else {
-        expected.map(|data| (data, envelope.format.clone()))
-    };
-    let retrieved = storage.retrieve(&bytes);
-    assert!(
-        retrieved == expected,
-        "retrieve: expected {}, got {} ({context}, envelope_len={})",
-        describe(&expected),
-        describe(&retrieved),
-        bytes.len()
+    assert_retrieve(
+        storage,
+        &bytes,
+        expected.map(|data| (data, envelope.format.clone())),
     );
+}
+
+/// `retrieve` on input over its length cap. Zeroed bytes stay lazily mapped,
+/// so this costs no page writes, and they do not decode as an envelope: without
+/// the length check the result is `DeserializationFailed`, not `InputTooLarge`.
+fn assert_retrieve_over_cap(storage: &ByteStorage, extra: u8) {
+    let bytes = vec![0u8; MAX_COMPRESSED_SIZE + 1 + extra as usize];
+    assert_retrieve(storage, &bytes, Err(ByteStorageError::InputTooLarge));
 }
 
 fn envelope(compressed_data: Vec<u8>, original_size: u32) -> StorageEnvelope {
@@ -191,37 +202,32 @@ fuzz_target!(|case: Case| {
         Case::CompressedOverCap {
             extra,
             original_size,
-            fill,
         } => {
             let len = MAX_COMPRESSED_SIZE + 1 + extra as usize;
-            let envelope = envelope(vec![fill; len], original_size as u32);
-            assert_outcome(&storage, &envelope, Err(ByteStorageError::InputTooLarge));
+            let envelope = envelope(vec![0u8; len], original_size as u32);
+            assert_extract(&envelope, &Err(ByteStorageError::InputTooLarge));
+            assert_retrieve_over_cap(&storage, extra);
         }
         Case::CompressedAtCap {
             original_size,
-            fill,
+            extra,
         } => {
-            let envelope = envelope(vec![fill; MAX_COMPRESSED_SIZE], original_size as u32);
-            let expected = expected_extract(&envelope);
-            assert_outcome(&storage, &envelope, expected);
+            let envelope = envelope(vec![0u8; MAX_COMPRESSED_SIZE], original_size as u32);
+            assert_extract(&envelope, &expected_extract(&envelope));
+            assert_retrieve_over_cap(&storage, extra);
         }
-        Case::OriginalOverCap {
-            extra_len,
-            size,
-            fill,
-        } => {
+        Case::OriginalOverCap { extra_len, size } => {
             let len = MIN_LEN_FOR_ORIGINAL_CAP + extra_len as usize;
-            let allowance = (MAX_COMPRESSION_RATIO * len as u64).min(u32::MAX as u64);
-            let span = allowance - MAX_UNCOMPRESSED_SIZE as u64;
+            let span = MAX_COMPRESSION_RATIO * len as u64 - MAX_UNCOMPRESSED_SIZE as u64;
             let original_size = MAX_UNCOMPRESSED_SIZE as u64 + 1 + size as u64 % span;
-            let envelope = envelope(vec![fill; len], original_size as u32);
+            let envelope = envelope(vec![0u8; len], original_size as u32);
             assert_outcome(&storage, &envelope, Err(ByteStorageError::InputTooLarge));
         }
-        Case::RatioOver { len, excess, fill } => {
+        Case::RatioOver { len, excess } => {
             let allowance = MAX_COMPRESSION_RATIO * len as u64;
             let span = MAX_UNCOMPRESSED_SIZE as u64 - allowance;
             let original_size = allowance + 1 + excess as u64 % span;
-            let envelope = envelope(vec![fill; len as usize], original_size as u32);
+            let envelope = envelope(vec![0u8; len as usize], original_size as u32);
             assert_outcome(
                 &storage,
                 &envelope,

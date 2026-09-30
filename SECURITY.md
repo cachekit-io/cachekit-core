@@ -121,12 +121,12 @@ checks fails at least one of them. The `compression_bomb` fuzz target
 input and requires both `extract` and `retrieve` to return it. It builds
 envelopes at the 512 MiB limits that only one check rejects, so deleting any one
 check makes it fail. At pull-request time the target is only built and
-smoke-run. Its scheduled and on-demand deep runs restore the corpus the previous
-run saved and run with a 4 GiB memory limit. Two Kani proofs,
-`verify_decompression_bound_size_caps` and `verify_decompression_bound_ratio`,
-check `check_decompression_bound` over every (compressed length,
-`original_size`) pair against limits written as literals, so an inverted
-comparison or a changed constant fails them. Kani runs on the schedule and on
+smoke-run. Its scheduled and on-demand deep runs start from the corpus the
+previous run on the same branch uploaded as an artifact, which is kept for 90
+days. Two Kani proofs, `verify_decompression_bound_size_caps` and
+`verify_decompression_bound_ratio`, check `check_decompression_bound` over every
+(compressed length, `original_size`) pair against limits written as literals,
+so an inverted comparison or a changed constant fails them. Kani runs on the schedule and on
 manual dispatch, not on pull requests. These Kani statements cover only those
 two proofs.
 

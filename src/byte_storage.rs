@@ -135,7 +135,7 @@ fn check_decompression_bound(
     compressed_len: usize,
     original_size: u32,
 ) -> Result<(), ByteStorageError> {
-    // Security: Validate envelope structure first
+    // Size caps first
     if compressed_len > MAX_COMPRESSED_SIZE {
         return Err(ByteStorageError::InputTooLarge);
     }
@@ -148,7 +148,7 @@ fn check_decompression_bound(
     // Uses integer arithmetic to prevent floating-point precision bypass attacks
     let compressed_size = compressed_len as u64;
 
-    // Step 1: Zero check - empty compressed data with non-zero original is a bomb
+    // Step 1: Zero-length compressed data is always a bomb
     if compressed_size == 0 {
         return Err(ByteStorageError::DecompressionBomb);
     }
