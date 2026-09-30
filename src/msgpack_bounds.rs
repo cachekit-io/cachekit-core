@@ -1,23 +1,30 @@
 //! Structural pre-scan for untrusted MessagePack.
 //!
-//! This is the one shared structural walk. `ByteStorage::retrieve` runs it over
-//! the envelope bytes before `rmp_serde` materialises a `StorageEnvelope`
-//! (protocol `spec/wire-format.md` → Retrieve Flow, step 2), and SDK bindings
-//! call it through the [`crate::check_msgpack_structure`] re-export before they
-//! decode untrusted values. The bounds are `spec/interop-mode.md` → Decode
-//! bounds, pinned by `tests/vectors/decode-bounds.json`. Depth counts every
-//! collection header, an empty one included, which is how the spec defines it.
-//!
-//! The walk needs no optional dependency, so it is available under every
-//! feature set.
+//! `ByteStorage::retrieve` runs it before the envelope decode; it is exported
+//! for SDK bindings that decode untrusted MessagePack themselves. The bounds are
+//! `spec/interop-mode.md` → Decode bounds, pinned by
+//! `tests/vectors/decode-bounds.json`.
+
+/// Why [`check_msgpack_structure`] rejected its input.
+///
+/// `Display` is the bare reason with no prefix (for example
+/// `nests deeper than 100 levels`), so each caller adds its own. The wording is
+/// stable within a minor version: callers may match on its leading words.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct MsgpackStructureError(String);
+
+fn reject(reason: impl Into<String>) -> MsgpackStructureError {
+    MsgpackStructureError(reason.into())
+}
 
 /// Checks that `bytes` hold one MessagePack document whose declared structure
 /// the input can actually back, before any decoder sees them.
 ///
 /// A header-only walk: str/bin/ext payloads are skipped by offset, never read,
-/// and nothing is decoded. It allocates one `u64` per open non-empty
-/// collection, so at most `max_depth` of them (8 KiB at a depth of 1024), and
-/// nothing proportional to the input or to any declared length.
+/// and nothing is decoded. It keeps one `u64` per open non-empty collection, so
+/// at most `min(max_depth, bytes.len())` of them (8 KiB at a depth of 1024), and
+/// allocates nothing proportional to any declared length.
 ///
 /// Trailing bytes after the root element are left to the decoder.
 ///
@@ -27,8 +34,7 @@
 ///
 /// # Errors
 ///
-/// Returns the violated bound as a bare reason with no prefix, so each caller
-/// adds its own. It rejects:
+/// Returns a [`MsgpackStructureError`] naming the violated bound. It rejects:
 /// - nesting deeper than `max_depth`, counting every array or map header on
 ///   the path (an empty one included);
 /// - a header declaring more payload bytes than the input holds;
@@ -47,22 +53,27 @@
 /// let doc = [0x91, 0x91, 0x90];
 /// assert_eq!(check_msgpack_structure(&doc, 3), Ok(()));
 /// assert_eq!(
-///     check_msgpack_structure(&doc, 2),
-///     Err("nests deeper than 2 levels".to_owned())
+///     check_msgpack_structure(&doc, 2).unwrap_err().to_string(),
+///     "nests deeper than 2 levels"
 /// );
 ///
 /// // An array32 header claiming 2^32 - 1 elements, in five bytes.
 /// assert_eq!(
-///     check_msgpack_structure(&[0xdd, 0xff, 0xff, 0xff, 0xff], 100),
-///     Err("declares more elements than the input can back".to_owned())
+///     check_msgpack_structure(&[0xdd, 0xff, 0xff, 0xff, 0xff], 100)
+///         .unwrap_err()
+///         .to_string(),
+///     "declares more elements than the input can back"
 /// );
 /// ```
-pub fn check_msgpack_structure(bytes: &[u8], max_depth: usize) -> Result<(), String> {
-    fn be(bytes: &[u8], pos: usize, width: usize) -> Result<u64, String> {
+pub fn check_msgpack_structure(
+    bytes: &[u8],
+    max_depth: usize,
+) -> Result<(), MsgpackStructureError> {
+    fn be(bytes: &[u8], pos: usize, width: usize) -> Result<u64, MsgpackStructureError> {
         let end = pos
             .checked_add(width)
             .filter(|e| *e <= bytes.len())
-            .ok_or_else(|| "ends inside a length prefix".to_owned())?;
+            .ok_or_else(|| reject("ends inside a length prefix"))?;
         Ok(bytes[pos..end]
             .iter()
             .fold(0u64, |acc, b| (acc << 8) | u64::from(*b)))
@@ -77,7 +88,7 @@ pub fn check_msgpack_structure(bytes: &[u8], max_depth: usize) -> Result<(), Str
         }
         let marker = *bytes
             .get(pos)
-            .ok_or_else(|| "ends before the document is complete".to_owned())?;
+            .ok_or_else(|| reject("ends before the document is complete"))?;
         pos += 1;
         pending -= 1;
         if let Some(innermost) = open.last_mut() {
@@ -89,7 +100,7 @@ pub fn check_msgpack_structure(bytes: &[u8], max_depth: usize) -> Result<(), Str
             0x80..=0x8f => (0, 0, 2 * u64::from(marker & 0x0f)),
             0x90..=0x9f => (0, 0, u64::from(marker & 0x0f)),
             0xa0..=0xbf => (0, u64::from(marker & 0x1f), 0),
-            0xc1 => return Err("contains the reserved marker 0xc1".to_owned()),
+            0xc1 => return Err(reject("contains the reserved marker 0xc1")),
             0xc4 | 0xd9 => (1, be(bytes, pos, 1)?, 0),
             0xc5 | 0xda => (2, be(bytes, pos, 2)?, 0),
             0xc6 | 0xdb => (4, be(bytes, pos, 4)?, 0),
@@ -106,23 +117,23 @@ pub fn check_msgpack_structure(bytes: &[u8], max_depth: usize) -> Result<(), Str
         // An empty collection is still a level (spec: depth counts collection
         // headers), so the bound is checked before the `children > 0` push.
         if matches!(marker, 0x80..=0x9f | 0xdc..=0xdf) && open.len() >= max_depth {
-            return Err(format!("nests deeper than {max_depth} levels"));
+            return Err(reject(format!("nests deeper than {max_depth} levels")));
         }
         pos += prefix;
         let remaining = (bytes.len() - pos) as u64;
         if payload > remaining {
-            return Err("declares more bytes than the input holds".to_owned());
+            return Err(reject("declares more bytes than the input holds"));
         }
         // Unreachable while the check above holds (`remaining` came from a
         // usize); checked rather than cast so a future edit cannot truncate.
         pos += usize::try_from(payload)
-            .map_err(|_| "declares more bytes than the input holds".to_owned())?;
+            .map_err(|_| reject("declares more bytes than the input holds"))?;
         if children > 0 {
             open.push(children);
         }
         pending += children;
         if pending > remaining - payload {
-            return Err("declares more elements than the input can back".to_owned());
+            return Err(reject("declares more elements than the input can back"));
         }
     }
     Ok(())
@@ -135,8 +146,14 @@ mod tests {
     /// The envelope's bound; any bound in the protocol's range would do here.
     const MAX_DEPTH: usize = 100;
 
+    #[test]
+    fn the_error_is_a_std_error() {
+        fn is_error<E: std::error::Error + Send + Sync + 'static>() {}
+        is_error::<MsgpackStructureError>();
+    }
+
     fn check(bytes: &[u8]) -> Result<(), String> {
-        check_msgpack_structure(bytes, MAX_DEPTH)
+        check_msgpack_structure(bytes, MAX_DEPTH).map_err(|e| e.to_string())
     }
 
     /// `count` copies of a collection header, then `tail`.

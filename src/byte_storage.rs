@@ -325,16 +325,14 @@ impl Default for ByteStorage {
     }
 }
 
-/// Nesting bound for the envelope decode. The protocol requires 32..=1024; 100
-/// matches cachekit-rs and cachekit-ts. A legitimate envelope nests 2 deep.
-#[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
-const MAX_DEPTH: usize = 100;
-
 /// Decode untrusted envelope bytes: structural pre-scan first, then the typed
 /// decode. Serde's derive skips an unknown map key with `IgnoredAny`, which
 /// recurses, so the depth bound has to hold before `rmp_serde` sees the bytes.
 #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
 fn decode_envelope(envelope_bytes: &[u8]) -> Result<StorageEnvelope, ByteStorageError> {
+    // Nesting bound for the envelope decode. The protocol requires 32..=1024;
+    // 100 matches cachekit-rs and cachekit-ts. A legitimate envelope nests 2 deep.
+    const MAX_DEPTH: usize = 100;
     crate::check_msgpack_structure(envelope_bytes, MAX_DEPTH).map_err(|what| {
         ByteStorageError::DeserializationFailed(format!("decode pre-scan: {what}"))
     })?;
