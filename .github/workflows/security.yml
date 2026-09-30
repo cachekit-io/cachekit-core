@@ -225,12 +225,16 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           REPO_ID: ${{ github.repository_id }}
         run: |
-          run_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=fuzz-corpus-${TARGET}&per_page=100" \
-            | jq -r --arg ref "$REF_NAME" --argjson repo "$REPO_ID" '
-                [.artifacts[]
-                 | select(.expired | not)
-                 | select(.workflow_run.head_branch == $ref and .workflow_run.head_repository_id == $repo)]
-                | sort_by(.created_at) | last | .workflow_run.id // empty')
+          # Two steps, so a failed listing fails this step (set -e) instead of
+          # reading as "no artifact". --paginate walks every page: newer artifacts
+          # from other branches must not push this ref's corpus off page one.
+          artifacts=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=fuzz-corpus-${TARGET}&per_page=100" \
+            --jq '.artifacts[]')
+          run_id=$(jq -rs --arg ref "$REF_NAME" --argjson repo "$REPO_ID" '
+              [.[]
+               | select(.expired | not)
+               | select(.workflow_run.head_branch == $ref and .workflow_run.head_repository_id == $repo)]
+              | sort_by(.created_at) | last | .workflow_run.id // empty' <<< "$artifacts")
           if [ -z "$run_id" ]; then
             echo "::warning::No fuzz-corpus-${TARGET} artifact from ${REF_NAME}; starting from an empty corpus"
           fi

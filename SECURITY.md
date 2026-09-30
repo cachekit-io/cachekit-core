@@ -113,22 +113,23 @@ constrained runtimes must bound payload size at the caller. Making these
 constants environment-aware or configurable is tracked as a follow-up.
 
 **Test coverage.** The three checks live in one private function,
-`check_decompression_bound`, which `extract` calls before it allocates. At
-merge time, the unit tests in `src/byte_storage.rs` and the integration tests in
+`check_decompression_bound`, which `extract` calls before it allocates. At merge
+time, the unit tests in `src/byte_storage.rs` and the integration tests in
 `tests/byte_storage_tests.rs` enforce the bound: deleting any one of the three
 checks fails at least one of them. The `compression_bomb` fuzz target
-(`fuzz/fuzz_targets/compression_bomb.rs`) computes one expected result for every
-input and requires both `extract` and `retrieve` to return it. It builds
-envelopes at the 512 MiB limits that only one check rejects, so deleting any one
-check makes it fail. At pull-request time the target is only built and
-smoke-run. Its scheduled and on-demand deep runs start from the corpus the
-previous run on the same branch uploaded as an artifact, which is kept for 90
-days. Two Kani proofs, `verify_decompression_bound_size_caps` and
+(`fuzz/fuzz_targets/compression_bomb.rs`) computes one expected result for each
+call it makes to `extract` and `retrieve` and requires that exact result. It
+builds envelopes at the 512 MiB limits that only one check rejects, so deleting
+any one check makes it fail. At pull-request time the target is only built and
+smoke-run. Each scheduled or on-demand deep run uploads its corpus as an
+artifact kept for 90 days, and the next run on the same branch starts from the
+newest one. With no such artifact it warns and starts from an empty corpus. Two
+Kani proofs, `verify_decompression_bound_size_caps` and
 `verify_decompression_bound_ratio`, check `check_decompression_bound` over every
-(compressed length, `original_size`) pair against limits written as literals,
-so an inverted comparison or a changed constant fails them. Kani runs on the schedule and on
-manual dispatch, not on pull requests. These Kani statements cover only those
-two proofs.
+(compressed length, `original_size`) pair against limits written as literals, so
+an inverted comparison or a changed constant fails them. Kani runs on the
+schedule and on manual dispatch, not on pull requests. These Kani statements
+cover only those two proofs.
 
 ### Envelope decode bounds
 

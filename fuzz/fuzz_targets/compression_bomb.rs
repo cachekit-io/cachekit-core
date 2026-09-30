@@ -3,10 +3,10 @@
 //! Decompression-bound oracle for `StorageEnvelope::extract` and
 //! `ByteStorage::retrieve`.
 //!
-//! Every input yields exactly one expected result, computed independently of
-//! the crate, and both calls must return it. The size classes each build an
-//! envelope that only one of the three bound checks rejects, so deleting or
-//! weakening any one of them makes this target fail.
+//! Every call to `extract` or `retrieve` has exactly one expected result,
+//! computed independently of the crate, and must return it. The size classes
+//! each build an envelope that only one of the three bound checks rejects, so
+//! deleting or weakening any one of them makes this target fail.
 
 use arbitrary::Arbitrary;
 use cachekit_core::byte_storage::{ByteStorage, ByteStorageError, StorageEnvelope};
