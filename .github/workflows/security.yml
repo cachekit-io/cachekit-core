@@ -163,6 +163,9 @@ jobs:
     # 360min = GitHub's hosted job cap. The inner timeout governs the actual
     # scheduled (1h) vs dispatched (<=5h, clamped below) duration.
     timeout-minutes: 360
+    permissions:
+      contents: read
+      actions: read # list and download the previous run's corpus artifact
     strategy:
       fail-fast: false
       matrix:
@@ -209,6 +212,43 @@ jobs:
         # nightly rustc rejects. Let cargo resolve fresh deps.
         run: cargo install cargo-fuzz
 
+      - name: Find previous fuzz corpus
+        id: corpus
+        # Each run resumes from the corpus the previous run uploaded, so coverage
+        # accumulates instead of restarting cold. An artifact, not the Actions cache:
+        # cache entries are evicted under size pressure and after 7 days unused, which
+        # a weekly run cannot outlast. Only this repository's runs on the same ref
+        # qualify, so a branch or fork run cannot seed this one.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ matrix.target }}
+          REF_NAME: ${{ github.ref_name }}
+          REPO_ID: ${{ github.repository_id }}
+        run: |
+          # Two steps, so a failed listing fails this step (set -e) instead of
+          # reading as "no artifact". --paginate walks every page: newer artifacts
+          # from other branches must not push this ref's corpus off page one.
+          artifacts=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=fuzz-corpus-${TARGET}&per_page=100" \
+            --jq '.artifacts[]')
+          run_id=$(jq -rs --arg ref "$REF_NAME" --argjson repo "$REPO_ID" '
+              [.[]
+               | select(.expired | not)
+               | select(.workflow_run.head_branch == $ref and .workflow_run.head_repository_id == $repo)]
+              | sort_by(.created_at) | last | .workflow_run.id // empty' <<< "$artifacts")
+          if [ -z "$run_id" ]; then
+            echo "::warning::No fuzz-corpus-${TARGET} artifact from ${REF_NAME}; starting from an empty corpus"
+          fi
+          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore fuzz corpus
+        if: steps.corpus.outputs.run_id != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: fuzz-corpus-${{ matrix.target }}
+          path: fuzz/corpus/${{ matrix.target }}
+          run-id: ${{ steps.corpus.outputs.run_id }}
+          github-token: ${{ github.token }}
+
       - name: Run deep fuzz
         # Scheduled runs use 1h/target; a manual workflow_dispatch can request a
         # longer duration (up to the 5h clamp below) via fuzz_seconds.
@@ -236,6 +276,16 @@ jobs:
           # making a real hang indistinguishable from normal completion. Exit 124 (hang
           # killed by timeout) remains tolerated.
           timeout "$((FUZZ_SECONDS + 180))" cargo fuzz run ${{ matrix.target }} -- -max_total_time="$FUZZ_SECONDS" || [ $? -eq 124 ]
+
+      - name: Save fuzz corpus
+        # always(): a run that found a crash still grew the corpus.
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: fuzz-corpus-${{ matrix.target }}
+          path: fuzz/corpus/${{ matrix.target }}/
+          retention-days: 90
+          if-no-files-found: warn
 
       - name: Upload crash artifacts
         if: always()

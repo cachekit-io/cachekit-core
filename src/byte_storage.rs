@@ -105,33 +105,7 @@ impl StorageEnvelope {
     /// Extract and validate data from envelope
     #[cfg(all(feature = "compression", feature = "checksum"))]
     pub fn extract(&self) -> Result<Vec<u8>, ByteStorageError> {
-        // Security: Validate envelope structure first
-        if self.compressed_data.len() > MAX_COMPRESSED_SIZE {
-            return Err(ByteStorageError::InputTooLarge);
-        }
-
-        if self.original_size as usize > MAX_UNCOMPRESSED_SIZE {
-            return Err(ByteStorageError::InputTooLarge);
-        }
-
-        // Security: Check compression ratio for decompression bomb protection
-        // Uses integer arithmetic to prevent floating-point precision bypass attacks
-        let compressed_size = self.compressed_data.len() as u64;
-
-        // Step 1: Zero check - empty compressed data with non-zero original is a bomb
-        if compressed_size == 0 {
-            return Err(ByteStorageError::DecompressionBomb);
-        }
-
-        // Step 2: Checked multiplication - overflow = bomb (fail-safe)
-        let max_allowed_original = MAX_COMPRESSION_RATIO
-            .checked_mul(compressed_size)
-            .ok_or(ByteStorageError::DecompressionBomb)?;
-
-        // Step 3: Compare original_size against computed maximum
-        if (self.original_size as u64) > max_allowed_original {
-            return Err(ByteStorageError::DecompressionBomb);
-        }
+        check_decompression_bound(self.compressed_data.len(), self.original_size)?;
 
         // Decompress (with validated sizes)
         let decompressed = lz4_flex::decompress(&self.compressed_data, self.original_size as usize)
@@ -150,6 +124,46 @@ impl StorageEnvelope {
 
         Ok(decompressed)
     }
+}
+
+/// Decompression bound, checked by `extract` before it allocates the output.
+///
+/// A separate function so the Kani proofs verify the predicate `extract`
+/// actually runs, not a restatement of it.
+#[cfg(all(feature = "compression", feature = "checksum"))]
+fn check_decompression_bound(
+    compressed_len: usize,
+    original_size: u32,
+) -> Result<(), ByteStorageError> {
+    // Size caps first
+    if compressed_len > MAX_COMPRESSED_SIZE {
+        return Err(ByteStorageError::InputTooLarge);
+    }
+
+    if original_size as usize > MAX_UNCOMPRESSED_SIZE {
+        return Err(ByteStorageError::InputTooLarge);
+    }
+
+    // Security: Check compression ratio for decompression bomb protection
+    // Uses integer arithmetic to prevent floating-point precision bypass attacks
+    let compressed_size = compressed_len as u64;
+
+    // Step 1: Zero-length compressed data is always a bomb
+    if compressed_size == 0 {
+        return Err(ByteStorageError::DecompressionBomb);
+    }
+
+    // Step 2: Checked multiplication - overflow = bomb (fail-safe)
+    let max_allowed_original = MAX_COMPRESSION_RATIO
+        .checked_mul(compressed_size)
+        .ok_or(ByteStorageError::DecompressionBomb)?;
+
+    // Step 3: Compare original_size against computed maximum
+    if (original_size as u64) > max_allowed_original {
+        return Err(ByteStorageError::DecompressionBomb);
+    }
+
+    Ok(())
 }
 
 /// Raw byte storage engine (pure Rust core)
@@ -561,6 +575,21 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_rejects_oversized_compressed_data() {
+        // WHY: only the compressed-length cap rejects this envelope. original_size
+        // is under its cap and the ratio is far below 1000:1, and retrieve's
+        // envelope-length check is bypassed by calling extract directly.
+        let envelope = StorageEnvelope {
+            compressed_data: vec![0u8; MAX_COMPRESSED_SIZE + 1],
+            checksum: [0u8; 8],
+            original_size: 1,
+            format: "test".to_string(),
+        };
+
+        assert_eq!(envelope.extract(), Err(ByteStorageError::InputTooLarge));
+    }
+
+    #[test]
     fn test_envelope_size_validation() {
         let storage = ByteStorage::new(None);
 
@@ -678,100 +707,49 @@ mod kani_proofs {
         assert_ne!(checksum_a, checksum_b);
     }
 
-    /// Verify decompression bomb protection (compression ratio limits)
-    /// Property: Malicious compression ratios exceeding 1000x are always rejected
-    /// Uses integer arithmetic to match production implementation
+    // The size/ratio proofs pin the limits as literals instead of reading the
+    // constants, so changing a constant or inverting a comparison in
+    // `check_decompression_bound` fails a proof.
+    const PINNED_MAX_COMPRESSED: u64 = 512 * 1024 * 1024;
+    const PINNED_MAX_UNCOMPRESSED: u64 = 512 * 1024 * 1024;
+    const PINNED_MAX_RATIO: u64 = 1000;
+
+    /// Verify the size caps of the decompression bound
+    /// Property: `InputTooLarge` exactly when either size exceeds 512 MiB, for
+    /// every (compressed length, original_size) pair
     #[kani::proof]
-    #[kani::unwind(3)]
-    fn verify_decompression_bomb_protection() {
-        // Symbolic envelope parameters
-        let compressed_size: u64 = kani::any();
-        let original_size: u64 = kani::any();
+    fn verify_decompression_bound_size_caps() {
+        let compressed_len: usize = kani::any();
+        let original_size: u32 = kani::any();
 
-        // Constrain to reasonable test ranges
-        kani::assume(compressed_size > 0 && compressed_size <= 1000);
-        kani::assume(original_size > 0);
+        let over_cap = compressed_len as u64 > PINNED_MAX_COMPRESSED
+            || original_size as u64 > PINNED_MAX_UNCOMPRESSED;
+        let result = check_decompression_bound(compressed_len, original_size);
 
-        // Simulate the 3-step check from StorageEnvelope::extract()
-        // Step 1: Zero check already covered by assume
-        // Step 2: Checked multiplication
-        let max_allowed = MAX_COMPRESSION_RATIO.checked_mul(compressed_size);
+        assert_eq!(
+            over_cap,
+            matches!(result, Err(ByteStorageError::InputTooLarge))
+        );
+    }
 
-        // Property: If original_size exceeds max_allowed, extraction must fail
-        if let Some(max) = max_allowed {
-            let would_reject = original_size > max;
-            let exceeds_ratio = original_size > MAX_COMPRESSION_RATIO * compressed_size;
-            assert_eq!(would_reject, exceeds_ratio);
+    /// Verify the ratio limit of the decompression bound
+    /// Property: with both sizes within their caps, `DecompressionBomb` exactly
+    /// when the compressed length is zero or the ratio exceeds 1000:1, else Ok
+    #[kani::proof]
+    fn verify_decompression_bound_ratio() {
+        let compressed_len: usize = kani::any();
+        let original_size: u32 = kani::any();
+        kani::assume(compressed_len as u64 <= PINNED_MAX_COMPRESSED);
+        kani::assume(original_size as u64 <= PINNED_MAX_UNCOMPRESSED);
+
+        let is_bomb =
+            compressed_len == 0 || original_size as u64 > PINNED_MAX_RATIO * compressed_len as u64;
+        let result = check_decompression_bound(compressed_len, original_size);
+
+        if is_bomb {
+            assert!(matches!(result, Err(ByteStorageError::DecompressionBomb)));
         } else {
-            // Overflow case: always reject (fail-safe)
-            assert!(true); // Overflow is always rejected
+            assert!(result.is_ok());
         }
-    }
-
-    /// Verify size limit enforcement on input
-    /// Property: Inputs exceeding MAX_UNCOMPRESSED_SIZE are always rejected
-    #[kani::proof]
-    #[kani::unwind(3)]
-    fn verify_input_size_limits() {
-        let size: usize = kani::any();
-
-        // Test boundary conditions around the limit
-        kani::assume(size <= MAX_UNCOMPRESSED_SIZE + 100);
-
-        // Property: Size check logic is correct
-        let exceeds_limit = size > MAX_UNCOMPRESSED_SIZE;
-        let should_reject = size > MAX_UNCOMPRESSED_SIZE;
-
-        assert_eq!(exceeds_limit, should_reject);
-    }
-
-    /// Verify size limit enforcement on compressed data
-    /// Property: Compressed data exceeding MAX_COMPRESSED_SIZE is rejected
-    #[kani::proof]
-    #[kani::unwind(3)]
-    fn verify_compressed_size_limits() {
-        let compressed_size: usize = kani::any();
-
-        // Test boundary conditions
-        kani::assume(compressed_size <= MAX_COMPRESSED_SIZE + 100);
-
-        // Property: Size check logic is correct
-        let exceeds_limit = compressed_size > MAX_COMPRESSED_SIZE;
-        let should_reject = compressed_size > MAX_COMPRESSED_SIZE;
-
-        assert_eq!(exceeds_limit, should_reject);
-    }
-
-    /// Verify compression ratio calculation is safe (integer arithmetic)
-    /// Property: Ratio check never panics and correctly identifies bombs
-    #[kani::proof]
-    #[kani::unwind(3)]
-    fn verify_compression_ratio_calculation_safety() {
-        let original_size: u64 = kani::any();
-        let compressed_size: u64 = kani::any();
-
-        // Constrain to prevent division by zero and keep ranges manageable
-        kani::assume(compressed_size > 0);
-        kani::assume(compressed_size <= 10000);
-        kani::assume(original_size <= 100_000_000); // 100MB max for test
-
-        // Property 1: checked_mul never panics (it returns None on overflow)
-        let result = MAX_COMPRESSION_RATIO.checked_mul(compressed_size);
-
-        // Property 2: If multiplication succeeds, comparison is valid
-        if let Some(max_allowed) = result {
-            // The check `original_size > max_allowed` is always safe
-            let is_bomb = original_size > max_allowed;
-
-            // Verify equivalence: is_bomb == (original_size > 1000 * compressed_size)
-            // This holds when no overflow occurred
-            if original_size <= max_allowed {
-                assert!(!is_bomb);
-            } else {
-                assert!(is_bomb);
-            }
-        }
-
-        // Property 3: Zero compressed_size is handled by separate check (not tested here)
     }
 }

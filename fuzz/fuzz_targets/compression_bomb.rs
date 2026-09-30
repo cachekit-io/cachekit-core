@@ -1,144 +1,238 @@
 #![no_main]
 
-use libfuzzer_sys::fuzz_target;
-use cachekit_core::byte_storage::{ByteStorage, ByteStorageError, StorageEnvelope};
+//! Decompression-bound oracle for `StorageEnvelope::extract` and
+//! `ByteStorage::retrieve`.
+//!
+//! Every call to `extract` or `retrieve` has exactly one expected result,
+//! computed independently of the crate, and must return it. The size classes
+//! each build an envelope that only one of the three bound checks rejects, so
+//! deleting or weakening any one of them makes this target fail.
+
 use arbitrary::Arbitrary;
+use cachekit_core::byte_storage::{ByteStorage, ByteStorageError, StorageEnvelope};
+use libfuzzer_sys::fuzz_target;
+
+// Pinned as literals, not read from the crate: changing a limit must fail here.
+const MAX_COMPRESSED_SIZE: usize = 512 * 1024 * 1024;
+const MAX_UNCOMPRESSED_SIZE: usize = 512 * 1024 * 1024;
+const MAX_COMPRESSION_RATIO: u64 = 1000;
+
+/// Smallest compressed length whose 1000:1 allowance exceeds the
+/// `original_size` cap, so the cap alone can reject a declared size.
+const MIN_LEN_FOR_ORIGINAL_CAP: usize = MAX_UNCOMPRESSED_SIZE / MAX_COMPRESSION_RATIO as usize + 1;
 
 #[derive(Arbitrary, Debug)]
-struct CompressionBombTestCase {
-    /// Compressed data size (tiny to create extreme ratios)
-    compressed_size: u16, // 0-65535 bytes
-    /// Original size claim (potentially massive for bomb attacks)
-    original_size: u32,
-    /// Checksum (xxHash3-64 = 8 bytes)
-    checksum: [u8; 8],
-    /// Format string length
-    format_len: u8,
-    /// Actual compressed data pattern (for LZ4 valid/invalid inputs)
-    data_pattern: u8,
+enum Case {
+    /// Arbitrary bytes and declared size: malformed LZ4, small ratios.
+    Raw {
+        compressed_data: Vec<u8>,
+        original_size: u32,
+        checksum: [u8; 8],
+        format: String,
+    },
+    /// A valid stream from `StorageEnvelope::new`, then its declared size
+    /// replaced and/or its checksum altered.
+    Valid {
+        data: Vec<u8>,
+        declared_size: Option<u32>,
+        checksum_xor: [u8; 8],
+    },
+    /// `compressed_data.len()` over its cap; nothing else rejects it.
+    CompressedOverCap { extra: u8, original_size: u16 },
+    /// `compressed_data.len()` exactly at its cap: `extract` gets past the
+    /// bound and fails at decompression.
+    CompressedAtCap { original_size: u16, extra: u8 },
+    /// `original_size` in (cap, 1000 × len]; nothing else rejects it.
+    OriginalOverCap { extra_len: u16, size: u32 },
+    /// Both sizes within their caps, ratio over 1000:1.
+    RatioOver { len: u16, excess: u32 },
 }
 
-fuzz_target!(|test_case: CompressionBombTestCase| {
-    // Attack scenarios:
-    // 1. Decompression bomb: 1KB compressed -> claims 1GB uncompressed (1000x ratio)
-    // 2. Size limit bypass: Claims > 512MB output
-    // 3. LZ4 malformed data: Invalid compressed stream
-    // 4. Integer overflow: u32::MAX original_size
+/// The bound, in `extract`'s check order.
+fn expected_bound(compressed_len: usize, original_size: u32) -> Result<(), ByteStorageError> {
+    if compressed_len > MAX_COMPRESSED_SIZE || original_size as usize > MAX_UNCOMPRESSED_SIZE {
+        return Err(ByteStorageError::InputTooLarge);
+    }
+    if compressed_len == 0 || original_size as u64 > MAX_COMPRESSION_RATIO * compressed_len as u64 {
+        return Err(ByteStorageError::DecompressionBomb);
+    }
+    Ok(())
+}
 
+/// Expected `extract` result for an envelope whose payload is not known.
+fn expected_extract(envelope: &StorageEnvelope) -> Result<Vec<u8>, ByteStorageError> {
+    expected_bound(envelope.compressed_data.len(), envelope.original_size)?;
+    let size = envelope.original_size as usize;
+    let out = lz4_flex::decompress(&envelope.compressed_data, size)
+        .map_err(|_| ByteStorageError::DecompressionFailed)?;
+    if cachekit_core::checksum(&out) != envelope.checksum {
+        return Err(ByteStorageError::ChecksumMismatch);
+    }
+    if out.len() != size {
+        return Err(ByteStorageError::SizeValidationFailed);
+    }
+    Ok(out)
+}
+
+/// Expected `extract` result for a valid stream of `data` whose declared size
+/// and checksum were then changed. `lz4_flex::decompress` fails when the
+/// declared size is too small and returns only the decoded bytes when it is
+/// too large, so the checksum still matches and the size check fires.
+fn expected_valid(
+    data: &[u8],
+    envelope: &StorageEnvelope,
+    checksum_altered: bool,
+) -> Result<Vec<u8>, ByteStorageError> {
+    expected_bound(envelope.compressed_data.len(), envelope.original_size)?;
+    let declared = envelope.original_size as usize;
+    if declared < data.len() {
+        return Err(ByteStorageError::DecompressionFailed);
+    }
+    if checksum_altered {
+        return Err(ByteStorageError::ChecksumMismatch);
+    }
+    if declared > data.len() {
+        return Err(ByteStorageError::SizeValidationFailed);
+    }
+    Ok(data.to_vec())
+}
+
+/// Debug form that prints the variant, not the payload bytes.
+fn describe<T>(result: &Result<T, ByteStorageError>) -> String {
+    match result {
+        Ok(_) => "Ok(..)".to_string(),
+        Err(e) => format!("Err({e:?})"),
+    }
+}
+
+fn assert_extract(envelope: &StorageEnvelope, expected: &Result<Vec<u8>, ByteStorageError>) {
+    let extracted = envelope.extract();
+    assert!(
+        extracted == *expected,
+        "extract: expected {}, got {} (compressed_len={} original_size={})",
+        describe(expected),
+        describe(&extracted),
+        envelope.compressed_data.len(),
+        envelope.original_size
+    );
+}
+
+fn assert_retrieve(
+    storage: &ByteStorage,
+    envelope_bytes: &[u8],
+    expected: Result<(Vec<u8>, String), ByteStorageError>,
+) {
+    let retrieved = storage.retrieve(envelope_bytes);
+    assert!(
+        retrieved == expected,
+        "retrieve: expected {}, got {} (envelope_len={})",
+        describe(&expected),
+        describe(&retrieved),
+        envelope_bytes.len()
+    );
+}
+
+/// Both calls on an envelope small enough to serialize cheaply.
+fn assert_outcome(
+    storage: &ByteStorage,
+    envelope: &StorageEnvelope,
+    expected: Result<Vec<u8>, ByteStorageError>,
+) {
+    assert_extract(envelope, &expected);
+    let bytes = rmp_serde::to_vec(envelope).expect("envelope serializes");
+    assert_retrieve(
+        storage,
+        &bytes,
+        expected.map(|data| (data, envelope.format.clone())),
+    );
+}
+
+/// `retrieve` on input over its length cap. Zeroed bytes stay lazily mapped,
+/// so this costs no page writes, and they do not decode as an envelope: without
+/// the length check the result is `DeserializationFailed`, not `InputTooLarge`.
+fn assert_retrieve_over_cap(storage: &ByteStorage, extra: u8) {
+    let bytes = vec![0u8; MAX_COMPRESSED_SIZE + 1 + extra as usize];
+    assert_retrieve(storage, &bytes, Err(ByteStorageError::InputTooLarge));
+}
+
+fn envelope(compressed_data: Vec<u8>, original_size: u32) -> StorageEnvelope {
+    StorageEnvelope {
+        compressed_data,
+        checksum: [0u8; 8],
+        original_size,
+        format: "fuzz".to_string(),
+    }
+}
+
+fuzz_target!(|case: Case| {
     let storage = ByteStorage::new(Some("fuzz".to_string()));
 
-    // Generate compressed data with pattern
-    let compressed_data = vec![test_case.data_pattern; test_case.compressed_size as usize];
-
-    // Generate format string
-    let format = "f".repeat(test_case.format_len as usize);
-
-    // Create potentially malicious envelope
-    let envelope = StorageEnvelope {
-        compressed_data: compressed_data.clone(),
-        checksum: test_case.checksum,
-        original_size: test_case.original_size,
-        format: format.clone(),
-    };
-
-    // **CRITICAL SECURITY PROPERTIES** (must verify ALL 4):
-
-    // Property 1: Decompression NEVER panics (even on malformed LZ4 data)
-    let extract_result = envelope.extract();
-
-    // Property 2: Size limits enforced (512MB max output)
-    match &extract_result {
-        Ok(decompressed) => {
-            assert!(
-                decompressed.len() <= storage.max_uncompressed_size(),
-                "Decompression bomb bypassed size limit: {} bytes > {} bytes",
-                decompressed.len(),
-                storage.max_uncompressed_size()
+    match case {
+        Case::Raw {
+            compressed_data,
+            original_size,
+            checksum,
+            format,
+        } => {
+            let envelope = StorageEnvelope {
+                compressed_data,
+                checksum,
+                original_size,
+                format,
+            };
+            let expected = expected_extract(&envelope);
+            assert_outcome(&storage, &envelope, expected);
+        }
+        Case::Valid {
+            data,
+            declared_size,
+            checksum_xor,
+        } => {
+            let mut envelope =
+                StorageEnvelope::new(&data, "fuzz".to_string()).expect("small input compresses");
+            if let Some(size) = declared_size {
+                envelope.original_size = size;
+            }
+            for (byte, xor) in envelope.checksum.iter_mut().zip(checksum_xor) {
+                *byte ^= xor;
+            }
+            let expected = expected_valid(&data, &envelope, checksum_xor != [0u8; 8]);
+            assert_outcome(&storage, &envelope, expected);
+        }
+        Case::CompressedOverCap {
+            extra,
+            original_size,
+        } => {
+            let len = MAX_COMPRESSED_SIZE + 1 + extra as usize;
+            let envelope = envelope(vec![0u8; len], original_size as u32);
+            assert_extract(&envelope, &Err(ByteStorageError::InputTooLarge));
+            assert_retrieve_over_cap(&storage, extra);
+        }
+        Case::CompressedAtCap {
+            original_size,
+            extra,
+        } => {
+            let envelope = envelope(vec![0u8; MAX_COMPRESSED_SIZE], original_size as u32);
+            assert_extract(&envelope, &expected_extract(&envelope));
+            assert_retrieve_over_cap(&storage, extra);
+        }
+        Case::OriginalOverCap { extra_len, size } => {
+            let len = MIN_LEN_FOR_ORIGINAL_CAP + extra_len as usize;
+            let span = MAX_COMPRESSION_RATIO * len as u64 - MAX_UNCOMPRESSED_SIZE as u64;
+            let original_size = MAX_UNCOMPRESSED_SIZE as u64 + 1 + size as u64 % span;
+            let envelope = envelope(vec![0u8; len], original_size as u32);
+            assert_outcome(&storage, &envelope, Err(ByteStorageError::InputTooLarge));
+        }
+        Case::RatioOver { len, excess } => {
+            let allowance = MAX_COMPRESSION_RATIO * len as u64;
+            let span = MAX_UNCOMPRESSED_SIZE as u64 - allowance;
+            let original_size = allowance + 1 + excess as u64 % span;
+            let envelope = envelope(vec![0u8; len as usize], original_size as u32);
+            assert_outcome(
+                &storage,
+                &envelope,
+                Err(ByteStorageError::DecompressionBomb),
             );
         }
-        Err(err) => {
-            // Expected for malicious inputs - verify error type
-            if test_case.original_size as usize > storage.max_uncompressed_size() {
-                assert!(
-                    matches!(
-                        err,
-                        ByteStorageError::InputTooLarge
-                            | ByteStorageError::DecompressionBomb
-                            | ByteStorageError::DecompressionFailed
-                    ),
-                    "Expected size limit error, got: {:?}",
-                    err
-                );
-            }
-        }
     }
-
-    // Property 3: Compression ratio limits enforced (1000x max expansion)
-    if !compressed_data.is_empty() && test_case.original_size > 0 {
-        let claimed_ratio = test_case.original_size as u64 / compressed_data.len() as u64;
-
-        if claimed_ratio > storage.max_compression_ratio() {
-            // Must reject suspicious ratios (or size limits caught it first)
-            assert!(
-                extract_result.is_err(),
-                "Decompression bomb bypassed ratio limit: {}x expansion",
-                claimed_ratio
-            );
-
-            if let Err(err) = &extract_result {
-                // Security checks may fail in different order (size limit or ratio limit)
-                assert!(
-                    matches!(
-                        err,
-                        ByteStorageError::DecompressionBomb
-                            | ByteStorageError::InputTooLarge
-                            | ByteStorageError::DecompressionFailed
-                    ),
-                    "Expected security violation error, got: {:?}",
-                    err
-                );
-            }
-        }
-    }
-
-    // Property 4: ByteStorage.retrieve() provides additional layer of defense
-    // (Envelope serialization roundtrip testing)
-    if let Ok(envelope_bytes) = rmp_serde::to_vec(&envelope) {
-        // Test retrieve() with fuzzer-generated envelope
-        let retrieve_result = storage.retrieve(&envelope_bytes);
-
-        match retrieve_result {
-            Ok((decompressed, _)) => {
-                // If retrieve succeeded, ALL security checks must have passed
-                assert!(
-                    decompressed.len() <= storage.max_uncompressed_size(),
-                    "retrieve() bypassed size limit"
-                );
-
-                // Ratio must be within limits (for non-empty compressed data)
-                if !compressed_data.is_empty() {
-                    let actual_ratio = decompressed.len() as u64 / compressed_data.len() as u64;
-                    assert!(
-                        actual_ratio <= storage.max_compression_ratio(),
-                        "retrieve() bypassed ratio limit: {}x",
-                        actual_ratio
-                    );
-                }
-            }
-            Err(_) => {
-                // Expected for malicious/malformed envelopes
-                // Error handling is working correctly
-            }
-        }
-    }
-
-    // Property 5: No memory exhaustion
-    // Fuzzer tracks memory usage - excessive allocation will trigger OOM kill
-    // Defense-in-depth: Size limits prevent 1KB -> 10GB attacks
-
-    // SUCCESS: All compression bomb attack vectors blocked
-    // - Extreme ratios rejected (1000x limit)
-    // - Oversized outputs rejected (512MB limit)
-    // - Malformed LZ4 data handled gracefully
-    // - No panics, crashes, or memory exhaustion
 });
