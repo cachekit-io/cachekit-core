@@ -24,6 +24,12 @@
       "matchUpdateTypes": ["patch"],
       "groupName": null,
       "dependencyDashboardApproval": true
+    },
+    {
+      "description": "serde_json never automerges. Its publisher is trusted in supply-chain/audits.toml, so cargo vet passes its new releases with no per-version review, and the serde_core it resolves is a runtime dependency. A human merges every serde_json update.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["serde_json"],
+      "automerge": false
     }
   ]
 }
