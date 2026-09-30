@@ -1,4 +1,14 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["local>cachekit-io/renovate-config"]
+  "extends": ["local>cachekit-io/renovate-config"],
+  "packageRules": [
+    {
+      "description": "Hold getrandom at 0.2. The direct 0.2 entry turns on the js feature for the getrandom 0.2 copy that ring and rand_core also use on wasm32, and getrandom 0.3 removed that feature. A bump past 0.2 fails the Cargo.lock update and takes the whole non-major group down with it, so it waits under Pending Approval on the Dependency Dashboard instead. Vulnerability updates are not held: Renovate forces dependencyDashboardApproval off for them. Drop this rule once nothing in Cargo.lock depends on getrandom 0.2.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["getrandom"],
+      "matchUpdateTypes": ["minor", "major"],
+      "groupName": null,
+      "dependencyDashboardApproval": true
+    }
+  ]
 }
