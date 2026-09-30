@@ -209,11 +209,24 @@ jobs:
         # nightly rustc rejects. Let cargo resolve fresh deps.
         run: cargo install cargo-fuzz
 
+      - name: Restore fuzz corpus
+        # Each run resumes from the corpus the previous run saved (newest key
+        # matching the prefix), so coverage accumulates instead of restarting cold.
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
       - name: Run deep fuzz
         # Scheduled runs use 1h/target; a manual workflow_dispatch can request a
         # longer duration (up to the 5h clamp below) via fuzz_seconds.
         env:
           FUZZ_SECONDS: ${{ (github.event_name == 'workflow_dispatch' && inputs.fuzz_seconds) || '3600' }}
+          # compression_bomb builds envelopes at the 512 MiB limits and serializes
+          # them, so one execution can hold well over 2 GiB (libFuzzer's default).
+          RSS_LIMIT_MB: ${{ matrix.target == 'compression_bomb' && '4096' || '2048' }}
         run: |
           # Validate the dispatch-supplied duration before it reaches shell arithmetic
           # and the fuzzer. Must be a positive integer within the hosted 6h job cap.
@@ -235,7 +248,15 @@ jobs:
           # after build/corpus-load) and every run would log "run interrupted" instead,
           # making a real hang indistinguishable from normal completion. Exit 124 (hang
           # killed by timeout) remains tolerated.
-          timeout "$((FUZZ_SECONDS + 180))" cargo fuzz run ${{ matrix.target }} -- -max_total_time="$FUZZ_SECONDS" || [ $? -eq 124 ]
+          timeout "$((FUZZ_SECONDS + 180))" cargo fuzz run ${{ matrix.target }} -- -max_total_time="$FUZZ_SECONDS" -rss_limit_mb="$RSS_LIMIT_MB" || [ $? -eq 124 ]
+
+      - name: Save fuzz corpus
+        # always(): a run that found a crash still grew the corpus.
+        if: always()
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload crash artifacts
         if: always()

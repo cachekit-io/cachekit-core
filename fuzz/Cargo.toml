@@ -13,6 +13,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
 rmp-serde = "1"
+lz4_flex = "0.12"
 
 [dependencies.cachekit-core]
 path = ".."
