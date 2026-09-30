@@ -26,9 +26,9 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "serde_json never automerges. Its publisher is trusted in supply-chain/audits.toml, so cargo vet passes its new releases with no per-version review, and the serde_core it resolves is a runtime dependency. A human merges every serde_json update.",
+      "description": "Cargo dev-dependency updates never automerge in this repo. Crates whose publisher is trusted in supply-chain/audits.toml pass cargo vet with no per-version review, and a dev-dependency update can move a runtime dependency in Cargo.lock, so a human merges every one. Keep this rule last: a later rule that sets automerge would override it.",
       "matchManagers": ["cargo"],
-      "matchPackageNames": ["serde_json"],
+      "matchDepTypes": ["dev-dependencies"],
       "automerge": false
     }
   ]
