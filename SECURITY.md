@@ -165,10 +165,10 @@ the call fails. As with the size bound above, a caller that deserializes
 
 The walk itself is public as `check_msgpack_structure(bytes, max_depth)`, so a
 caller that decodes untrusted MessagePack outside `ByteStorage` can apply the
-same rules at its own depth bound. It needs no optional feature. It returns the
-bare reason for a rejection, with no prefix, and it does not enforce the
-protocol's `32..=1024` range on `max_depth`: choosing the bound is the caller's
-job.
+same rules at its own depth bound. It needs no optional feature. It returns a
+`MsgpackStructureError` whose `Display` is the bare reason, with no prefix, and
+it does not enforce the protocol's `32..=1024` range on `max_depth`: choosing
+the bound is the caller's job.
 
 ### Dependencies
 

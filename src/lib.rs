@@ -77,7 +77,7 @@ pub use byte_storage::{ByteStorage, StorageEnvelope};
 
 // Structural pre-scan for untrusted MessagePack (no optional dependency)
 mod msgpack_bounds;
-pub use msgpack_bounds::check_msgpack_structure;
+pub use msgpack_bounds::{check_msgpack_structure, MsgpackStructureError};
 
 // Encryption module (feature-gated)
 #[cfg(feature = "encryption")]

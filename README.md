@@ -258,7 +258,8 @@ allocating in proportion to any declared length. A rejection is
 `ByteStorageError::DeserializationFailed` with the message prefix
 `decode pre-scan: `. The same walk is public as
 `check_msgpack_structure(bytes, max_depth)` for callers that decode untrusted
-MessagePack themselves. See [`SECURITY.md`](SECURITY.md#envelope-decode-bounds).
+MessagePack themselves; it returns a `MsgpackStructureError` whose `Display` is
+the bare reason, with no prefix. See [`SECURITY.md`](SECURITY.md#envelope-decode-bounds).
 
 </details>
 
