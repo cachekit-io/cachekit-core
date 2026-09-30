@@ -1,6 +1,13 @@
 
 # cargo-vet imports lock
 
+[[publisher.anyhow]]
+version = "1.0.102"
+when = "2026-02-20"
+user-id = 3618
+user-login = "dtolnay"
+user-name = "David Tolnay"
+
 [[publisher.bumpalo]]
 version = "3.20.2"
 when = "2026-02-19"
@@ -22,6 +29,13 @@ user-id = 6825
 user-login = "sunfishcode"
 user-name = "Dan Gohman"
 
+[[publisher.itoa]]
+version = "1.0.18"
+when = "2026-03-20"
+user-id = 3618
+user-login = "dtolnay"
+user-name = "David Tolnay"
+
 [[publisher.linux-raw-sys]]
 version = "0.12.1"
 when = "2025-12-23"
@@ -35,6 +49,13 @@ when = "2026-02-06"
 user-id = 189
 user-login = "BurntSushi"
 user-name = "Andrew Gallant"
+
+[[publisher.prettyplease]]
+version = "0.2.37"
+when = "2025-08-19"
+user-id = 3618
+user-login = "dtolnay"
+user-name = "David Tolnay"
 
 [[publisher.rayon]]
 version = "1.12.0"
@@ -56,6 +77,48 @@ when = "2026-02-22"
 user-id = 6825
 user-login = "sunfishcode"
 user-name = "Dan Gohman"
+
+[[publisher.serde_bytes]]
+version = "0.11.19"
+when = "2025-09-15"
+user-id = 3618
+user-login = "dtolnay"
+user-name = "David Tolnay"
+
+[[publisher.serde_json]]
+version = "1.0.149"
+when = "2026-01-06"
+user-id = 3618
+user-login = "dtolnay"
+user-name = "David Tolnay"
+
+[[publisher.syn]]
+version = "2.0.117"
+when = "2026-02-20"
+user-id = 3618
+user-login = "dtolnay"
+user-name = "David Tolnay"
+
+[[publisher.thiserror]]
+version = "2.0.18"
+when = "2026-01-18"
+user-id = 3618
+user-login = "dtolnay"
+user-name = "David Tolnay"
+
+[[publisher.thiserror-impl]]
+version = "2.0.18"
+when = "2026-01-18"
+user-id = 3618
+user-login = "dtolnay"
+user-name = "David Tolnay"
+
+[[publisher.unicode-ident]]
+version = "1.0.24"
+when = "2026-02-16"
+user-id = 3618
+user-login = "dtolnay"
+user-name = "David Tolnay"
 
 [[publisher.unicode-xid]]
 version = "0.2.6"
@@ -340,6 +403,12 @@ who = "Alex Crichton <alex@alexcrichton.com>"
 criteria = "safe-to-deploy"
 delta = "0.9.15 -> 0.9.18"
 notes = "Nontrivial update but mostly around dependencies and how `unsafe` code is managed. Everything looks the same shape as before."
+
+[[audits.bytecode-alliance.audits.crossbeam-epoch]]
+who = "Alex Crichton <alex@alexcrichton.com>"
+criteria = "safe-to-deploy"
+delta = "0.9.18 -> 0.9.20"
+notes = "Minor updates, nothing out of place."
 
 [[audits.bytecode-alliance.audits.errno]]
 who = "Dan Gohman <dev@sunfishcode.online>"

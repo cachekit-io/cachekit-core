@@ -3,6 +3,12 @@
 
 [audits]
 
+[[trusted.anyhow]]
+criteria = "safe-to-deploy"
+user-id = 3618 # David Tolnay (dtolnay)
+start = "2019-10-05"
+end = "2027-09-30"
+
 [[trusted.half]]
 criteria = "safe-to-run"
 user-id = 3416 # Kathryn Long (starkat99)
@@ -15,6 +21,12 @@ user-id = 6825 # Dan Gohman (sunfishcode)
 start = "2022-01-22"
 end = "2027-05-30"
 
+[[trusted.itoa]]
+criteria = "safe-to-deploy"
+user-id = 3618 # David Tolnay (dtolnay)
+start = "2019-05-02"
+end = "2027-09-30"
+
 [[trusted.linux-raw-sys]]
 criteria = "safe-to-deploy"
 user-id = 6825 # Dan Gohman (sunfishcode)
@@ -26,6 +38,12 @@ criteria = "safe-to-deploy"
 user-id = 189 # Andrew Gallant (BurntSushi)
 start = "2019-07-07"
 end = "2027-05-30"
+
+[[trusted.prettyplease]]
+criteria = "safe-to-deploy"
+user-id = 3618 # David Tolnay (dtolnay)
+start = "2022-01-04"
+end = "2027-09-30"
 
 [[trusted.rayon]]
 criteria = "safe-to-run"
@@ -44,6 +62,60 @@ criteria = "safe-to-deploy"
 user-id = 6825 # Dan Gohman (sunfishcode)
 start = "2021-10-29"
 end = "2027-05-30"
+
+[[trusted.serde]]
+criteria = "safe-to-deploy"
+user-id = 3618 # David Tolnay (dtolnay)
+start = "2019-03-01"
+end = "2027-09-30"
+
+[[trusted.serde_bytes]]
+criteria = "safe-to-deploy"
+user-id = 3618 # David Tolnay (dtolnay)
+start = "2019-02-25"
+end = "2027-09-30"
+
+[[trusted.serde_core]]
+criteria = "safe-to-deploy"
+user-id = 3618 # David Tolnay (dtolnay)
+start = "2025-09-13"
+end = "2027-09-30"
+
+[[trusted.serde_derive]]
+criteria = "safe-to-deploy"
+user-id = 3618 # David Tolnay (dtolnay)
+start = "2019-03-01"
+end = "2027-09-30"
+
+[[trusted.serde_json]]
+criteria = "safe-to-deploy"
+user-id = 3618 # David Tolnay (dtolnay)
+start = "2019-02-28"
+end = "2027-09-30"
+
+[[trusted.syn]]
+criteria = "safe-to-deploy"
+user-id = 3618 # David Tolnay (dtolnay)
+start = "2019-03-01"
+end = "2027-09-30"
+
+[[trusted.thiserror]]
+criteria = "safe-to-deploy"
+user-id = 3618 # David Tolnay (dtolnay)
+start = "2019-10-09"
+end = "2027-09-30"
+
+[[trusted.thiserror-impl]]
+criteria = "safe-to-deploy"
+user-id = 3618 # David Tolnay (dtolnay)
+start = "2019-10-09"
+end = "2027-09-30"
+
+[[trusted.unicode-ident]]
+criteria = "safe-to-deploy"
+user-id = 3618 # David Tolnay (dtolnay)
+start = "2021-10-02"
+end = "2027-09-30"
 
 [[trusted.walkdir]]
 criteria = "safe-to-deploy"
