@@ -26,7 +26,7 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "Cargo dev-dependency updates never automerge in this repo. Crates whose publisher is trusted in supply-chain/audits.toml pass cargo vet with no per-version review, and a dev-dependency update can move a runtime dependency in Cargo.lock, so a human merges every one. Keep this rule last: a later rule that sets automerge would override it.",
+      "description": "Cargo dev-dependency updates never automerge in this repo. This overrides the shared preset, which automerges them through its rust-dev-deps group and its dev-dependency rule. Crates whose publisher is trusted in supply-chain/audits.toml pass cargo vet with no per-version review, and any dev-dependency update can move a runtime dependency in the shared Cargo.lock. So the rule matches every dev-dependency, not only the trusted crates, and a human merges each one. Keep this rule last in this file: a later rule here that sets automerge would override it.",
       "matchManagers": ["cargo"],
       "matchDepTypes": ["dev-dependencies"],
       "automerge": false
