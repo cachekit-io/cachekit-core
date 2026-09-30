@@ -256,7 +256,9 @@ headers declaring more elements or bytes than the input can back, the reserved
 marker `0xc1` and truncated input are all rejected before decoding, without
 allocating in proportion to any declared length. A rejection is
 `ByteStorageError::DeserializationFailed` with the message prefix
-`decode pre-scan: `. See [`SECURITY.md`](SECURITY.md#envelope-decode-bounds).
+`decode pre-scan: `. The same walk is public as
+`check_msgpack_structure(bytes, max_depth)` for callers that decode untrusted
+MessagePack themselves. See [`SECURITY.md`](SECURITY.md#envelope-decode-bounds).
 
 </details>
 
@@ -269,7 +271,7 @@ cachekit-core/
 ├── src/
 │   ├── lib.rs              # Public API exports
 │   ├── byte_storage.rs     # LZ4 + xxHash3 storage envelope
-│   ├── msgpack_bounds.rs   # Structural pre-scan run before the envelope decode
+│   ├── msgpack_bounds.rs   # Structural pre-scan (public check_msgpack_structure), run before the envelope decode
 │   ├── checksum.rs         # Standalone xxHash3 checksum/verify primitive (feature = "checksum")
 │   ├── metrics.rs          # Operation timing & statistics
 │   │

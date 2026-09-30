@@ -1,27 +1,34 @@
 //! Structural pre-scan for untrusted MessagePack.
 //!
-//! `ByteStorage::retrieve` runs this over the envelope bytes before
-//! `rmp_serde` materialises a `StorageEnvelope` (protocol `spec/wire-format.md`
-//! → Retrieve Flow, step 2; the bounds are `spec/interop-mode.md` → Decode
-//! bounds, pinned by `tests/vectors/decode-bounds.json`). The opcode table
-//! matches cachekit-py's `check_msgpack_structure` and cachekit-rs's
-//! `check_structure`. Unlike cachekit-py's walk, this one counts an empty
-//! collection as a nesting level, which is how the spec defines depth;
-//! cachekit-rs bounds depth in `rmp_serde` rather than in its walk.
+//! This is the one shared structural walk. `ByteStorage::retrieve` runs it over
+//! the envelope bytes before `rmp_serde` materialises a `StorageEnvelope`
+//! (protocol `spec/wire-format.md` → Retrieve Flow, step 2), and SDK bindings
+//! call it through the [`crate::check_msgpack_structure`] re-export before they
+//! decode untrusted values. The bounds are `spec/interop-mode.md` → Decode
+//! bounds, pinned by `tests/vectors/decode-bounds.json`. Depth counts every
+//! collection header, an empty one included, which is how the spec defines it.
+//!
+//! The walk needs no optional dependency, so it is available under every
+//! feature set.
 
-/// Nesting bound for the envelope decode. The protocol requires 32..=1024; 100
-/// matches cachekit-rs and cachekit-ts. A legitimate envelope nests 2 deep.
-pub(crate) const MAX_DEPTH: usize = 100;
-
-/// Header-only walk over one MessagePack document: str/bin/ext payloads are
-/// skipped by offset, never read, and nothing is allocated beyond one `u64`
-/// per open collection (at most `max_depth`).
+/// Checks that `bytes` hold one MessagePack document whose declared structure
+/// the input can actually back, before any decoder sees them.
+///
+/// A header-only walk: str/bin/ext payloads are skipped by offset, never read,
+/// and nothing is decoded. It allocates one `u64` per open non-empty
+/// collection, so at most `max_depth` of them (8 KiB at a depth of 1024), and
+/// nothing proportional to the input or to any declared length.
 ///
 /// Trailing bytes after the root element are left to the decoder.
 ///
+/// `max_depth` is the caller's bound. The protocol (`spec/interop-mode.md` →
+/// Decode bounds) requires one in `32..=1024`; this function does not enforce
+/// that range and applies whatever value it is given.
+///
 /// # Errors
 ///
-/// Names the violated bound, before any decoder pre-allocates a container, for:
+/// Returns the violated bound as a bare reason with no prefix, so each caller
+/// adds its own. It rejects:
 /// - nesting deeper than `max_depth`, counting every array or map header on
 ///   the path (an empty one included);
 /// - a header declaring more payload bytes than the input holds;
@@ -30,7 +37,27 @@ pub(crate) const MAX_DEPTH: usize = 100;
 ///   total container pre-allocation is bounded by the input length rather
 ///   than by `depth × declared length`;
 /// - the reserved marker `0xc1`, and input that ends mid-document.
-pub(crate) fn check_msgpack_structure(bytes: &[u8], max_depth: usize) -> Result<(), String> {
+///
+/// # Examples
+///
+/// ```
+/// use cachekit_core::check_msgpack_structure;
+///
+/// // [[[]]]: three levels, because the empty innermost array counts as one.
+/// let doc = [0x91, 0x91, 0x90];
+/// assert_eq!(check_msgpack_structure(&doc, 3), Ok(()));
+/// assert_eq!(
+///     check_msgpack_structure(&doc, 2),
+///     Err("nests deeper than 2 levels".to_owned())
+/// );
+///
+/// // An array32 header claiming 2^32 - 1 elements, in five bytes.
+/// assert_eq!(
+///     check_msgpack_structure(&[0xdd, 0xff, 0xff, 0xff, 0xff], 100),
+///     Err("declares more elements than the input can back".to_owned())
+/// );
+/// ```
+pub fn check_msgpack_structure(bytes: &[u8], max_depth: usize) -> Result<(), String> {
     fn be(bytes: &[u8], pos: usize, width: usize) -> Result<u64, String> {
         let end = pos
             .checked_add(width)
@@ -104,6 +131,9 @@ pub(crate) fn check_msgpack_structure(bytes: &[u8], max_depth: usize) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The envelope's bound; any bound in the protocol's range would do here.
+    const MAX_DEPTH: usize = 100;
 
     fn check(bytes: &[u8]) -> Result<(), String> {
         check_msgpack_structure(bytes, MAX_DEPTH)
@@ -228,6 +258,7 @@ mod tests {
         );
     }
 
+    #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
     #[test]
     fn every_real_envelope_and_every_strict_prefix_of_one() {
         // The walk admits what writers emit, and nothing that ends early:

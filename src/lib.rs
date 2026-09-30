@@ -73,9 +73,11 @@ pub use checksum::{checksum, verify_checksum};
 
 // Core byte storage layer
 pub mod byte_storage;
-#[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
-mod msgpack_bounds;
 pub use byte_storage::{ByteStorage, StorageEnvelope};
+
+// Structural pre-scan for untrusted MessagePack (no optional dependency)
+mod msgpack_bounds;
+pub use msgpack_bounds::check_msgpack_structure;
 
 // Encryption module (feature-gated)
 #[cfg(feature = "encryption")]

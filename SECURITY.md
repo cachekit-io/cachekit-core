@@ -152,6 +152,13 @@ through `retrieve`, and asserts the pre-scan's message prefix, not merely that
 the call fails. As with the size bound above, a caller that deserializes
 `StorageEnvelope` directly bypasses the pre-scan and must impose its own.
 
+The walk itself is public as `check_msgpack_structure(bytes, max_depth)`, so a
+caller that decodes untrusted MessagePack outside `ByteStorage` can apply the
+same rules at its own depth bound. It needs no optional feature. It returns the
+bare reason for a rejection, with no prefix, and it does not enforce the
+protocol's `32..=1024` range on `max_depth`: choosing the bound is the caller's
+job.
+
 ### Dependencies
 
 Security-critical dependencies are audited via `cargo-deny`:
