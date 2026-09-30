@@ -834,7 +834,16 @@ mod security_tests {
         println!("✓ No significant timing difference detected");
     }
 
+    // Ignored by default: a wall-clock ratio on a shared CI runner is noise, not a
+    // constant-time measurement. On native targets the operation timed here is
+    // ring's AES-256-GCM, which this crate does not implement, so the test cannot
+    // detect a leak in cachekit-core's own code. The threshold was already raised
+    // 20% -> 150% -> 200% and macos-latest still hit 209%
+    // (https://github.com/cachekit-io/cachekit-core/actions/runs/36735586079).
+    // Raising it again would pass a real 2x leak. Run on demand:
+    //   cargo test --all-features --test encryption_tests -- --ignored test_timing_independent_of_key_pattern
     #[test]
+    #[ignore = "wall-clock timing ratio on shared CI runners cannot measure constant-time behaviour"]
     fn test_timing_independent_of_key_pattern() {
         // WHY: Verify timing doesn't leak information about key
         // VALIDATES: Different key patterns have similar encryption times
