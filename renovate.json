@@ -16,6 +16,14 @@
       "matchUpdateTypes": ["minor", "major"],
       "groupName": null,
       "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Hold generic-array at 0.14.7. crypto-common 0.1, which the RustCrypto 0.10 crates depend on, pins generic-array to exactly 0.14.7, so any other 0.14.x fails the Cargo.lock update and takes the whole non-major group with it. It waits under Pending Approval on the Dependency Dashboard instead. Vulnerability updates are not held. Drop this rule once nothing in Cargo.lock depends on crypto-common 0.1.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["generic-array"],
+      "matchUpdateTypes": ["patch"],
+      "groupName": null,
+      "dependencyDashboardApproval": true
     }
   ]
 }
