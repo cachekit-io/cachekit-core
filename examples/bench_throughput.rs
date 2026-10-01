@@ -102,7 +102,11 @@ fn bench_size(size: usize, iterations: usize) {
 }
 
 fn main() {
-    println!("Throughput benchmark on Apple M2 Max\n");
+    println!(
+        "Throughput benchmark ({}/{})\n",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
 
     // Small data (call overhead visible)
     bench_size(1024, 100_000); // 1KB

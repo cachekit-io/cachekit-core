@@ -328,6 +328,8 @@ Benchmarks on Apple M2 Max (64KB payload, compressible data):
 > [!TIP]
 > Hardware acceleration is auto-detected. ARM64 uses ARM Crypto Extensions; x86-64 uses AES-NI.
 
+The figures above come from `examples/bench_throughput.rs` on highly compressible data. The Criterion suite in `benches/hot_path.rs` needs the `encryption` feature (`make bench`, or `cargo bench --features encryption`; a plain `cargo bench` skips it). It runs the ByteStorage roundtrip on three corpora side by side: `byte_storage/roundtrip` (synthetic ramp, kept for history), `byte_storage/roundtrip_msgpack` (realistic msgpack records, about 0.38 LZ4 ratio at 64 KB) and `byte_storage/roundtrip_incompressible`. The bench profile keeps symbols, so callgrind and perf attribute cost to functions.
+
 ---
 
 ## Testing
