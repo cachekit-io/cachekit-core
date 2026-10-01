@@ -144,6 +144,16 @@ panic = "abort"
 strip = "symbols"
 debug = "line-tables-only"
 
+# Bench profile: inherits release, but keeps symbols so callgrind/perf can
+# attribute cost to functions. Release's strip = "symbols" also drops the
+# line tables, which would make debug = "line-tables-only" a no-op here.
+[profile.bench]
+strip = false
+debug = "line-tables-only"
+
+# hot_path also benches ZeroKnowledgeEncryptor, so it needs `encryption`;
+# without it a plain `cargo bench` skips this target instead of failing to compile.
 [[bench]]
 name = "hot_path"
 harness = false
+required-features = ["encryption"]
