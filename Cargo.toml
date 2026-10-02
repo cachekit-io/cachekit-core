@@ -98,6 +98,11 @@ encryption = [
     "dep:getrandom",
 ]
 
+# Record per-operation OperationMetrics (a clock-read pair and a Mutex write per
+# store/retrieve/encrypt/decrypt). Off by default: nothing in the SDKs reads it.
+# Without it, get_last_metrics() returns OperationMetrics::default().
+metrics = []
+
 # C FFI layer (generates include/cachekit.h)
 ffi = []
 
