@@ -122,8 +122,9 @@ through `retrieve` and assert the error each must raise. For the size-cap and
 ratio vectors, a unit test (`src/read_allocation_probe.rs`) also counts every
 byte the read requests from the global allocator and fails if the count reaches
 `original_size`, so a reader that reserves its output before the checks fails
-even when it raises the right error; a positive control shows the probe catches
-exactly that. The product's width is tested on a 32-bit target: CI runs the
+even when it raises the right error. A positive control runs the reader's own
+decoder at `original_size` inside `extract`, before the checks, and shows the
+probe catches it. The product's width is tested on a 32-bit target: CI runs the
 protocol's `envelope_ratio_product_wraps_32_bits` vector on `wasm32`, where a
 pointer-width product would wrap and reject it. The `compression_bomb` fuzz target
 (`fuzz/fuzz_targets/compression_bomb.rs`) computes one expected result for each

@@ -12,8 +12,9 @@
 //! The probe is a counting `#[global_allocator]` that adds every requested
 //! size (alloc, alloc_zeroed, and the new size on realloc) to a per-thread
 //! total. That is the cumulative count the spec allows: a buffer allocated and
-//! freed inside the read still counts, and libtest runs each test on its own
-//! thread, so the count is this read's alone.
+//! freed inside the read still counts. The read runs on the test's own thread,
+//! and the test takes the thread's total before and after it, so the delta is
+//! this read's alone.
 //!
 //! This lives in the crate's unit tests, compiled only under `cfg(test)`,
 //! because the positive control needs a hook inside `StorageEnvelope::extract`
@@ -65,14 +66,13 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 /// Positive-control hook, called by `StorageEnvelope::extract` after the
 /// envelope is decoded and before the size and ratio checks. When armed on
-/// this thread it allocates and frees an `original_size` buffer there, as a
-/// reserve-first reader would.
-pub(crate) fn reserve_first_control(original_size: u32) {
+/// this thread it runs the reader's own decoder at `original_size` there and
+/// discards the result: a reserve-first build of this reader. The decoder
+/// sizes its output from `original_size` before it reads the block, so the
+/// control allocates through the same allocator call the real decode uses.
+pub(crate) fn reserve_first_control(compressed_data: &[u8], original_size: u32) {
     if RESERVE_FIRST.with(Cell::get) {
-        // black_box: LLVM may otherwise delete an allocation nothing reads.
-        drop(std::hint::black_box(Vec::<u8>::with_capacity(
-            original_size as usize,
-        )));
+        let _ = lz4_flex::decompress(compressed_data, original_size as usize);
     }
 }
 
@@ -88,22 +88,6 @@ mod tests {
         let before = REQUESTED.with(Cell::get);
         let result = f();
         (result, REQUESTED.with(Cell::get) - before)
-    }
-
-    /// Disarms the control on drop, so a failing assert cannot leave it armed.
-    struct ArmedControl;
-
-    impl ArmedControl {
-        fn arm() -> Self {
-            RESERVE_FIRST.with(|c| c.set(true));
-            ArmedControl
-        }
-    }
-
-    impl Drop for ArmedControl {
-        fn drop(&mut self) {
-            RESERVE_FIRST.with(|c| c.set(false));
-        }
     }
 
     /// `(envelope bytes, original_size)` of a reject vector, by name.
@@ -156,10 +140,9 @@ mod tests {
     #[test]
     fn probe_catches_a_reserve_first_reader() {
         let (envelope, original_size) = reject_vector("reject_ratio_bomb");
-        let (result, requested) = {
-            let _armed = ArmedControl::arm();
-            retrieve_counted(&envelope)
-        };
+        RESERVE_FIRST.with(|c| c.set(true));
+        let (result, requested) = retrieve_counted(&envelope);
+        RESERVE_FIRST.with(|c| c.set(false));
         // The reserve-first reader still raises the expected error, which is
         // why the error assertion alone is not enough.
         assert_eq!(result.err(), Some(ByteStorageError::DecompressionBomb));
