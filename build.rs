@@ -1,6 +1,8 @@
 fn main() {
-    // Only generate C headers when ffi feature is enabled
-    if std::env::var("CARGO_FEATURE_FFI").is_ok() {
+    // Only generate C headers when ffi feature is enabled. A compile-time gate,
+    // so cbindgen is only a build-dependency when `ffi` is on.
+    #[cfg(feature = "ffi")]
+    {
         let crate_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
         let output_file = std::path::PathBuf::from(&crate_dir)
             .join("include")
