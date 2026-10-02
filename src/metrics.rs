@@ -1,8 +1,6 @@
 //! Observability metrics for Rust operations
 //!
 //! Tracks performance and resource usage of compression, checksums, and encryption.
-//! Metrics are designed to be sent to Python layer for Prometheus export.
-//!
 //! Recording is opt-in via the `metrics` cargo feature. Without it, no clock is
 //! read and no lock is taken per operation, and the `get_last_metrics()` getters
 //! return `OperationMetrics::default()`.

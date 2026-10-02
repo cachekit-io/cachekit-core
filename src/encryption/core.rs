@@ -721,8 +721,11 @@ mod tests {
         let plaintext = b"test data for decryption metrics";
         let aad = b"context";
 
-        // Encrypt then decrypt
-        let ciphertext = encryptor.encrypt_aes_gcm(plaintext, &key, aad).unwrap();
+        // Encrypt on another instance, so only decrypt can write these metrics
+        let ciphertext = ZeroKnowledgeEncryptor::new()
+            .unwrap()
+            .encrypt_aes_gcm(plaintext, &key, aad)
+            .unwrap();
         encryptor.decrypt_aes_gcm(&ciphertext, &key, aad).unwrap();
         let metrics = encryptor.get_last_metrics();
 

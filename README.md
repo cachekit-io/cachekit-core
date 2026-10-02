@@ -37,7 +37,7 @@
 | `compression` | LZ4 compression via [`lz4_flex`](https://crates.io/crates/lz4_flex) | ✅ |
 | `checksum` | [`xxhash-rust`](https://crates.io/crates/xxhash-rust) integrity verification | ✅ |
 | `encryption` | AES-256-GCM via [`ring`](https://crates.io/crates/ring) + HKDF-SHA256 | ❌ |
-| `metrics` | Record per-operation `OperationMetrics` (timings, compression ratio). Without it, `get_last_metrics()` returns defaults and no clock or lock is touched per operation | ❌ |
+| `metrics` | Record per-operation `OperationMetrics` (timings (0 on wasm32), compression ratio). Without it, `get_last_metrics()` returns defaults and no clock or lock is touched per operation | ❌ |
 | `ffi` | C header generation | ❌ |
 
 ```toml

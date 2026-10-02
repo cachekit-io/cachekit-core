@@ -63,6 +63,16 @@ jobs:
         if: matrix.rust == 'stable'
         run: cargo test --features ffi
 
+      # The config the SDKs ship: encryption on, metrics off. --all-features
+      # turns metrics on, so it never compiles the no-metrics crypto paths.
+      - name: Run clippy (encryption, no metrics)
+        if: matrix.rust == 'stable'
+        run: cargo clippy --features encryption --all-targets -- -D warnings
+
+      - name: Run tests (encryption, no metrics)
+        if: matrix.rust == 'stable'
+        run: cargo test --features encryption
+
   security:
     runs-on: ubuntu-latest
     timeout-minutes: 20

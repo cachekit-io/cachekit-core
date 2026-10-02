@@ -641,29 +641,29 @@ mod tests {
     #[test]
     fn test_metrics_collection_on_store() {
         let storage = ByteStorage::new(None);
-        let test_data = b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_vec(); // Compressible
+        let test_data = vec![b'a'; 4096]; // Compressible: the default ratio is 1.0
 
         // Store data
         storage.store(&test_data, None).unwrap();
         let metrics = storage.get_last_metrics();
 
         // Verify metrics were collected
-        assert!(metrics.compression_ratio > 0.0); // Should have valid compression ratio
+        assert!(metrics.compression_ratio > 1.0);
     }
 
     #[cfg(feature = "metrics")]
     #[test]
     fn test_metrics_collection_on_retrieve() {
         let storage = ByteStorage::new(None);
-        let test_data = b"test data for retrieval metrics";
+        let test_data = vec![b'a'; 4096]; // Compressible: the default ratio is 1.0
 
-        // Store then retrieve
-        let stored = storage.store(test_data, None).unwrap();
+        // Store on another instance, so only retrieve can write these metrics
+        let stored = ByteStorage::new(None).store(&test_data, None).unwrap();
         storage.retrieve(&stored).unwrap();
         let metrics = storage.get_last_metrics();
 
         // Verify retrieve metrics were collected
-        assert!(metrics.compression_ratio > 0.0); // Should have valid ratio
+        assert!(metrics.compression_ratio > 1.0);
     }
 
     #[cfg(not(feature = "metrics"))]
