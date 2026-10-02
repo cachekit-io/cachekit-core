@@ -101,6 +101,10 @@ impl StorageEnvelope {
     /// Extract and validate data from envelope
     #[cfg(all(feature = "compression", feature = "checksum"))]
     pub fn extract(&self) -> Result<Vec<u8>, ByteStorageError> {
+        // Unit tests only: the allocation probe's positive control.
+        #[cfg(test)]
+        crate::read_allocation_probe::reserve_first_control(self.original_size);
+
         check_decompression_bound(self.compressed_data.len(), self.original_size)?;
 
         // Decompress (with validated sizes)

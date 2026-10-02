@@ -71,6 +71,10 @@ pub use checksum::{checksum, verify_checksum};
 pub mod byte_storage;
 pub use byte_storage::{ByteStorage, StorageEnvelope};
 
+// Unit-test allocation probe for the reject vectors (test builds only)
+#[cfg(all(test, feature = "compression", feature = "checksum"))]
+mod read_allocation_probe;
+
 // Structural pre-scan for untrusted MessagePack (no optional dependency)
 mod msgpack_bounds;
 pub use msgpack_bounds::{check_msgpack_structure, MsgpackStructureError};

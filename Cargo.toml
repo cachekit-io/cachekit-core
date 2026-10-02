@@ -63,7 +63,6 @@ ring = { version = "0.17", optional = true }
 cbindgen = "0.29"
 
 [dev-dependencies]
-proptest = "1.4"
 serde_json = "1.0"
 blake2 = "0.10"
 hex = "0.4"
@@ -71,7 +70,20 @@ hex = "0.4"
 # but the wire-format vector fixture pin must verify under every feature set.
 sha2 = "0.10"
 aes-gcm = { version = "0.10", features = ["zeroize"] }
+
+# Native-only: proptest pulls getrandom 0.3, which refuses to build for
+# wasm32-unknown-unknown, and would break the wasm32 test build below.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+proptest = "1.4"
 criterion = { version = "0.5", features = ["html_reports"] }
+
+# wasm32 test harness for tests/wire_format_constructed.rs (libtest's #[test]
+# does not run on wasm32-unknown-unknown). Exact-pinned: it releases in
+# lockstep with wasm-bindgen, and the wasm-bindgen-test-runner binary in CI
+# must match the locked wasm-bindgen version (bump this, Cargo.lock and the
+# runner pin in ci.yml together).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "=0.3.71"
 
 [features]
 default = ["compression", "checksum", "messagepack"]

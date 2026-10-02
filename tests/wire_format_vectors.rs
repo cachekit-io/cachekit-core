@@ -15,16 +15,26 @@
 //! encoding — `bin` since the writer flip (`serde_bytes` on
 //! `compressed_data`, LAB-866), so those assertions target the `*_bin` set.
 //!
+//! Since protocol 1.3 the fixture also carries `reject_vectors`: six envelopes
+//! a conforming reader must reject, each asserted below to fail through
+//! `ByteStorage::retrieve` with the error the spec names. Its
+//! `constructed_vectors` group runs in `wire_format_constructed.rs`, and the
+//! allocation bound on the size-cap and ratio reject vectors runs in the
+//! crate's unit tests (`src/read_allocation_probe.rs`), where the probe's
+//! positive control can hook the read path.
+//!
 //! Fixture provenance: vendored from
 //! <https://github.com/cachekit-io/protocol> `test-vectors/wire-format.json`
-//! at commit `5be35d5240817617275e3983de486a5826a587af`, integrity-pinned by
+//! at commit `efe56e54723cdfb5292a2e9352157d4141a08421`, integrity-pinned by
 //! sha256 below. To update: copy the file from a newer protocol ref, update
 //! `FIXTURE_SHA256` and this comment's commit hash together.
 
 #![cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::mem::discriminant;
 
+use cachekit_core::byte_storage::ByteStorageError;
 use cachekit_core::{ByteStorage, StorageEnvelope};
 use sha2::{Digest, Sha256};
 
@@ -33,12 +43,16 @@ use sha2::{Digest, Sha256};
 const FIXTURE: &str = include_str!("vectors/wire-format.json");
 
 /// sha256 of the vendored fixture — must match the protocol repo's copy.
-const FIXTURE_SHA256: &str = "b902db88fb9b2c4a2d0def7266f8199a858fcb921262c1eaf2c2c03412b5b56a";
+const FIXTURE_SHA256: &str = "5d72ca1ff27202ab46aa501f54abf77e535f275d2ea4443966ad464f3c020cd7";
 
 #[derive(serde::Deserialize)]
 struct WireFormatFixture {
     limits: Limits,
     vectors: Vec<Vector>,
+    /// Defaulted so a fixture without the group fails the named-set assert in
+    /// `reject_vectors_fail_with_the_spec_error`, not a serde error.
+    #[serde(default)]
+    reject_vectors: Vec<RejectVector>,
     version: String,
 }
 
@@ -62,6 +76,13 @@ struct Vector {
     envelope_encoding: Option<String>,
     /// For `*_bin` twins: the legacy vector they were derived from.
     derived_from: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RejectVector {
+    name: String,
+    envelope_hex: String,
+    envelope_size: usize,
 }
 
 impl Vector {
@@ -89,7 +110,7 @@ fn fixture_integrity_pinned_sha256() {
 #[test]
 fn fixture_is_current_version_with_vectors() {
     let fixture = load_fixture();
-    assert_eq!(fixture.version, "1.1.1");
+    assert_eq!(fixture.version, "1.3.0");
     let legacy: HashSet<&str> = fixture
         .vectors
         .iter()
@@ -334,5 +355,95 @@ fn bin_twins_are_bin_encoded_and_field_identical_to_legacy() {
             twin.name
         );
         assert_eq!(twin_env.format, parent_env.format, "[{}]", twin.name);
+    }
+}
+
+/// The six reject vectors, each with the rejection `spec/wire-format.md` →
+/// Reject vectors requires an SDK test to assert. Compared by variant, so a
+/// message is not part of the assertion. Pinned by name, so an emptied or
+/// renamed group fails here instead of iterating nothing.
+const REJECT_EXPECTATIONS: [(&str, ByteStorageError); 6] = [
+    // Retrieve Flow step 4: original_size one byte over the 512 MiB cap.
+    (
+        "reject_original_size_over_cap",
+        ByteStorageError::InputTooLarge,
+    ),
+    // original_size 2^32 + 16 as uint64 fails the range-checked decode into
+    // `StorageEnvelope::original_size: u32` (step 2), before decompression.
+    // The spec accepts that in place of the size-cap error; a length or
+    // checksum error would mean the value was truncated.
+    (
+        "reject_original_size_wraps_u32",
+        ByteStorageError::DeserializationFailed(String::new()),
+    ),
+    // The zero-length and ratio checks share `DecompressionBomb`, but each
+    // vector can only reach its own: with original_size 0 the ratio check
+    // cannot fire (0 > 1000 * 0 is false), and reject_ratio_bomb has 1,000 B
+    // of compressed_data, so the zero-length check cannot fire.
+    (
+        "reject_zero_length_compressed_data",
+        ByteStorageError::DecompressionBomb,
+    ),
+    ("reject_ratio_bomb", ByteStorageError::DecompressionBomb),
+    // A length error, never a checksum error: the checksum matches the 16 B
+    // the block decodes to.
+    (
+        "reject_decompressed_length_mismatch",
+        ByteStorageError::SizeValidationFailed,
+    ),
+    (
+        "reject_checksum_mismatch",
+        ByteStorageError::ChecksumMismatch,
+    ),
+];
+
+/// Every reject vector fails through the envelope read path,
+/// `ByteStorage::retrieve`, with the error the spec names for it, at this
+/// spec's limits. `validate` must agree.
+#[test]
+fn reject_vectors_fail_with_the_spec_error() {
+    let fixture = load_fixture();
+    let names: BTreeSet<&str> = fixture
+        .reject_vectors
+        .iter()
+        .map(|v| v.name.as_str())
+        .collect();
+    let expected: BTreeSet<&str> = REJECT_EXPECTATIONS.iter().map(|(n, _)| *n).collect();
+    assert_eq!(
+        names, expected,
+        "wire-format.json reject_vectors must be exactly the six pinned names"
+    );
+    assert_eq!(
+        fixture.reject_vectors.len(),
+        expected.len(),
+        "duplicate reject vector name"
+    );
+
+    let storage = ByteStorage::new(None);
+    for (name, expected) in REJECT_EXPECTATIONS {
+        let vector = fixture
+            .reject_vectors
+            .iter()
+            .find(|v| v.name == name)
+            .expect("checked above");
+        let envelope = hex::decode(&vector.envelope_hex).expect("envelope_hex must decode");
+        assert_eq!(
+            envelope.len(),
+            vector.envelope_size,
+            "[{name}] envelope_size mismatch"
+        );
+
+        match storage.retrieve(&envelope) {
+            Ok(_) => panic!("[{name}] retrieve accepted a reject vector"),
+            Err(e) => assert_eq!(
+                discriminant(&e),
+                discriminant(&expected),
+                "[{name}] rejected with {e:?}, expected {expected:?}"
+            ),
+        }
+        assert!(
+            !storage.validate(&envelope),
+            "[{name}] validate() accepted a reject vector"
+        );
     }
 }

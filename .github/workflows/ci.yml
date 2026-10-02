@@ -73,6 +73,69 @@ jobs:
         if: matrix.rust == 'stable'
         run: cargo test --features encryption
 
+  # The 32-bit ratio-product vector must pass on each 32-bit target the crate
+  # supports (spec/wire-format.md, Decompression Bomb Detection). A 64-bit
+  # host computes a pointer-width product exactly, so only a 32-bit run shows
+  # the bound holds there. wasm32 is the 32-bit target this crate supports.
+  wasm32:
+    name: wasm32 / ratio-product vector
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Must equal the wasm-bindgen version in Cargo.lock: the test runner and
+      # the crate share a private ABI, and a mismatch refuses to run. Bump this,
+      # the sha256 below and the wasm-bindgen-test pin in Cargo.toml together.
+      WASM_BINDGEN_VERSION: "0.2.121"
+      # Public release-tarball checksum, not a credential.
+      WASM_BINDGEN_SHA256: "3039f38f65fe237b640cf06a140c919ca8d717ec5012146d145d3f27bb4d6b28" # pragma: allowlist secret
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cache-all-crates: true
+
+      - name: Guard wasm-bindgen lockfile drift
+        run: |
+          locked=$(cargo pkgid wasm-bindgen | sed 's/.*[@#]//')
+          if [ "$locked" != "$WASM_BINDGEN_VERSION" ]; then
+            echo "::error::Cargo.lock has wasm-bindgen $locked but this job pins the $WASM_BINDGEN_VERSION test runner. Update WASM_BINDGEN_VERSION, WASM_BINDGEN_SHA256 and the wasm-bindgen-test pin in Cargo.toml together."
+            exit 1
+          fi
+
+      - name: Install Node (wasm-bindgen-test-runner host)
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "22"
+
+      - name: Install wasm-bindgen-test-runner
+        run: |
+          curl -sSfL --retry 3 -o /tmp/wbg.tar.gz \
+            "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${WASM_BINDGEN_VERSION}/wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          echo "${WASM_BINDGEN_SHA256}  /tmp/wbg.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/wbg.tar.gz -C /tmp
+          mkdir -p "$HOME/.wbg-bin"
+          install -m 0755 "/tmp/wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl/wasm-bindgen-test-runner" "$HOME/.wbg-bin/"
+          echo "$HOME/.wbg-bin" >> "$GITHUB_PATH"
+
+      # The runner prints "no tests to run!" and exits 0 when it finds no
+      # wasm_bindgen_test, so the step also requires the named pass in the log.
+      - name: Run the ratio-product vector on wasm32
+        shell: bash
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        run: |
+          cargo test --target wasm32-unknown-unknown --features wasm \
+            --test wire_format_constructed 2>&1 | tee wasm32-test.log
+          grep -qxF 'test envelope_ratio_product_wraps_32_bits ... ok' wasm32-test.log
+          grep -qE '^test result: ok\. 1 passed; 0 failed' wasm32-test.log
+
   security:
     runs-on: ubuntu-latest
     timeout-minutes: 20
