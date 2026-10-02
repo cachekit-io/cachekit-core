@@ -61,10 +61,6 @@
 //! - **Nonce safety**: Counter-based + random IV prevents reuse
 //! - **Memory safety**: `zeroize` on drop for all key material
 
-// Metrics and observability
-pub mod metrics;
-pub use metrics::OperationMetrics;
-
 // Standalone integrity primitive (usable without compression/messagepack)
 #[cfg(feature = "checksum")]
 pub mod checksum;
