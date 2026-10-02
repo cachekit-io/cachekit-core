@@ -37,6 +37,7 @@
 | `compression` | LZ4 compression via [`lz4_flex`](https://crates.io/crates/lz4_flex) | ✅ |
 | `checksum` | [`xxhash-rust`](https://crates.io/crates/xxhash-rust) integrity verification | ✅ |
 | `encryption` | AES-256-GCM via [`ring`](https://crates.io/crates/ring) + HKDF-SHA256 | ❌ |
+| `metrics` | Record per-operation `OperationMetrics` (timings, compression ratio). Without it, `get_last_metrics()` returns defaults and no clock or lock is touched per operation | ❌ |
 | `ffi` | C header generation | ❌ |
 
 ```toml
@@ -274,7 +275,7 @@ cachekit-core/
 │   ├── byte_storage.rs     # LZ4 + xxHash3 storage envelope
 │   ├── msgpack_bounds.rs   # Structural pre-scan (public check_msgpack_structure), run before the envelope decode
 │   ├── checksum.rs         # Standalone xxHash3 checksum/verify primitive (feature = "checksum")
-│   ├── metrics.rs          # Operation timing & statistics
+│   ├── metrics.rs          # Operation timing & statistics (recorded with feature = "metrics")
 │   │
 │   ├── encryption/         # (feature = "encryption")
 │   │   ├── mod.rs          # Module exports

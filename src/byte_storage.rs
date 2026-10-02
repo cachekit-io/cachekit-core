@@ -6,12 +6,12 @@
 //! - xxHash3-64 checksums for corruption detection (19x faster than Blake3)
 
 use crate::metrics::OperationMetrics;
+#[cfg(feature = "metrics")]
+use crate::metrics::Timer;
 #[cfg(feature = "compression")]
 use lz4_flex;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::Instant;
 use thiserror::Error;
 
 /// Error types for ByteStorage operations
@@ -195,18 +195,13 @@ impl ByteStorage {
 
         let format = format.unwrap_or_else(|| self.default_format.clone());
 
-        // Time compression operation (wasm32: Instant unavailable, use 0)
-        #[cfg(not(target_arch = "wasm32"))]
-        let compression_start = Instant::now();
-        let original_size = data.len();
+        #[cfg(feature = "metrics")]
+        let timer = Timer::start();
 
         let envelope = StorageEnvelope::new(data, format)?;
 
-        #[cfg(not(target_arch = "wasm32"))]
-        let compression_micros = compression_start.elapsed().as_micros() as u64;
-        #[cfg(target_arch = "wasm32")]
-        let compression_micros = 0u64;
-        let compressed_size = envelope.compressed_data.len();
+        #[cfg(feature = "metrics")]
+        let compression_micros = timer.elapsed_micros();
 
         // Serialize envelope with MessagePack
         let envelope_bytes = rmp_serde::to_vec(&envelope)
@@ -217,12 +212,12 @@ impl ByteStorage {
             return Err(ByteStorageError::InputTooLarge);
         }
 
-        // Update metrics for observability
+        #[cfg(feature = "metrics")]
         if let Ok(mut metrics) = self.last_metrics.lock() {
             *metrics = OperationMetrics::new().with_compression(
                 compression_micros,
-                original_size,
-                compressed_size,
+                data.len(),
+                envelope.compressed_data.len(),
             );
         }
 
@@ -250,28 +245,19 @@ impl ByteStorage {
 
         let envelope = decode_envelope(envelope_bytes)?;
 
-        // Time decompression and checksum operations (wasm32: Instant unavailable, use 0)
-        #[cfg(not(target_arch = "wasm32"))]
-        let decompress_start = Instant::now();
+        #[cfg(feature = "metrics")]
+        let timer = Timer::start();
 
         // Extract and validate data (all security checks happen inside extract())
         let data = envelope.extract()?;
 
-        #[cfg(not(target_arch = "wasm32"))]
-        let decompress_micros = decompress_start.elapsed().as_micros() as u64;
-        #[cfg(target_arch = "wasm32")]
-        let decompress_micros = 0u64;
-
-        // Calculate compression ratio from stored metadata
-        let compressed_size = envelope.compressed_data.len();
-        let original_size = envelope.original_size as usize;
-
-        // Update metrics for observability
+        // Compression ratio comes from the stored metadata
+        #[cfg(feature = "metrics")]
         if let Ok(mut metrics) = self.last_metrics.lock() {
             *metrics = OperationMetrics::new().with_compression(
-                decompress_micros,
-                original_size,
-                compressed_size,
+                timer.elapsed_micros(),
+                envelope.original_size as usize,
+                envelope.compressed_data.len(),
             );
         }
 
@@ -311,7 +297,9 @@ impl ByteStorage {
 
     /// Get metrics from last operation
     ///
-    /// Returns a snapshot of metrics from the most recent store() or retrieve() call
+    /// Returns a snapshot of metrics from the most recent store() or retrieve() call.
+    /// Without the `metrics` feature nothing is recorded and this returns
+    /// `OperationMetrics::default()`.
     pub fn get_last_metrics(&self) -> OperationMetrics {
         self.last_metrics
             .lock()
@@ -649,6 +637,7 @@ mod tests {
         assert_eq!("msgpack", format);
     }
 
+    #[cfg(feature = "metrics")]
     #[test]
     fn test_metrics_collection_on_store() {
         let storage = ByteStorage::new(None);
@@ -662,6 +651,7 @@ mod tests {
         assert!(metrics.compression_ratio > 0.0); // Should have valid compression ratio
     }
 
+    #[cfg(feature = "metrics")]
     #[test]
     fn test_metrics_collection_on_retrieve() {
         let storage = ByteStorage::new(None);
@@ -674,6 +664,18 @@ mod tests {
 
         // Verify retrieve metrics were collected
         assert!(metrics.compression_ratio > 0.0); // Should have valid ratio
+    }
+
+    #[cfg(not(feature = "metrics"))]
+    #[test]
+    fn test_metrics_not_recorded_without_feature() {
+        let storage = ByteStorage::new(None);
+        let test_data = vec![b'a'; 4096]; // Compressible: a recorded ratio would be > 1.0
+
+        let stored = storage.store(&test_data, None).unwrap();
+        assert_eq!(storage.get_last_metrics().compression_ratio, 1.0);
+        storage.retrieve(&stored).unwrap();
+        assert_eq!(storage.get_last_metrics().compression_ratio, 1.0);
     }
 }
 
