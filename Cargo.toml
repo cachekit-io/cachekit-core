@@ -60,7 +60,7 @@ ring = { version = "0.17", optional = true }
 
 [build-dependencies]
 # C header generation (required for ffi feature)
-cbindgen = "0.29"
+cbindgen = { version = "0.29", optional = true }
 
 [dev-dependencies]
 proptest = "1.4"
@@ -99,7 +99,7 @@ encryption = [
 ]
 
 # C FFI layer (generates include/cachekit.h)
-ffi = []
+ffi = ["dep:cbindgen"]
 
 # wasm32 support: alias for encryption (deps now folded into encryption feature)
 wasm = ["encryption"]
