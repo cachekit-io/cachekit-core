@@ -5,13 +5,9 @@
 //! - 1000x max compression ratio enforcement
 //! - xxHash3-64 checksums for corruption detection (19x faster than Blake3)
 
-use crate::metrics::OperationMetrics;
-#[cfg(feature = "metrics")]
-use crate::metrics::Timer;
 #[cfg(feature = "compression")]
 use lz4_flex;
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 /// Error types for ByteStorage operations
@@ -170,8 +166,6 @@ fn check_decompression_bound(
 /// Simple store/retrieve interface with no type awareness
 pub struct ByteStorage {
     default_format: String,
-    /// Last operation metrics (interior mutability for observability)
-    last_metrics: Arc<Mutex<OperationMetrics>>,
 }
 
 impl ByteStorage {
@@ -179,7 +173,6 @@ impl ByteStorage {
     pub fn new(default_format: Option<String>) -> Self {
         ByteStorage {
             default_format: default_format.unwrap_or_else(|| "msgpack".to_string()),
-            last_metrics: Arc::new(Mutex::new(OperationMetrics::new())),
         }
     }
 
@@ -195,13 +188,7 @@ impl ByteStorage {
 
         let format = format.unwrap_or_else(|| self.default_format.clone());
 
-        #[cfg(feature = "metrics")]
-        let timer = Timer::start();
-
         let envelope = StorageEnvelope::new(data, format)?;
-
-        #[cfg(feature = "metrics")]
-        let compression_micros = timer.elapsed_micros();
 
         // Serialize envelope with MessagePack
         let envelope_bytes = rmp_serde::to_vec(&envelope)
@@ -210,15 +197,6 @@ impl ByteStorage {
         // Security: Final check on serialized envelope size
         if envelope_bytes.len() > MAX_COMPRESSED_SIZE {
             return Err(ByteStorageError::InputTooLarge);
-        }
-
-        #[cfg(feature = "metrics")]
-        if let Ok(mut metrics) = self.last_metrics.lock() {
-            *metrics = OperationMetrics::new().with_compression(
-                compression_micros,
-                data.len(),
-                envelope.compressed_data.len(),
-            );
         }
 
         Ok(envelope_bytes)
@@ -245,21 +223,8 @@ impl ByteStorage {
 
         let envelope = decode_envelope(envelope_bytes)?;
 
-        #[cfg(feature = "metrics")]
-        let timer = Timer::start();
-
         // Extract and validate data (all security checks happen inside extract())
         let data = envelope.extract()?;
-
-        // Compression ratio comes from the stored metadata
-        #[cfg(feature = "metrics")]
-        if let Ok(mut metrics) = self.last_metrics.lock() {
-            *metrics = OperationMetrics::new().with_compression(
-                timer.elapsed_micros(),
-                envelope.original_size as usize,
-                envelope.compressed_data.len(),
-            );
-        }
 
         Ok((data, envelope.format))
     }
@@ -293,18 +258,6 @@ impl ByteStorage {
             Ok(envelope) => envelope.extract().is_ok(),
             Err(_) => false,
         }
-    }
-
-    /// Get metrics from last operation
-    ///
-    /// Returns a snapshot of metrics from the most recent store() or retrieve() call.
-    /// Without the `metrics` feature nothing is recorded and this returns
-    /// `OperationMetrics::default()`.
-    pub fn get_last_metrics(&self) -> OperationMetrics {
-        self.last_metrics
-            .lock()
-            .map(|metrics| metrics.clone())
-            .unwrap_or_else(|_| OperationMetrics::new())
     }
 
     /// Get security limits
@@ -635,47 +588,6 @@ mod tests {
         let (retrieved_data, format) = storage.retrieve(&stored).unwrap();
         assert_eq!(empty_data, retrieved_data);
         assert_eq!("msgpack", format);
-    }
-
-    #[cfg(feature = "metrics")]
-    #[test]
-    fn test_metrics_collection_on_store() {
-        let storage = ByteStorage::new(None);
-        let test_data = vec![b'a'; 4096]; // Compressible: the default ratio is 1.0
-
-        // Store data
-        storage.store(&test_data, None).unwrap();
-        let metrics = storage.get_last_metrics();
-
-        // Verify metrics were collected
-        assert!(metrics.compression_ratio > 1.0);
-    }
-
-    #[cfg(feature = "metrics")]
-    #[test]
-    fn test_metrics_collection_on_retrieve() {
-        let storage = ByteStorage::new(None);
-        let test_data = vec![b'a'; 4096]; // Compressible: the default ratio is 1.0
-
-        // Store on another instance, so only retrieve can write these metrics
-        let stored = ByteStorage::new(None).store(&test_data, None).unwrap();
-        storage.retrieve(&stored).unwrap();
-        let metrics = storage.get_last_metrics();
-
-        // Verify retrieve metrics were collected
-        assert!(metrics.compression_ratio > 1.0);
-    }
-
-    #[cfg(not(feature = "metrics"))]
-    #[test]
-    fn test_metrics_not_recorded_without_feature() {
-        let storage = ByteStorage::new(None);
-        let test_data = vec![b'a'; 4096]; // Compressible: a recorded ratio would be > 1.0
-
-        let stored = storage.store(&test_data, None).unwrap();
-        assert_eq!(storage.get_last_metrics().compression_ratio, 1.0);
-        storage.retrieve(&stored).unwrap();
-        assert_eq!(storage.get_last_metrics().compression_ratio, 1.0);
     }
 }
 

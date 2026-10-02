@@ -19,10 +19,6 @@
 //! This provides 2^64 unique encryptor instances, each with 2^32 encryptions,
 //! for a total of 2^96 unique nonces - far exceeding any practical usage.
 
-use crate::metrics::OperationMetrics;
-#[cfg(all(feature = "metrics", not(target_arch = "wasm32")))]
-use crate::metrics::Timer;
-
 // Native: ring for AES-256-GCM (hardware-accelerated, requires clang)
 #[cfg(not(target_arch = "wasm32"))]
 use ring::{
@@ -39,9 +35,7 @@ use aes_gcm::{
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::{Arc, LazyLock, Mutex};
-#[cfg(target_arch = "wasm32")]
-use std::sync::{Arc, Mutex};
+use std::sync::LazyLock;
 use thiserror::Error;
 
 // ── Native: LazyLock<AtomicU64> seeded from ring's SystemRandom ─────────────
@@ -212,8 +206,6 @@ pub struct ZeroKnowledgeEncryptor {
     /// - Monotonic: each instance gets strictly larger ID
     /// - Randomized seed: cross-process collision resistance
     instance_id: u64,
-    /// Last operation metrics (interior mutability for observability)
-    last_metrics: Arc<Mutex<OperationMetrics>>,
 }
 
 impl ZeroKnowledgeEncryptor {
@@ -241,7 +233,6 @@ impl ZeroKnowledgeEncryptor {
             #[cfg(target_arch = "wasm32")]
             nonce_counter: std::cell::Cell::new(0),
             instance_id,
-            last_metrics: Arc::new(Mutex::new(OperationMetrics::new())),
         })
     }
 
@@ -346,9 +337,6 @@ impl ZeroKnowledgeEncryptor {
         key: &[u8],
         aad: &[u8],
     ) -> Result<Vec<u8>, EncryptionError> {
-        #[cfg(feature = "metrics")]
-        let timer = Timer::start();
-
         // Validate key length
         if key.len() != 32 {
             return Err(EncryptionError::InvalidKeyLength(key.len()));
@@ -378,12 +366,6 @@ impl ZeroKnowledgeEncryptor {
         result.extend_from_slice(&nonce_bytes);
         result.extend_from_slice(&ciphertext);
 
-        #[cfg(feature = "metrics")]
-        if let Ok(mut metrics) = self.last_metrics.lock() {
-            *metrics = OperationMetrics::new()
-                .with_encryption(timer.elapsed_micros(), self.hardware_acceleration_detected);
-        }
-
         Ok(result)
     }
 
@@ -403,9 +385,6 @@ impl ZeroKnowledgeEncryptor {
         key: &[u8],
         aad: &[u8],
     ) -> Result<Vec<u8>, EncryptionError> {
-        #[cfg(feature = "metrics")]
-        let timer = Timer::start();
-
         // Validate key length
         if key.len() != 32 {
             return Err(EncryptionError::InvalidKeyLength(key.len()));
@@ -446,12 +425,6 @@ impl ZeroKnowledgeEncryptor {
         // Truncate to actual plaintext length (removes auth tag)
         plaintext.truncate(decrypted_len);
 
-        #[cfg(feature = "metrics")]
-        if let Ok(mut metrics) = self.last_metrics.lock() {
-            *metrics = OperationMetrics::new()
-                .with_encryption(timer.elapsed_micros(), self.hardware_acceleration_detected);
-        }
-
         Ok(plaintext)
     }
 
@@ -463,18 +436,6 @@ impl ZeroKnowledgeEncryptor {
         rng.fill(&mut key)
             .map_err(|_| EncryptionError::RngFailure)?;
         Ok(key)
-    }
-
-    /// Get metrics from last operation
-    ///
-    /// Returns a snapshot of metrics from the most recent encrypt_aes_gcm() or decrypt_aes_gcm() call.
-    /// Without the `metrics` feature nothing is recorded and this returns
-    /// `OperationMetrics::default()`.
-    pub fn get_last_metrics(&self) -> OperationMetrics {
-        self.last_metrics
-            .lock()
-            .map(|metrics| metrics.clone())
-            .unwrap_or_else(|_| OperationMetrics::new())
     }
 
     /// Encrypt data using AES-256-GCM with authenticated additional data (wasm32)
@@ -517,12 +478,6 @@ impl ZeroKnowledgeEncryptor {
         let mut result = Vec::with_capacity(12 + ciphertext_with_tag.len());
         result.extend_from_slice(&nonce_bytes);
         result.extend_from_slice(&ciphertext_with_tag);
-
-        // Metrics: Instant unavailable on wasm32
-        #[cfg(feature = "metrics")]
-        if let Ok(mut metrics) = self.last_metrics.lock() {
-            *metrics = OperationMetrics::new().with_encryption(0u64, false);
-        }
 
         Ok(result)
     }
@@ -568,12 +523,6 @@ impl ZeroKnowledgeEncryptor {
                 },
             )
             .map_err(|_| EncryptionError::AuthenticationFailed)?;
-
-        // Metrics: Instant unavailable on wasm32
-        #[cfg(feature = "metrics")]
-        if let Ok(mut metrics) = self.last_metrics.lock() {
-            *metrics = OperationMetrics::new().with_encryption(0u64, false);
-        }
 
         Ok(plaintext)
     }
@@ -695,55 +644,6 @@ mod tests {
 
         assert_eq!(decrypted1, plaintext);
         assert_eq!(decrypted2, plaintext);
-    }
-
-    #[cfg(feature = "metrics")]
-    #[test]
-    fn test_metrics_collection_on_encrypt() {
-        let encryptor = ZeroKnowledgeEncryptor::new().unwrap();
-        let key = encryptor.generate_key().unwrap();
-        let plaintext = b"test data for encryption metrics";
-        let aad = b"context";
-
-        // Encrypt data
-        encryptor.encrypt_aes_gcm(plaintext, &key, aad).unwrap();
-        let metrics = encryptor.get_last_metrics();
-
-        // Verify metrics were collected
-        assert!(metrics.encryption_time_micros.is_some());
-    }
-
-    #[cfg(feature = "metrics")]
-    #[test]
-    fn test_metrics_collection_on_decrypt() {
-        let encryptor = ZeroKnowledgeEncryptor::new().unwrap();
-        let key = encryptor.generate_key().unwrap();
-        let plaintext = b"test data for decryption metrics";
-        let aad = b"context";
-
-        // Encrypt on another instance, so only decrypt can write these metrics
-        let ciphertext = ZeroKnowledgeEncryptor::new()
-            .unwrap()
-            .encrypt_aes_gcm(plaintext, &key, aad)
-            .unwrap();
-        encryptor.decrypt_aes_gcm(&ciphertext, &key, aad).unwrap();
-        let metrics = encryptor.get_last_metrics();
-
-        // Verify metrics were collected
-        assert!(metrics.encryption_time_micros.is_some());
-    }
-
-    #[cfg(not(feature = "metrics"))]
-    #[test]
-    fn test_metrics_not_recorded_without_feature() {
-        let encryptor = ZeroKnowledgeEncryptor::new().unwrap();
-        let key = encryptor.generate_key().unwrap();
-        let aad = b"context";
-
-        let ciphertext = encryptor.encrypt_aes_gcm(b"payload", &key, aad).unwrap();
-        assert_eq!(encryptor.get_last_metrics().encryption_time_micros, None);
-        encryptor.decrypt_aes_gcm(&ciphertext, &key, aad).unwrap();
-        assert_eq!(encryptor.get_last_metrics().encryption_time_micros, None);
     }
 
     // ============================================================================
