@@ -3,13 +3,6 @@
   "extends": ["local>cachekit-io/renovate-config"],
   "packageRules": [
     {
-      "description": "Cargo treats a 0.x minor bump (0.12 to 0.13) as semver-incompatible, the same as a major, but Renovate classes it as minor, so it lands in the non-major group. There one such bump can break the whole group: a removed feature fails the Cargo.lock update, and an API change or a higher rust-version fails CI. Each such update gets its own PR instead. 0.x patch updates stay in the group.",
-      "matchManagers": ["cargo"],
-      "matchCurrentVersion": "<1.0.0",
-      "matchUpdateTypes": ["minor"],
-      "groupName": null
-    },
-    {
       "description": "Hold getrandom at 0.2. The direct 0.2 entry turns on the js feature for the getrandom 0.2 copy that ring and rand_core also use on wasm32, and getrandom 0.3 removed that feature, so a bump past 0.2 fails the Cargo.lock update. It waits under Pending Approval on the Dependency Dashboard instead of opening a PR that cannot pass. Vulnerability updates are not held: Renovate forces dependencyDashboardApproval off for them. Drop this rule once nothing in Cargo.lock depends on getrandom 0.2.",
       "matchManagers": ["cargo"],
       "matchPackageNames": ["getrandom"],
