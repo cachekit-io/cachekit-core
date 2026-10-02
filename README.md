@@ -36,7 +36,7 @@
 |:--------|:------------|:-------:|
 | `compression` | LZ4 compression via [`lz4_flex`](https://crates.io/crates/lz4_flex) | ✅ |
 | `checksum` | [`xxhash-rust`](https://crates.io/crates/xxhash-rust) integrity verification | ✅ |
-| `encryption` | AES-256-GCM via [`ring`](https://crates.io/crates/ring) + HKDF-SHA256 | ❌ |
+| `encryption` | AES-256-GCM via [`ring`](https://crates.io/crates/ring) on native, [`aes-gcm`](https://crates.io/crates/aes-gcm) on wasm32 + HKDF-SHA256 | ❌ |
 | `ffi` | C header generation | ❌ |
 
 ```toml
@@ -222,7 +222,7 @@ gcc -o example example.c -L target/release -lcachekit_core -I include
 
 | Property | Implementation |
 |:---------|:---------------|
-| **Encryption** | AES-256-GCM (AEAD) via [`ring`](https://crates.io/crates/ring) |
+| **Encryption** | AES-256-GCM (AEAD) via [`ring`](https://crates.io/crates/ring) on native, [`aes-gcm`](https://crates.io/crates/aes-gcm) on wasm32 |
 | **Key Derivation** | HKDF-SHA256 (RFC 5869) via [`hkdf`](https://crates.io/crates/hkdf) |
 | **Integrity** | [`xxhash-rust`](https://crates.io/crates/xxhash-rust) (xxHash3-64) |
 | **Nonce Safety** | Counter-based + random IV (no reuse) |

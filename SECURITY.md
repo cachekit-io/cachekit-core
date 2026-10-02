@@ -37,7 +37,7 @@ Instead, please report security issues via:
 
 | Component | Algorithm | Notes |
 |:----------|:----------|:------|
-| Encryption | AES-256-GCM | AEAD via `ring` crate |
+| Encryption | AES-256-GCM | AEAD via `ring` on native, `aes-gcm` on wasm32 |
 | Key Derivation | HKDF-SHA256 | RFC 5869 compliant |
 | Integrity | xxHash3-64 | Non-cryptographic (corruption detection) |
 | Nonce | Counter + Random IV | Unique per encryption |

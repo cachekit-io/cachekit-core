@@ -55,7 +55,7 @@
 //!
 //! ## Security Properties
 //!
-//! - **AES-256-GCM**: Authenticated encryption via `ring`
+//! - **AES-256-GCM**: Authenticated encryption via `ring` on native, `aes-gcm` on wasm32
 //! - **HKDF-SHA256**: Key derivation with tenant isolation (RFC 5869)
 //! - **xxHash3-64**: Fast non-cryptographic checksums (corruption detection), available standalone via [`checksum`]/[`verify_checksum`] without compression.
 //! - **Nonce safety**: Counter-based + random IV prevents reuse

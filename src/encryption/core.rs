@@ -1,7 +1,7 @@
 //! Core encryption functionality using AES-256-GCM
 //!
 //! This module provides the fundamental encryption/decryption operations
-//! using the ring cryptography library for hardware-accelerated AES-256-GCM.
+//! using AES-256-GCM via `ring` on native (hardware-accelerated), `aes-gcm` on wasm32.
 //!
 //! # Nonce Uniqueness Guarantee (CWE-323 Mitigation)
 //!
