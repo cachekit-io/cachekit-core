@@ -12,15 +12,18 @@
 //! - The gate runs each case under `valgrind --tool=cachegrind --cache-sim=no`
 //!   at `n = N_OPS` and `n = 0`. Ir/op is `(Ir[N_OPS] - Ir[0]) / N_OPS`, so
 //!   process start, setup, the warm-up and exit cancel.
-//! - Budgets are keyed by architecture and OS in `perf_ir_baselines.json`.
-//!   A case fails at `FAIL_PCT` over its budget and warns from `WARN_PCT`.
-//!   `--update` ratchets budgets down to the measured figures, never up
-//!   unless `--allow-increase` says the increase is deliberate.
+//! - Budgets are keyed by architecture, OS and compiled-in CPU features in
+//!   `perf_ir_baselines.json`. A case fails at `FAIL_PCT` over its budget and
+//!   warns from `WARN_PCT`. `--update` ratchets budgets down to the measured
+//!   figures, never up unless `--allow-increase` says the increase is
+//!   deliberate.
 //!
-//! The counts depend on the compiler, the locked dependencies and the CPU
-//! features valgrind passes through (ring and glibc pick their AES, GHASH
-//! and memcpy code from them), so the gate notes a rustc or valgrind version
-//! other than the one the budgets were recorded with. Instruction counts
+//! The counts depend on the compiler, the locked dependencies, the CPU
+//! features the binary was compiled for, and the ones valgrind passes through
+//! (ring and glibc pick their AES, GHASH and memcpy code from them). Each
+//! budget set records the rustc and valgrind it was measured with: the gate
+//! notes a different one, and `--update` refuses to ratchet across them,
+//! because a set that mixes two toolchains gates neither. Instruction counts
 //! ignore cache misses and branch mispredictions: a claimed wall-clock win
 //! still needs a wall-clock A/B.
 
@@ -177,8 +180,43 @@ struct Platform {
     budgets: BTreeMap<String, u64>,
 }
 
+/// CPU features this binary was compiled for, beyond the target's baseline.
+/// `-C target-cpu` or `-C target-feature` changes the code the compiler and
+/// RustCrypto emit (x86-64-v3 takes 18% off `hkdf`), so a build with any of
+/// these on is a different instrument with its own budgets. Other RUSTFLAGS
+/// and profile overrides are not detected: measure the default build.
+const COMPILED_FEATURES: [(&str, bool); 21] = [
+    ("sse3", cfg!(target_feature = "sse3")),
+    ("ssse3", cfg!(target_feature = "ssse3")),
+    ("sse4.1", cfg!(target_feature = "sse4.1")),
+    ("sse4.2", cfg!(target_feature = "sse4.2")),
+    ("popcnt", cfg!(target_feature = "popcnt")),
+    ("avx", cfg!(target_feature = "avx")),
+    ("avx2", cfg!(target_feature = "avx2")),
+    ("bmi1", cfg!(target_feature = "bmi1")),
+    ("bmi2", cfg!(target_feature = "bmi2")),
+    ("fma", cfg!(target_feature = "fma")),
+    ("lzcnt", cfg!(target_feature = "lzcnt")),
+    ("movbe", cfg!(target_feature = "movbe")),
+    ("adx", cfg!(target_feature = "adx")),
+    ("avx512f", cfg!(target_feature = "avx512f")),
+    ("aes", cfg!(target_feature = "aes")),
+    ("pclmulqdq", cfg!(target_feature = "pclmulqdq")),
+    ("sha", cfg!(target_feature = "sha")),
+    ("sha2", cfg!(target_feature = "sha2")),
+    ("sha3", cfg!(target_feature = "sha3")),
+    ("crc", cfg!(target_feature = "crc")),
+    ("lse", cfg!(target_feature = "lse")),
+];
+
+/// Budget key: architecture, OS, then any compiled-in CPU features.
 fn platform_key() -> String {
-    format!("{}-{}", env::consts::ARCH, env::consts::OS)
+    let mut key = format!("{}-{}", env::consts::ARCH, env::consts::OS);
+    for (feature, _) in COMPILED_FEATURES.iter().filter(|(_, on)| *on) {
+        key.push('+');
+        key.push_str(feature);
+    }
+    key
 }
 
 /// Word `word` of `<program> --version`, or "unknown". Only feeds the
@@ -376,7 +414,8 @@ fn gate(args: &[String]) -> Result<bool, String> {
     if let Some(unknown) = cases.iter().find(|case| !all.contains(case)) {
         return Err(format!("unknown case {unknown}; cases: {}", all.join(" ")));
     }
-    if cases.is_empty() {
+    let every_case = cases.is_empty();
+    if every_case {
         cases = all;
     }
 
@@ -389,11 +428,19 @@ fn gate(args: &[String]) -> Result<bool, String> {
     let (rustc, valgrind) = (version("rustc", 1), version("valgrind", 0));
     let platform = baselines.platforms.entry(key.clone()).or_default();
     if !platform.budgets.is_empty() && (platform.rustc != rustc || platform.valgrind != valgrind) {
-        println!(
-            "note: budgets for {key} were recorded with rustc {} and {}; this is rustc {rustc} and {valgrind}. \
-             A toolchain change moves the counts.",
+        let recorded = format!(
+            "budgets for {key} were recorded with rustc {} and {}; this is rustc {rustc} and {valgrind}",
             platform.rustc, platform.valgrind
         );
+        // One budget set, one toolchain: ratcheting down across toolchains
+        // would mix the two, and a partial re-record would label budgets it
+        // never measured with the new versions.
+        if update && !(allow_increase && every_case) {
+            return Err(format!(
+                "{recorded}. Re-record every case on one toolchain: --update --allow-increase, no --case."
+            ));
+        }
+        println!("note: {recorded}. A toolchain change moves the counts.");
     }
 
     let measured = measure(&valgrind_bin, &cases, jobs)?;
