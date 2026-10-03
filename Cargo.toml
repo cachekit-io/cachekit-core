@@ -170,3 +170,12 @@ debug = "line-tables-only"
 name = "hot_path"
 harness = false
 required-features = ["encryption"]
+
+# Instruction-count gate (`make perf-ir`). It needs valgrind, so `bench = false`
+# keeps it out of a plain `cargo bench`; `--bench perf_ir` still selects it, and
+# `clippy --all-targets` still compiles it.
+[[bench]]
+name = "perf_ir"
+harness = false
+bench = false
+required-features = ["encryption"]

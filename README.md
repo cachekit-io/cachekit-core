@@ -291,6 +291,10 @@ cachekit-core/
 ├── include/
 │   └── cachekit.h          # Generated C header
 │
+├── benches/
+│   ├── hot_path.rs         # Criterion wall-clock suite (make bench)
+│   └── perf_ir.rs          # Per-op instruction counts and their gate (make perf-ir)
+│
 ├── fuzz/                   # Fuzzing targets (16 targets)
 │   └── fuzz_targets/
 │
@@ -328,6 +332,27 @@ Benchmarks on Apple M2 Max (64KB payload, compressible data):
 > Hardware acceleration is auto-detected. ARM64 uses ARM Crypto Extensions; x86-64 uses AES-NI.
 
 The figures above come from `examples/bench_throughput.rs` on highly compressible data. The Criterion suite in `benches/hot_path.rs` needs the `encryption` feature (`make bench`, or `cargo bench --features encryption`; a plain `cargo bench` skips it). It runs the ByteStorage roundtrip on three corpora side by side: `byte_storage/roundtrip` (synthetic ramp, kept for history), `byte_storage/roundtrip_msgpack` (realistic msgpack records, about 0.38 LZ4 ratio at 64 KB) and `byte_storage/roundtrip_incompressible`. The bench profile keeps symbols, so callgrind and perf attribute cost to functions.
+
+### Instruction counts
+
+`make perf-ir` counts the instructions each hot path executes per call and fails when a case costs **1% or more** above its committed budget. It warns from 0.2%. Wall clock on a shared machine moves by far more than 1% between identical runs, and Criterion picks its iteration count from wall time; instruction counts at a fixed iteration count are exact. It needs valgrind (`apt install valgrind`).
+
+| Case | What one call does |
+|:-----|:-------------------|
+| `store/<size>`, `retrieve/<size>` | `ByteStorage::store` / `retrieve` on the realistic msgpack payload `hot_path` uses |
+| `prescan/<size>` | `check_msgpack_structure` on the envelope, the pre-scan `retrieve` runs first |
+| `encrypt/<size>`, `decrypt/<size>` | `ZeroKnowledgeEncryptor` AES-256-GCM |
+| `keyring_decrypt/<size>` | `Keyring::decrypt_indexed`, which re-derives the tenant key (HKDF) on every call |
+| `tenant_keyring_decrypt/<size>` | `TenantKeyring::decrypt_indexed`, key derived once at `for_tenant` |
+| `hkdf` | `derive_domain_key` (takes no payload, so it has no size) |
+
+Sizes are 64 B, 1 KiB and 64 KiB. One case at a time: `make perf-ir ARGS="--case store/1024"`.
+
+**Method** (`benches/perf_ir.rs`): each case runs in its own process under `valgrind --tool=cachegrind --cache-sim=no`, once with 1,000 calls and once with none, after the same setup and one warm-up call. Ir/op is `(Ir[1000] - Ir[0]) / 1000`, so process start, setup and exit cancel. The measured process gets an empty environment, so neither the shell nor a `VALGRIND_OPTS` changes what is counted.
+
+**Reproducibility:** two runs of the same build agree exactly on every case. Between builds, the heap moves with the size of the binary, and alignment-dependent code in AES-GCM and memcpy follows it: `encrypt/1024` moves by up to 0.19%, every other case by at most 0.02%. The counts also depend on the compiler, the locked dependencies and the CPU features valgrind passes through, so budgets are keyed by architecture and OS and record the rustc and valgrind versions they were taken with; the gate prints a note when yours differ.
+
+**Budgets** live in `benches/perf_ir_baselines.json`. After a change that makes a path cheaper, `make perf-ir-update` ratchets its budget down. It never raises one: an increase you mean takes `make perf-ir-update ARGS=--allow-increase`. Instruction counts ignore cache misses and branch mispredictions, so a claimed wall-clock win still needs a wall-clock A/B.
 
 ---
 

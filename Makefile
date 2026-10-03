@@ -1,6 +1,6 @@
 # cachekit-core - Development Makefile
 
-.PHONY: help check test lint clippy audit deny vet fmt fmt-check bench bench-quick fuzz-quick fuzz-deep sbom clean
+.PHONY: help check test lint clippy audit deny vet fmt fmt-check bench bench-quick perf-ir perf-ir-update fuzz-quick fuzz-deep sbom clean
 .DEFAULT_GOAL := help
 
 # Colors for output
@@ -83,6 +83,17 @@ bench: ## Run Criterion benches (uses --features encryption)
 bench-quick: ## Quick bench run for CI (1s warmup, 2s measurement, 10 samples)
 	$(call require_binary,cargo,Install Rust: https://rustup.rs)
 	@cargo bench -p cachekit-core --features encryption --bench hot_path -- --warm-up-time 1 --measurement-time 2 --sample-size 10
+
+# Per-op instruction counts (benches/perf_ir.rs) against the budgets in
+# benches/perf_ir_baselines.json. Needs valgrind. Pass gate options through
+# ARGS, e.g. make perf-ir ARGS="--case store/1024". See README, "Instruction counts".
+perf-ir: ## Instruction-count gate: fail on >=1% Ir/op regression (needs valgrind)
+	$(call require_binary,cargo,Install Rust: https://rustup.rs)
+	@cargo bench -p cachekit-core --features encryption --bench perf_ir -- $(ARGS)
+
+perf-ir-update: ## Ratchet Ir/op budgets down to the measured figures (never up)
+	$(call require_binary,cargo,Install Rust: https://rustup.rs)
+	@cargo bench -p cachekit-core --features encryption --bench perf_ir -- --update $(ARGS)
 
 fuzz-quick: ## Quick corpus-only fuzz run (2 min per target)
 	@echo "$(BLUE)Running quick fuzzing (2 min per target)...$(RESET)"
