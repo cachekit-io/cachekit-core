@@ -11,7 +11,7 @@
 //! |:--------|:------------|:-------:|
 //! | `compression` | LZ4 compression via `lz4_flex` | Yes |
 //! | `checksum` | xxHash3-64 integrity verification | Yes |
-//! | `encryption` | AES-256-GCM + HKDF-SHA256 (ring on native, aes-gcm on wasm32) | No |
+//! | `encryption` | AES-256-GCM (ring on native, aes-gcm on wasm32) + HKDF-SHA256 (hkdf) | No |
 //! | `ffi` | C header generation | No |
 //!
 //! ## Platform Support
