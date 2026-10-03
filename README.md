@@ -36,7 +36,7 @@
 |:--------|:------------|:-------:|
 | `compression` | LZ4 compression via [`lz4_flex`](https://crates.io/crates/lz4_flex) | ✅ |
 | `checksum` | [`xxhash-rust`](https://crates.io/crates/xxhash-rust) integrity verification | ✅ |
-| `encryption` | AES-256-GCM via [`ring`](https://crates.io/crates/ring) on native, [`aes-gcm`](https://crates.io/crates/aes-gcm) on wasm32 + HKDF-SHA256 | ❌ |
+| `encryption` | AES-256-GCM + HKDF-SHA256 ([`ring`](https://crates.io/crates/ring) on native, [`aes-gcm`](https://crates.io/crates/aes-gcm) on wasm32) | ❌ |
 | `ffi` | C header generation | ❌ |
 
 ```toml
@@ -227,7 +227,7 @@ gcc -o example example.c -L target/release -lcachekit_core -I include
 | **Integrity** | [`xxhash-rust`](https://crates.io/crates/xxhash-rust) (xxHash3-64) |
 | **Nonce Safety** | Counter-based + random IV (no reuse) |
 | **Memory Safety** | [`zeroize`](https://crates.io/crates/zeroize) on drop for all key material |
-| **Timing Safety** | Constant-time comparisons via [`ring`](https://crates.io/crates/ring) |
+| **Timing Safety** | Constant-time AEAD tag verification: [`ring`](https://crates.io/crates/ring) (`CRYPTO_memcmp`) on native, [`aes-gcm`](https://crates.io/crates/aes-gcm) ([`subtle`](https://crates.io/crates/subtle) `ConstantTimeEq`) on wasm32 |
 
 > [!WARNING]
 > **Nonce Counter**: Each `ZeroKnowledgeEncryptor` instance supports 2³² encryptions before requiring rotation. The FFI layer returns `CACHEKIT_ROTATION_NEEDED` at 2³¹ operations as an early warning.
