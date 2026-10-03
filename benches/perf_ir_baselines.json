@@ -1,0 +1,33 @@
+{
+  "method": "cachegrind Ir per op, (Ir[1000] - Ir[0]) / 1000, one process per case, empty environment; written by benches/perf_ir.rs --update",
+  "platforms": {
+    "x86_64-linux": {
+      "rustc": "1.98.1",
+      "valgrind": "valgrind-3.22.0",
+      "budgets": {
+        "decrypt/1024": 5575,
+        "decrypt/64": 2600,
+        "decrypt/65536": 235243,
+        "encrypt/1024": 6432,
+        "encrypt/64": 3253,
+        "encrypt/65536": 301457,
+        "hkdf": 29047,
+        "keyring_decrypt/1024": 34715,
+        "keyring_decrypt/64": 31730,
+        "keyring_decrypt/65536": 264373,
+        "prescan/1024": 982,
+        "prescan/64": 880,
+        "prescan/65536": 932,
+        "retrieve/1024": 7558,
+        "retrieve/64": 2722,
+        "retrieve/65536": 416730,
+        "store/1024": 29644,
+        "store/64": 12277,
+        "store/65536": 1080278,
+        "tenant_keyring_decrypt/1024": 5598,
+        "tenant_keyring_decrypt/64": 2623,
+        "tenant_keyring_decrypt/65536": 235234
+      }
+    }
+  }
+}
