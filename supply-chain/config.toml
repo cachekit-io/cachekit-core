@@ -57,6 +57,10 @@ criteria = "safe-to-deploy"
 version = "3.0.11"
 criteria = "safe-to-deploy"
 
+[[exemptions.async-trait]]
+version = "0.1.92"
+criteria = "safe-to-run"
+
 [[exemptions.blake2]]
 version = "0.10.6"
 criteria = "safe-to-run"
@@ -197,9 +201,17 @@ criteria = "safe-to-deploy"
 version = "0.2.186"
 criteria = "safe-to-deploy"
 
+[[exemptions.libm]]
+version = "0.2.16"
+criteria = "safe-to-deploy"
+
 [[exemptions.lz4_flex]]
 version = "0.12.2"
 criteria = "safe-to-deploy"
+
+[[exemptions.minicov]]
+version = "0.3.9"
+criteria = "safe-to-run"
 
 [[exemptions.once_cell]]
 version = "1.21.4"
@@ -310,6 +322,10 @@ criteria = "safe-to-deploy"
 version = "0.2.121"
 criteria = "safe-to-deploy"
 
+[[exemptions.wasm-bindgen-futures]]
+version = "0.4.71"
+criteria = "safe-to-run"
+
 [[exemptions.wasm-bindgen-macro]]
 version = "0.2.121"
 criteria = "safe-to-deploy"
@@ -321,6 +337,18 @@ criteria = "safe-to-deploy"
 [[exemptions.wasm-bindgen-shared]]
 version = "0.2.121"
 criteria = "safe-to-deploy"
+
+[[exemptions.wasm-bindgen-test]]
+version = "0.3.71"
+criteria = "safe-to-run"
+
+[[exemptions.wasm-bindgen-test-macro]]
+version = "0.3.71"
+criteria = "safe-to-run"
+
+[[exemptions.wasm-bindgen-test-shared]]
+version = "0.2.121"
+criteria = "safe-to-run"
 
 [[exemptions.web-sys]]
 version = "0.3.98"
