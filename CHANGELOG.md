@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.6.0...cachekit-core-v0.7.0) (2026-10-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* **core:** cachekit_core::metrics, cachekit_core::OperationMetrics, ByteStorage::get_last_metrics(), ZeroKnowledgeEncryptor::get_last_metrics() and the metrics cargo feature are removed.
+
+### Features
+
+* **msgpack:** export check_msgpack_structure as the shared structural walk (LAB-2735) ([#88](https://github.com/cachekit-io/cachekit-core/issues/88)) ([f29965d](https://github.com/cachekit-io/cachekit-core/commit/f29965def98117b9dae12a88e6243325255d666c))
+
+
+### Bug Fixes
+
+* **build:** build cbindgen only with the ffi feature (LAB-7382) ([#102](https://github.com/cachekit-io/cachekit-core/issues/102)) ([fdfba3d](https://github.com/cachekit-io/cachekit-core/commit/fdfba3da99930252fa52b7f1abeaacdc3e9903bb))
+* **byte-storage:** pre-scan envelope bytes before decoding them (LAB-3479) ([a043e13](https://github.com/cachekit-io/cachekit-core/commit/a043e131c1ea7ed824325730380f3ff0cd9545f6))
+* **encryption:** probe the Armv8 Crypto Extension on aarch64 instead of NEON (LAB-4650) ([#77](https://github.com/cachekit-io/cachekit-core/issues/77)) ([77b18db](https://github.com/cachekit-io/cachekit-core/commit/77b18db184c74254a52b8bed0be76e9f7a38fea5))
+
+
+### Performance Improvements
+
+* **bench:** add a fixed-iteration Ir/op gate for the hot paths (LAB-7802) ([#106](https://github.com/cachekit-io/cachekit-core/issues/106)) ([dce166b](https://github.com/cachekit-io/cachekit-core/commit/dce166bebebc335958b44fb48b47cd7e27bcc485))
+* **bench:** make hot_path compile by default, representative and profile-able (LAB-7039) ([#97](https://github.com/cachekit-io/cachekit-core/issues/97)) ([11e9836](https://github.com/cachekit-io/cachekit-core/commit/11e98363f3353552549cc9432af89c592c04b767))
+
+
+### Code Refactoring
+
+* **core:** delete the OperationMetrics module and metrics feature (LAB-7325) ([3ec5456](https://github.com/cachekit-io/cachekit-core/commit/3ec54565fe16aa70012a346c35fb170887fb3246))
+
 ## [0.6.0](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.5.0...cachekit-core-v0.6.0) (2026-08-08)
 
 
