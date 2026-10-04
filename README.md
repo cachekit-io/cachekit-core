@@ -78,26 +78,28 @@ assert_eq!(data.as_slice(), retrieved.as_slice());
 
 ```rust
 use cachekit_core::{ByteStorage, ZeroKnowledgeEncryptor, derive_domain_key};
+use zeroize::Zeroizing; // add the zeroize crate to your Cargo.toml
 
 // Derive tenant-isolated key from master secret
 // From your secret manager or CACHEKIT_MASTER_KEY, hex-decoded to 32 raw bytes.
 // Never hard-code it, and never pass the hex string's bytes.
-let master_key: [u8; 32] = load_master_key_from_secret_manager()?;
-let tenant_key = derive_domain_key(
-    &master_key,
+// Zeroizing wipes each key from memory when it is dropped.
+let master_key = Zeroizing::new(load_master_key_from_secret_manager()?);
+let tenant_key = Zeroizing::new(derive_domain_key(
+    master_key.as_slice(),
     "cache",           // domain separation
     b"tenant-12345",   // tenant isolation
-)?;
+)?);
 
 // Encrypt sensitive data
-let encryptor = ZeroKnowledgeEncryptor::new();
+let encryptor = ZeroKnowledgeEncryptor::new()?;
 let plaintext = b"sensitive user data";
 let aad = b"tenant-12345"; // Additional authenticated data
 
-let ciphertext = encryptor.encrypt_aes_gcm(plaintext, &tenant_key, aad)?;
+let ciphertext = encryptor.encrypt_aes_gcm(plaintext, tenant_key.as_slice(), aad)?;
 
 // Decrypt (fails if AAD doesn't match)
-let decrypted = encryptor.decrypt_aes_gcm(&ciphertext, &tenant_key, aad)?;
+let decrypted = encryptor.decrypt_aes_gcm(&ciphertext, tenant_key.as_slice(), aad)?;
 assert_eq!(plaintext.as_slice(), decrypted.as_slice());
 ```
 
@@ -123,7 +125,7 @@ fn cache_sensitive_data(
     let tenant_key = derive_domain_key(master_key, "cache", tenant_id.as_bytes())?;
 
     // Step 3: Encrypt compressed envelope
-    let encryptor = ZeroKnowledgeEncryptor::new();
+    let encryptor = ZeroKnowledgeEncryptor::new()?;
     let ciphertext = encryptor.encrypt_aes_gcm(
         &compressed,
         &tenant_key,

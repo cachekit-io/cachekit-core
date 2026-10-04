@@ -40,19 +40,21 @@
 //!
 //! ```rust,ignore
 //! use cachekit_core::{ZeroKnowledgeEncryptor, derive_domain_key};
+//! use zeroize::Zeroizing; // add the zeroize crate to your Cargo.toml
 //!
 //! // Derive tenant-isolated key
 //! // From your secret manager or CACHEKIT_MASTER_KEY, hex-decoded to 32 raw bytes.
 //! // Never hard-code it, and never pass the hex string's bytes.
-//! let master_key: [u8; 32] = load_master_key_from_secret_manager();
-//! let tenant_key = derive_domain_key(&master_key, "cache", b"tenant-123").unwrap();
+//! // Zeroizing wipes each key from memory when it is dropped.
+//! let master_key = Zeroizing::new(load_master_key_from_secret_manager());
+//! let tenant_key = Zeroizing::new(derive_domain_key(master_key.as_slice(), "cache", b"tenant-123").unwrap());
 //!
 //! // Encrypt
-//! let encryptor = ZeroKnowledgeEncryptor::new();
-//! let ciphertext = encryptor.encrypt_aes_gcm(b"secret", &tenant_key, b"tenant-123").unwrap();
+//! let encryptor = ZeroKnowledgeEncryptor::new().unwrap();
+//! let ciphertext = encryptor.encrypt_aes_gcm(b"secret", tenant_key.as_slice(), b"tenant-123").unwrap();
 //!
 //! // Decrypt
-//! let plaintext = encryptor.decrypt_aes_gcm(&ciphertext, &tenant_key, b"tenant-123").unwrap();
+//! let plaintext = encryptor.decrypt_aes_gcm(&ciphertext, tenant_key.as_slice(), b"tenant-123").unwrap();
 //! ```
 //!
 //! ## Security Properties
