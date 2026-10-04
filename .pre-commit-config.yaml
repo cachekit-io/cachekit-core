@@ -11,13 +11,16 @@ repos:
       - id: no-internal-references
         name: No internal references in docs
         language: pygrep
-        entry: 'LAB-[0-9]+|op://|\.ts\.net|(?i:k3s cluster)|dev\.cachekit\.io|\bStage [0-9]|\bAC-[0-9]|github\.com/cachekit(?![\w-])'
+        entry: 'LAB-[0-9]+|op://|\.ts\.net|(?i:\bk3s\b[\s-]*(?:cluster|node|host))|dev\.cachekit\.io|\bStage [0-9]|\bAC-[0-9]|github\.com/cachekit(?![\w-])'
         files: ^((packages|crates)/[^/]+/)?README[^/]*$|^docs/
         types: [text]
         stages: [pre-commit]
       - id: no-internal-references-commit-msg
         name: No internal references in commit message
         language: pygrep
-        # Same patterns, skipping git's "#" comment lines and "Merge" subjects, which quote branch names.
-        entry: '^(?!#|Merge ).*?(?:LAB-[0-9]+|op://|\.ts\.net|(?i:k3s cluster)|dev\.cachekit\.io|\bStage [0-9]|\bAC-[0-9]|github\.com/cachekit(?![\w-]))'
+        # Same patterns. git hands this hook the raw message, so it reads only down to the scissors
+        # line (`git commit -v` puts the staged diff below it) and skips "#" comment lines plus
+        # "Merge" and 'Revert "' subjects, which quote branch names and earlier subjects.
+        entry: '\A(?:(?!# -{24} >8 -{24}$)[^\n]*\n)*?(?!#|Merge |Revert ")[^\n]*?(?:LAB-[0-9]+|op://|\.ts\.net|(?i:\bk3s\b[\s-]*(?:cluster|node|host))|dev\.cachekit\.io|\bStage [0-9]|\bAC-[0-9]|github\.com/cachekit(?![\w-]))'
+        args: [--multiline]
         stages: [commit-msg]
