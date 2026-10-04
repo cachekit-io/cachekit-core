@@ -42,7 +42,8 @@
 //! use cachekit_core::{ZeroKnowledgeEncryptor, derive_domain_key};
 //!
 //! // Derive tenant-isolated key
-//! let master_key = [0u8; 32]; // Use secure key in production!
+//! // 32-byte master key from your secret manager. Never hard-code it.
+//! let master_key: [u8; 32] = load_master_key_from_secret_manager();
 //! let tenant_key = derive_domain_key(&master_key, "cache", b"tenant-123").unwrap();
 //!
 //! // Encrypt

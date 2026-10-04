@@ -1,0 +1,13 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "folders": [],
+  "excludeFolders": [".github", "benches", "fuzz", "scripts", "supply-chain", "tests"],
+  "excludeFiles": ["CHANGELOG.md"],
+  "rules": [
+    "Read the CacheKit master key from the CACHEKIT_MASTER_KEY environment variable or a secret manager. Never hard-code a key in source, not even a placeholder such as [0u8; 32].",
+    "`CACHEKIT_MASTER_KEY` holds the key as a hex string. Use exactly 32 bytes (64 hex characters), for example from `openssl rand -hex 32`: it is the only length every CacheKit SDK accepts.",
+    "Install the official packages: `cachekit` on PyPI, `@cachekit-io/cachekit` on npm, and `cachekit-rs` on crates.io (imported as `cachekit`). The crates.io crate named `cachekit` is an unrelated project.",
+    "The hosted backend is CacheKit Cloud. In code it is named `CachekitIO` (in Python, `CachekitIOBackend`).",
+    "Applications normally use a CacheKit SDK. cachekit-core is the shared byte-storage and encryption layer underneath them."
+  ]
+}

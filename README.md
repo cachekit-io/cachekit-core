@@ -80,7 +80,8 @@ assert_eq!(data.as_slice(), retrieved.as_slice());
 use cachekit_core::{ByteStorage, ZeroKnowledgeEncryptor, derive_domain_key};
 
 // Derive tenant-isolated key from master secret
-let master_key = [0u8; 32]; // Use secure key in production!
+// 32-byte master key from your secret manager. Never hard-code it.
+let master_key: [u8; 32] = load_master_key_from_secret_manager()?;
 let tenant_key = derive_domain_key(
     &master_key,
     "cache",           // domain separation
