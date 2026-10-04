@@ -385,7 +385,7 @@ ByteStorage envelope vectors from
 both sets must decode to the exact payload bytes, while re-encode
 byte-identity is asserted against the set matching this crate's current
 writer encoding — msgpack `bin`, since the protocol 1.1 `serde_bytes`
-writer flip (LAB-866; `checksum` deliberately stays array-of-ints per the
+writer flip (`checksum` deliberately stays array-of-ints per the
 protocol's normative scope exclusion). Legacy envelopes remain readable
 forever.
 `tests/dual_decode.rs` proves both reader shapes accept both encodings,
@@ -415,6 +415,13 @@ somewhere inside the decoder does not count.
 This crate requires **Rust 1.85** or later (Edition 2024).
 
 ---
+
+## Contributing
+
+User-facing docs in this repository follow CacheKit's shared rule on what belongs in them:
+[What belongs in these docs](https://docs.cachekit.io/contributing/#what-belongs-in-these-docs).
+`prek install` (or `pre-commit install`) sets up hooks that reject internal references in README
+files, `docs/` and commit messages.
 
 ## License
 

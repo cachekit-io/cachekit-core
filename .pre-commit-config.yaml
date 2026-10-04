@@ -1,0 +1,23 @@
+# Pre-commit hooks. Install once per clone: prek install (Python pre-commit works too).
+default_install_hook_types: [pre-commit, commit-msg]
+
+repos:
+  # Keeps internal references (ticket ids, secret-store paths, internal hosts and process
+  # names) out of user-facing docs and commit messages. The patterns are generic on purpose:
+  # a list of specific internal names would itself disclose them.
+  # Scope rule: https://docs.cachekit.io/contributing/#what-belongs-in-these-docs
+  - repo: local
+    hooks:
+      - id: no-internal-references
+        name: No internal references in docs
+        language: pygrep
+        entry: 'LAB-[0-9]+|op://|\.ts\.net|\bk3s\b|dev\.cachekit\.io|\bStage [0-9]|\bAC-[0-9]|github\.com/cachekit(?![\w-])'
+        files: ^(packages/[^/]+/)?README[^/]*$|^docs/
+        types: [text]
+        stages: [pre-commit]
+      - id: no-internal-references-commit-msg
+        name: No internal references in commit message
+        language: pygrep
+        # Same patterns, skipping git's "#" comment lines, which quote the branch name.
+        entry: '^(?!#).*?(?:LAB-[0-9]+|op://|\.ts\.net|\bk3s\b|dev\.cachekit\.io|\bStage [0-9]|\bAC-[0-9]|github\.com/cachekit(?![\w-]))'
+        stages: [commit-msg]
