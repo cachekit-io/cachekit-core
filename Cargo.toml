@@ -84,7 +84,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 # must match the locked wasm-bindgen version (bump this, Cargo.lock and the
 # runner pin in ci.yml together).
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-wasm-bindgen-test = "=0.3.71"
+wasm-bindgen-test = "=0.3.79"
 
 [features]
 default = ["compression", "checksum", "messagepack"]
