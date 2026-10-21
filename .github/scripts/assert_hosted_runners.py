@@ -3,7 +3,7 @@
 
 This is an ALLOW-LIST that FAILS CLOSED: every job's `runs-on` must resolve to an
 allow-listed GitHub-hosted label (`ubuntu-latest`, `macos-latest`, `windows-latest`;
-see HOSTED_LABELS). Anything the scanner cannot *prove* is hosted — `cachekit`,
+see HOSTED_LABELS). Anything the scanner cannot *prove* is hosted — `example-runner`,
 `self-hosted`, a custom `ubuntu-private` label on a self-hosted runner, any future
 label nobody has invented yet, a runner-group object, or a `${{ }}` expression it
 can't resolve — is a violation. A deny-list of today's bad names would fail open
@@ -29,7 +29,8 @@ Forms handled, and how each stays fail-closed:
     scope; write such inputs in block form.
   - flow mappings: a `{ … }` where YAML would put one (`- {`, `key: {`, a bare `{`)
     that carries `runs-on:` / `os:` / `runner:` — or a reusable-workflow `uses:` — at
-    any depth (`- { os: cachekit, rust: stable }`, `strategy: { matrix: { os: […] } }`,
+    any depth (`- { os: example-runner, rust: stable }`,
+    `strategy: { matrix: { os: […] } }`,
     `jobs: { build: { runs-on: … } }`) is rejected outright: a line scanner cannot see
     inside a flow mapping, so it does not pretend to. A YAML anchor or tag before the
     brace (`- &x { os: … }`) does not hide it. A single-line JS object literal inside a
@@ -285,22 +286,22 @@ def main() -> int:
 # so the self-test cannot be silently neutered by `python3 -O` / PYTHONOPTIMIZE.
 _CASES: list[tuple[str, list[str]]] = [
     # --- MUST FAIL: direct self-hosted labels and future names -------------------
-    ("    runs-on: cachekit\n", ["cachekit"]),
-    ("    runs-on: cachekit-lean\n", ["cachekit-lean"]),
+    ("    runs-on: example-runner\n", ["example-runner"]),
+    ("    runs-on: example-runner-small\n", ["example-runner-small"]),
     ("    runs-on: self-hosted\n", ["self-hosted"]),
-    ("    runs-on: cachekit-turbo\n", ["cachekit-turbo"]),
+    ("    runs-on: example-runner-large\n", ["example-runner-large"]),
     # A custom label under a hosted-sounding family: the family-regex fail-open the
-    # allow-list closes (CodeRabbit, PR #76). ubuntu-private / windows-cachekit route to
+    # allow-list closes (CodeRabbit, PR #76). ubuntu-private / windows-example route to
     # a self-hosted runner registered under that label; ubuntu-lates is a typo that must
     # not silently pass; a pinned version is a deliberate opt-in this repo has not made.
     ("    runs-on: ubuntu-private\n", ["ubuntu-private"]),
-    ("    runs-on: windows-cachekit\n", ["windows-cachekit"]),
+    ("    runs-on: windows-example\n", ["windows-example"]),
     ("    runs-on: ubuntu-lates\n", ["ubuntu-lates"]),
     ("    runs-on: ubuntu-24.04\n", ["ubuntu-24.04"]),
     ("    runs-on: ubuntu-24.04-arm\n", ["ubuntu-24.04-arm"]),
     ("    runs-on: [self-hosted, linux, x64]\n", ["self-hosted", "linux", "x64"]),
     ("    runs-on:\n      - self-hosted\n      - linux\n", ["self-hosted", "linux"]),
-    ("        runner: cachekit\n", ["cachekit"]),
+    ("        runner: example-runner\n", ["example-runner"]),
     ('        os: "self-hosted"  # quoted + comment\n', ["self-hosted"]),
     # --- MUST FAIL: fail-open forms found in review -----------------------
     # runner-group object form.
@@ -312,7 +313,7 @@ _CASES: list[tuple[str, list[str]]] = [
     # A hosted-*sounding* group name is still rejected: groups are not used here.
     ("    runs-on:\n      group: ubuntu-big\n", ["ubuntu-big"]),
     # matrix include entry whose FIRST key is os/runner (label on the dash line).
-    ("        include:\n          - os: cachekit\n            rust: stable\n", ["cachekit"]),
+    ("        include:\n          - os: example-runner\n            rust: stable\n", ["example-runner"]),
     ("          - runner: self-hosted\n", ["self-hosted"]),
     # indirection through a key the scanner does not resolve → fail closed.
     ("    runs-on: ${{ matrix.platform }}\n", ["${{ matrix.platform }}"]),
@@ -338,19 +339,19 @@ _CASES: list[tuple[str, list[str]]] = [
         ["${{ fromJSON(needs.gen.outputs.matrix) }}"],
     ),
     ("        include: ${{ fromJSON(inputs.include) }}\n", ["${{ fromJSON(inputs.include) }}"]),
-    ("      matrix: {os: [cachekit]}\n", ["{os: [cachekit]}"]),
+    ("      matrix: {os: [example-runner]}\n", ["{os: [example-runner]}"]),
     # --- MUST FAIL: shapes review of PR #76 found skipped --------------------
     # Flow mappings anywhere: the standard Rust cross-compile include idiom, a
     # compact strategy, a whole job in flow form (scalar, group object, alias, uses).
     (
-        "        include:\n          - { os: cachekit, rust: stable }\n",
-        ["- { os: cachekit, rust: stable }"],
+        "        include:\n          - { os: example-runner, rust: stable }\n",
+        ["- { os: example-runner, rust: stable }"],
     ),
     (
-        "    strategy: { fail-fast: false, matrix: { os: [ubuntu-latest, cachekit] } }\n",
-        ["strategy: { fail-fast: false, matrix: { os: [ubuntu-latest, cachekit] } }"],
+        "    strategy: { fail-fast: false, matrix: { os: [ubuntu-latest, example-runner] } }\n",
+        ["strategy: { fail-fast: false, matrix: { os: [ubuntu-latest, example-runner] } }"],
     ),
-    ("jobs: {build: {runs-on: cachekit}}\n", ["jobs: {build: {runs-on: cachekit}}"]),
+    ("jobs: {build: {runs-on: example-runner}}\n", ["jobs: {build: {runs-on: example-runner}}"]),
     (
         "jobs: {build: {runs-on: {group: private-runners}}}\n",
         ["jobs: {build: {runs-on: {group: private-runners}}}"],
@@ -360,31 +361,31 @@ _CASES: list[tuple[str, list[str]]] = [
         "jobs: {ci: {uses: org/repo/.github/workflows/ci.yml@main}}\n",
         ["jobs: {ci: {uses: org/repo/.github/workflows/ci.yml@main}}"],
     ),
-    ('          - { "os": cachekit, rust: stable }\n', ['- { "os": cachekit, rust: stable }']),
-    ("          - &x { os: cachekit }\n", ["- &x { os: cachekit }"]),  # anchor before the brace
+    ('          - { "os": example-runner, rust: stable }\n', ['- { "os": example-runner, rust: stable }']),
+    ("          - &x { os: example-runner }\n", ["- &x { os: example-runner }"]),  # anchor before the brace
     # Quoted key / space before the colon: the same key to YAML.
-    ('    "runs-on": cachekit\n', ["cachekit"]),
-    ("    runs-on : cachekit\n", ["cachekit"]),
+    ('    "runs-on": example-runner\n', ["example-runner"]),
+    ("    runs-on : example-runner\n", ["example-runner"]),
     (
-        "    runs-on: ${{ matrix.os }}\n    strategy:\n      matrix:\n        os : [cachekit]\n",
-        ["cachekit"],
+        "    runs-on: ${{ matrix.os }}\n    strategy:\n      matrix:\n        os : [example-runner]\n",
+        ["example-runner"],
     ),
     # Block list at the key's own indent (k8s style) — was read as end-of-block.
     ("    runs-on:\n    - self-hosted\n", ["self-hosted"]),
     (
-        "    runs-on: ${{ matrix.os }}\n    strategy:\n      matrix:\n        os:\n        - cachekit\n",
-        ["cachekit"],
+        "    runs-on: ${{ matrix.os }}\n    strategy:\n      matrix:\n        os:\n        - example-runner\n",
+        ["example-runner"],
     ),
     # A column-0 commented-out entry must not end the block early.
     ("    runs-on:\n#      - ubuntu-latest\n      - self-hosted\n", ["self-hosted"]),
     # Continuation lines the scanner cannot verify (prettier emits the `[…]` one).
-    ("    runs-on:\n      cachekit\n", ["cachekit"]),
+    ("    runs-on:\n      example-runner\n", ["example-runner"]),
     ("    runs-on:\n      [self-hosted, linux]\n", ["[self-hosted, linux]"]),
     ("    runs-on:\n      labels:\n        [self-hosted]\n", ["[self-hosted]"]),
     # Remote reusable workflow: its runs-on is invisible here but runs on this repo's runners.
     (
-        "    uses: cachekit-io/tooling/.github/workflows/ci.yml@main\n",
-        ["cachekit-io/tooling/.github/workflows/ci.yml@main"],
+        "    uses: org/repo/.github/workflows/ci.yml@main\n",
+        ["org/repo/.github/workflows/ci.yml@main"],
     ),
     ("    uses: >-\n      org/repo/.github/workflows/ci.yml@main\n", [">-"]),
     ("    uses:\n      org/repo/.github/workflows/ci.yml@main\n", [""]),
@@ -395,8 +396,8 @@ _CASES: list[tuple[str, list[str]]] = [
     # The on: block is skipped, but jobs after it are still scanned.
     (
         "on:\n  workflow_dispatch:\n    inputs:\n      os:\n        type: choice\n"
-        "        options: [ubuntu-latest]\njobs:\n  b:\n    runs-on: cachekit\n",
-        ["cachekit"],
+        "        options: [ubuntu-latest]\njobs:\n  b:\n    runs-on: example-runner\n",
+        ["example-runner"],
     ),
     # --- MUST PASS: hosted labels, variants, and verifiable indirection ---
     ("    runs-on: ubuntu-latest\n", []),
@@ -412,7 +413,7 @@ _CASES: list[tuple[str, list[str]]] = [
     # A comment after runs-on before a block list must not be read as a label.
     ("    runs-on:  # pick per matrix\n      - ubuntu-latest\n", []),
     # A comment line that merely mentions a self-hosted label must not trip the scanner.
-    ("    # runs-on: cachekit was the old value\n    runs-on: ubuntu-latest\n", []),
+    ("    # runs-on: example-runner was the old value\n    runs-on: ubuntu-latest\n", []),
     # runs-on via matrix.os, with a static block matrix defining only hosted values.
     (
         "    runs-on: ${{ matrix.os }}\n"

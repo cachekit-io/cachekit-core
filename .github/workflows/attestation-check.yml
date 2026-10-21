@@ -18,9 +18,9 @@ jobs:
     # and reliable Sigstore (Fulcio/Rekor) egress. `gh attestation verify` is the
     # only tool that does Sigstore bundle verification. The whole repo is on
     # ubuntu-latest (LAB-3501) and runner-guard.yml keeps it there, but the point
-    # is load-bearing here specifically: when this once ran on a self-hosted runner
-    # with no `gh` binary, every `gh` call exited 127 into `|| echo ""` and
-    # the job reported green while verifying nothing for weeks.
+    # is load-bearing here specifically: without a `gh` binary, every `gh` call
+    # exits 127, and a fallback such as `|| echo ""` turns that into a green job
+    # that verified nothing.
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -169,10 +169,10 @@ jobs:
       # is open the crate is not on crates.io yet, so the job has already gone red at
       # the download step above. And an "is release.yml in flight?" tolerance here
       # would itself be a fail-open — release.yml runs on every push to main, so an
-      # unrelated queued run would green-light a dead publish or a yanked version
-      # (expert panel, LAB-1036). A crate that downloaded successfully but mismatches
-      # max_stable is always a real defect: yanked, hand-published, prerelease-
-      # skipped, or a publish that died after the tag.
+      # unrelated queued run would green-light a dead publish or a yanked version.
+      # A crate that downloaded successfully but mismatches max_stable is always a
+      # real defect: yanked, hand-published, prerelease-skipped, or a publish that
+      # died after the tag.
       - name: Check crates.io serves the verified version
         if: steps.release.outputs.skip != 'true'
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
