@@ -3,8 +3,8 @@
 
 This is an ALLOW-LIST that FAILS CLOSED: every job's `runs-on` must resolve to an
 allow-listed GitHub-hosted label (`ubuntu-latest`, `macos-latest`, `windows-latest`;
-see HOSTED_LABELS). Anything the scanner cannot *prove* is hosted — `example-runner`,
-`self-hosted`, a custom `ubuntu-private` label on a self-hosted runner, any future
+see HOSTED_LABELS). Anything the scanner cannot *prove* is hosted — `self-hosted`,
+a custom `ubuntu-private` label on a self-hosted runner, any future
 label nobody has invented yet, a runner-group object, or a `${{ }}` expression it
 can't resolve — is a violation. A deny-list of today's bad names would fail open
 the day someone adds a new one, or reformats the drift into a shape the deny-list
@@ -29,8 +29,7 @@ Forms handled, and how each stays fail-closed:
     scope; write such inputs in block form.
   - flow mappings: a `{ … }` where YAML would put one (`- {`, `key: {`, a bare `{`)
     that carries `runs-on:` / `os:` / `runner:` — or a reusable-workflow `uses:` — at
-    any depth (`- { os: example-runner, rust: stable }`,
-    `strategy: { matrix: { os: […] } }`,
+    any depth (`- { os: …, rust: stable }`, `strategy: { matrix: { os: […] } }`,
     `jobs: { build: { runs-on: … } }`) is rejected outright: a line scanner cannot see
     inside a flow mapping, so it does not pretend to. A YAML anchor or tag before the
     brace (`- &x { os: … }`) does not hide it. A single-line JS object literal inside a
@@ -291,11 +290,11 @@ _CASES: list[tuple[str, list[str]]] = [
     ("    runs-on: self-hosted\n", ["self-hosted"]),
     ("    runs-on: example-runner-large\n", ["example-runner-large"]),
     # A custom label under a hosted-sounding family: the family-regex fail-open the
-    # allow-list closes (CodeRabbit, PR #76). ubuntu-private / windows-example route to
+    # allow-list closes (CodeRabbit, PR #76). ubuntu-private / windows-private route to
     # a self-hosted runner registered under that label; ubuntu-lates is a typo that must
     # not silently pass; a pinned version is a deliberate opt-in this repo has not made.
     ("    runs-on: ubuntu-private\n", ["ubuntu-private"]),
-    ("    runs-on: windows-example\n", ["windows-example"]),
+    ("    runs-on: windows-private\n", ["windows-private"]),
     ("    runs-on: ubuntu-lates\n", ["ubuntu-lates"]),
     ("    runs-on: ubuntu-24.04\n", ["ubuntu-24.04"]),
     ("    runs-on: ubuntu-24.04-arm\n", ["ubuntu-24.04-arm"]),

@@ -18,9 +18,9 @@ jobs:
     # and reliable Sigstore (Fulcio/Rekor) egress. `gh attestation verify` is the
     # only tool that does Sigstore bundle verification. The whole repo is on
     # ubuntu-latest (LAB-3501) and runner-guard.yml keeps it there, but the point
-    # is load-bearing here specifically: without a `gh` binary, every `gh` call
-    # exits 127, and a fallback such as `|| echo ""` turns that into a green job
-    # that verified nothing.
+    # is load-bearing here specifically: without a `gh` binary every `gh` call
+    # exits 127, and a fallback such as `|| echo ""` would turn that into a green
+    # job that verified nothing, so no step here carries one.
     runs-on: ubuntu-latest
     permissions:
       contents: read

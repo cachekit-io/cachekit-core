@@ -80,10 +80,10 @@ jobs:
     # refs/heads/main stops a feature branch from publishing its own Cargo.toml).
     # Explicit == 'true' avoids relying on string-coercion of the action output.
     if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
-    # GitHub-hosted: build-provenance + SBOM attestation need reliable egress to
-    # Sigstore (Fulcio/Rekor), and an unreachable Sigstore fails attestation and
-    # blocks publish. A hosted runner has reliable egress to Sigstore + crates.io,
-    # and the publish job is infrequent + free on public repos.
+    # GitHub-hosted: if Sigstore (Fulcio/Rekor) is unreachable, build-provenance and
+    # SBOM attestation fail and publish is blocked. A hosted runner has reliable
+    # egress to Sigstore + crates.io, and the publish job is infrequent + free on
+    # public repos.
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -110,9 +110,9 @@ jobs:
           subject-path: target/package/*.crate
 
       - name: Install cargo-sbom
-        # --force makes the install idempotent: when CARGO_HOME already holds the
-        # binary, a plain install can exit 101 ("binary `cargo-sbom` already
-        # exists"). Harmless no-op cost on a fresh hosted runner.
+        # --force: a plain install exits 101 ("binary `cargo-sbom` already exists")
+        # over a binary cargo has no install record for. The cost: it also rebuilds
+        # a cargo-sbom that rust-cache restored along with its install record.
         run: cargo install cargo-sbom --locked --force
 
       - name: Generate SBOM
