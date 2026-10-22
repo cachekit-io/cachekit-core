@@ -330,7 +330,7 @@ jobs:
         # No `|| echo` swallowing: a failed install/setup MUST fail the job. Silently
         # skipping verification gives false green-CI assurance.
         run: |
-          cargo install --locked --force kani-verifier
+          cargo install --locked kani-verifier
           cargo kani setup
 
       - name: Run Kani verification
