@@ -398,13 +398,17 @@ including bin16/bin32 width headers. The fixture is vendored at
 it, re-copy from the protocol repo and change the pinned hash in the same
 commit.
 
-Since protocol 1.3 the fixture also carries six `reject_vectors`, which
-`tests/wire_format_vectors.rs` drives through `retrieve()`, asserting the
-error the protocol names for each. `src/read_allocation_probe.rs` (unit tests
-only) bounds what the size-cap and ratio reads allocate, with a positive
-control. `tests/wire_format_constructed.rs` runs the fixture's constructed
-32-bit ratio-product vector natively and, in CI, on `wasm32-unknown-unknown`
-under `wasm-bindgen-test`.
+Since protocol 1.3 the fixture also carries `reject_vectors` (14 as of
+protocol 1.4), which `tests/wire_format_vectors.rs` drives through
+`retrieve()`, asserting the error the protocol names for each.
+`reject_envelope_slots_overclaim` must also carry the `decode pre-scan: `
+message prefix, since any decoder rejects that envelope somehow.
+`src/read_allocation_probe.rs` (unit tests only) bounds what the size-cap and
+ratio reads allocate, with a positive control.
+`tests/wire_format_constructed.rs` runs the fixture's constructed 32-bit
+ratio-product vector natively and, in CI, on `wasm32-unknown-unknown` under
+`wasm-bindgen-test`; `tests/wire_format_vectors.rs` decodes the constructed
+bin16/bin32 and legacy array32 boundary vectors natively.
 
 `tests/decode_bounds_vectors.rs` drives every reject and accept vector in the
 protocol's `test-vectors/decode-bounds.json` (vendored the same way, at
