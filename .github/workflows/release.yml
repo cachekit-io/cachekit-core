@@ -110,9 +110,8 @@ jobs:
           subject-path: target/package/*.crate
 
       - name: Install cargo-sbom
-        # --force: a plain install exits 101 ("binary `cargo-sbom` already exists")
-        # over a binary cargo has no install record for. The cost: it also rebuilds
-        # a cargo-sbom that rust-cache restored along with its install record.
+        # --force rebuilds cargo-sbom from source on every run instead of reusing the
+        # binary rust-cache restored.
         run: cargo install cargo-sbom --locked --force
 
       - name: Generate SBOM
