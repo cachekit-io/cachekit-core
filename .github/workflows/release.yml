@@ -47,9 +47,9 @@ jobs:
       # release PR here. outputs.pr is set whenever the release PR was created
       # OR updated, so this re-runs on every push to main while a release PR is
       # open — adding an already-present assignee is a no-op, so that's safe.
-      # github-script, NOT `gh`: chosen when this job ran on a self-hosted
-      # runner without the gh CLI; it works identically on
-      # a hosted runner. outputs.pr is passed raw via env and parsed in JS — never
+      # github-script, NOT `gh`: it calls the REST API in-process, so the step
+      # does not depend on the gh CLI being on the runner image.
+      # outputs.pr is passed raw via env and parsed in JS — never
       # through template-position fromJson, which is evaluated even when if: is
       # false and crashes on '' for no-release pushes (LAB-865).
       - name: Assign release PR to 27Bslash6
@@ -80,10 +80,10 @@ jobs:
     # refs/heads/main stops a feature branch from publishing its own Cargo.toml).
     # Explicit == 'true' avoids relying on string-coercion of the action output.
     if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
-    # GitHub-hosted: the self-hosted ARC pods have unreliable DNS/egress to Sigstore
-    # (Fulcio/Rekor), which intermittently fails build-provenance + SBOM attestation
-    # and blocks publish. A hosted runner has reliable egress to Sigstore + crates.io,
-    # and the publish job is infrequent + free on public repos.
+    # GitHub-hosted: if Sigstore (Fulcio/Rekor) is unreachable, build-provenance and
+    # SBOM attestation fail and publish is blocked. A hosted runner has reliable
+    # egress to Sigstore + crates.io, and the publish job is infrequent + free on
+    # public repos.
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -110,9 +110,8 @@ jobs:
           subject-path: target/package/*.crate
 
       - name: Install cargo-sbom
-        # --force kept from when this job ran self-hosted with a persistent
-        # CARGO_HOME (/cache/cargo), where a plain install exits 101 ("binary
-        # `cargo-sbom` already exists"). Harmless no-op cost on a hosted runner.
+        # --force rebuilds cargo-sbom from source on every run instead of reusing the
+        # binary rust-cache restored.
         run: cargo install cargo-sbom --locked --force
 
       - name: Generate SBOM
