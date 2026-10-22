@@ -395,8 +395,8 @@ fn bin_twins_are_bin_encoded_and_field_identical_to_legacy() {
 
 /// Every reject vector, each with the rejection `spec/wire-format.md` →
 /// Reject vectors requires an SDK test to assert. Compared by variant, so a
-/// message is not part of the assertion, except where the third field names a
-/// required message prefix. Pinned by name, so an emptied or renamed group
+/// message is not part of the assertion, except where the third field names
+/// the exact message required. Pinned by name, so an emptied or renamed group
 /// fails here instead of iterating nothing.
 const REJECT_EXPECTATIONS: [(&str, ByteStorageError, Option<&str>); 14] = [
     // Retrieve Flow step 4: original_size one byte over the 512 MiB cap.
@@ -467,14 +467,15 @@ const REJECT_EXPECTATIONS: [(&str, ByteStorageError, Option<&str>); 14] = [
         ByteStorageError::DeserializationFailed(String::new()),
         None,
     ),
-    // Any decoder rejects this envelope as truncated or mistyped, so the
-    // variant alone also passes a reader without the step-2 pre-scan. The
-    // spec requires the pre-scan's own error, which this crate marks only by
-    // its message prefix (`ByteStorage::retrieve`).
+    // Any decoder rejects this envelope as truncated or mistyped, and so does
+    // the pre-scan's own end-of-input check (same `decode pre-scan: ` prefix),
+    // so neither the variant nor the prefix proves the summed-slot check ran.
+    // The spec requires that check's own error, so the full message is pinned
+    // (`msgpack_bounds` documents its wording as stable within a minor version).
     (
         "reject_envelope_slots_overclaim",
         ByteStorageError::DeserializationFailed(String::new()),
-        Some("decode pre-scan: "),
+        Some("decode pre-scan: declares more elements than the input can back"),
     ),
     // original_size 2^63 + 16 as uint64 fails the same range-checked decode
     // into `u32` as reject_original_size_wraps_u32, which the spec accepts
@@ -516,7 +517,7 @@ fn reject_vectors_fail_with_the_spec_error() {
     );
 
     let storage = ByteStorage::new(None);
-    for (name, expected, prefix) in REJECT_EXPECTATIONS {
+    for (name, expected, message) in REJECT_EXPECTATIONS {
         let vector = fixture
             .reject_vectors
             .iter()
@@ -537,13 +538,10 @@ fn reject_vectors_fail_with_the_spec_error() {
                     discriminant(&expected),
                     "[{name}] rejected with {e:?}, expected {expected:?}"
                 );
-                if let Some(prefix) = prefix {
-                    let ByteStorageError::DeserializationFailed(message) = &e else {
-                        unreachable!("variant checked above");
-                    };
+                if let Some(message) = message {
                     assert!(
-                        message.starts_with(prefix),
-                        "[{name}] rejected with {e:?}, expected a message starting {prefix:?}"
+                        matches!(&e, ByteStorageError::DeserializationFailed(m) if m == message),
+                        "[{name}] rejected with {e:?}, expected message {message:?}"
                     );
                 }
             }

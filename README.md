@@ -401,8 +401,10 @@ commit.
 Since protocol 1.3 the fixture also carries `reject_vectors` (14 as of
 protocol 1.4), which `tests/wire_format_vectors.rs` drives through
 `retrieve()`, asserting the error the protocol names for each.
-`reject_envelope_slots_overclaim` must also carry the `decode pre-scan: `
-message prefix, since any decoder rejects that envelope somehow.
+`reject_envelope_slots_overclaim` must fail with the pre-scan's own
+summed-slot message, `decode pre-scan: declares more elements than the input
+can back`: any decoder, and the pre-scan's end-of-input check, rejects that
+envelope too, so only the exact message proves the slot check ran.
 `src/read_allocation_probe.rs` (unit tests only) bounds what the size-cap and
 ratio reads allocate, with a positive control.
 `tests/wire_format_constructed.rs` runs the fixture's constructed 32-bit
