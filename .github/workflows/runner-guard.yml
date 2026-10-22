@@ -5,9 +5,7 @@ name: Runner Guard
 # value in .github/workflows/ is not a hosted label — an allow-list, so a NEW
 # self-hosted label nobody has named yet still fails.
 #
-# This is protection against MAINTAINER drift on trusted branches only. It is NOT a
-# fork-PR control: a fork runs its own copy of this file and can delete the guard;
-# the control for that lives in repository and org runner settings, outside this file.
+# This is protection against MAINTAINER drift on trusted branches only.
 
 on:
   push:

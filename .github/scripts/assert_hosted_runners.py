@@ -55,12 +55,9 @@ Forms handled, and how each stays fail-closed:
     dash line) are scanned like any other `os:` / `runner:` value.
   - a comment after `runs-on:` (`runs-on:  # note`) is not mistaken for a label.
 
-SCOPE / what this is NOT. This runs inside the workflow, so it only protects against
-*maintainer drift on a trusted branch*: a fork PR runs the fork's own copy of this
-file and can simply delete the guard, so it is not a fork-PR control; the control for
-that lives in repository and org runner settings, outside this file. Its own workflow
-(`runner-guard.yml`) is kept honest by branch protection (required status check +
-CODEOWNERS), not by this script.
+SCOPE. This protects against *maintainer drift on a trusted branch* only. Its own
+workflow (`runner-guard.yml`) is kept honest by branch protection (required status
+check + CODEOWNERS), not by this script.
 
 Deliberately dependency-free (stdlib only): it must behave identically on a hosted
 runner and a laptop, with no PyYAML — the ubuntu-latest image does not ship it, and a
