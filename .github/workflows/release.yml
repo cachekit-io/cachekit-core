@@ -227,7 +227,7 @@ jobs:
           mkdir "$RUNNER_TEMP/uploaded"
           for path in target/package/cachekit-core-[0-9]*.crate; do
             file=${path##*/}
-            curl -sSf --retry 5 --retry-all-errors --retry-delay 10 \
+            curl -sSf --connect-timeout 10 --max-time 60 --retry 5 --retry-all-errors --retry-delay 10 \
               -o "$RUNNER_TEMP/uploaded/$file" "https://static.crates.io/crates/cachekit-core/$file"
           done
           cd "$RUNNER_TEMP/uploaded" && sha256sum -c ../attested.sha256
