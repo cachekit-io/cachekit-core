@@ -58,7 +58,7 @@ jobs:
             fi
             echo '```'
             echo
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Run the README benchmark
         run: cargo run --release --example bench_throughput --features encryption | tee -a "$GITHUB_STEP_SUMMARY"
