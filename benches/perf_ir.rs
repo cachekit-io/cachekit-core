@@ -380,11 +380,13 @@ options:
   --update           write lower measured figures back as budgets
   --allow-increase   with --update, also raise budgets
   --jobs <n>         cachegrind runs at a time (default: min(8, cores))
+  --baselines <path> read and write budgets here instead of the committed file
 
 perf_ir run <case> <n>   the measured process: setup, one warm-up op, n ops";
 
 fn gate(args: &[String]) -> Result<bool, String> {
     let (mut update, mut allow_increase, mut cases) = (false, false, Vec::new());
+    let mut path = PathBuf::from(BASELINES);
     let mut jobs = thread::available_parallelism()
         .map_or(1, |n| n.get())
         .min(8);
@@ -394,6 +396,7 @@ fn gate(args: &[String]) -> Result<bool, String> {
             "--update" => update = true,
             "--allow-increase" => allow_increase = true,
             "--case" => cases.push(args.next().ok_or("--case needs a case id")?.clone()),
+            "--baselines" => path = args.next().ok_or("--baselines needs a path")?.into(),
             "--jobs" => {
                 jobs = args
                     .next()
@@ -421,9 +424,10 @@ fn gate(args: &[String]) -> Result<bool, String> {
 
     let valgrind_bin =
         which("valgrind").ok_or("valgrind not found on PATH: install it (apt install valgrind)")?;
-    let text = fs::read_to_string(BASELINES).map_err(|e| format!("{BASELINES}: {e}"))?;
+    let shown = path.display();
+    let text = fs::read_to_string(&path).map_err(|e| format!("{shown}: {e}"))?;
     let mut baselines: Baselines =
-        serde_json::from_str(&text).map_err(|e| format!("{BASELINES}: {e}"))?;
+        serde_json::from_str(&text).map_err(|e| format!("{shown}: {e}"))?;
     let key = platform_key();
     let (rustc, valgrind) = (version("rustc", 1), version("valgrind", 0));
     let platform = baselines.platforms.entry(key.clone()).or_default();
@@ -462,8 +466,8 @@ fn gate(args: &[String]) -> Result<bool, String> {
              empty environment; written by benches/perf_ir.rs --update"
         );
         let json = serde_json::to_string_pretty(&baselines).map_err(|e| e.to_string())?;
-        fs::write(BASELINES, json + "\n").map_err(|e| format!("{BASELINES}: {e}"))?;
-        println!("budgets written to benches/perf_ir_baselines.json");
+        fs::write(&path, json + "\n").map_err(|e| format!("{shown}: {e}"))?;
+        println!("budgets written to {shown}");
     }
     println!(
         "{}",
