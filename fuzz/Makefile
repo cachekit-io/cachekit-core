@@ -1,4 +1,4 @@
-# cachekit/rust/fuzz - Fuzzing Makefile
+# cachekit-core/fuzz - Fuzzing Makefile
 # Handles all fuzzing and corpus management targets
 
 .PHONY: help quick deep target coverage corpus-generate corpus-minimize corpus-validate triage
@@ -38,7 +38,7 @@ define warn_if_missing
 endef
 
 help: ## Show fuzzing-specific commands
-	@echo "$(BLUE)cachekit/rust/fuzz - Fuzzing Commands$(RESET)"
+	@echo "$(BLUE)cachekit-core/fuzz - Fuzzing Commands$(RESET)"
 	@echo ""
 	@echo "$(GREEN)Quick Fuzzing:$(RESET)"
 	@echo "  $(YELLOW)make quick$(RESET)      Run quick fuzzing smoke test (60s per target)"
