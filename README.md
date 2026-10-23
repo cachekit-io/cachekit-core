@@ -330,7 +330,7 @@ Single-threaded time per call of cachekit-core's own operations, and the payload
 | `decrypt_aes_gcm` | 562 ns · 1.82 GB/s | 16.11 µs · 4.07 GB/s |
 
 - `store` compresses with LZ4, checksums with xxHash3-64 and wraps both in the MessagePack envelope. `retrieve` checks the envelope, decompresses and verifies the checksum.
-- `encrypt_aes_gcm` and `decrypt_aes_gcm` are `ZeroKnowledgeEncryptor`'s AES-256-GCM calls with a 34-byte AAD. Their speed does not depend on the bytes.
+- `encrypt_aes_gcm` and `decrypt_aes_gcm` are `ZeroKnowledgeEncryptor`'s AES-256-GCM calls with a 34-byte AAD.
 - `encrypt_aes_gcm` copies the plaintext more often than `decrypt_aes_gcm` copies the ciphertext. At 64 KiB that shows on some CPUs: on the EPYC 7763, encrypting took three times as long as decrypting.
 - The payload is MessagePack-encoded records (`benches/common/mod.rs`), the corpus `hot_path` and `perf_ir` also use. LZ4 compresses it to 0.57 of its size at 1 KiB and to 0.38 at 64 KiB.
 - Each figure is the median of 21 timed batches, from one run on the CPU named. Three runs on the EPYC 7763 agreed within 12%, and within 3% on all but one cell; five arm64 runs varied by up to 2x on a cell.

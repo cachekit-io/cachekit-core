@@ -181,7 +181,8 @@ harness = false
 bench = false
 required-features = ["encryption"]
 
-# The README's Performance table; it times encrypt/decrypt too.
+# The README's Performance table. It times ByteStorage's store and retrieve, which need the
+# three default features, and encrypt/decrypt.
 [[example]]
 name = "bench_throughput"
-required-features = ["encryption"]
+required-features = ["compression", "checksum", "messagepack", "encryption"]
