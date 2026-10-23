@@ -85,7 +85,7 @@ mod read_allocation_probe;
 
 // Structural pre-scan for untrusted MessagePack (no optional dependency)
 mod msgpack_bounds;
-pub use msgpack_bounds::{check_msgpack_structure, MsgpackStructureError};
+pub use msgpack_bounds::{check_msgpack_structure, msgpack_document_len, MsgpackStructureError};
 
 // Encryption module (feature-gated)
 #[cfg(feature = "encryption")]

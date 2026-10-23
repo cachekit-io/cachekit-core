@@ -263,7 +263,10 @@ allocating in proportion to any declared length. A rejection is
 `decode pre-scan: `. The same walk is public as
 `check_msgpack_structure(bytes, max_depth)` for callers that decode untrusted
 MessagePack themselves; it returns a `MsgpackStructureError` whose `Display` is
-the bare reason, with no prefix. See [`SECURITY.md`](SECURITY.md#envelope-decode-bounds).
+the bare reason, with no prefix. `msgpack_document_len(bytes, max_depth)` runs
+the same walk and returns the document's length, so a caller that must reject
+trailing bytes compares it with `bytes.len()` instead of walking twice. See
+[`SECURITY.md`](SECURITY.md#envelope-decode-bounds).
 
 </details>
 
@@ -276,7 +279,7 @@ cachekit-core/
 ├── src/
 │   ├── lib.rs              # Public API exports
 │   ├── byte_storage.rs     # LZ4 + xxHash3 storage envelope
-│   ├── msgpack_bounds.rs   # Structural pre-scan (public check_msgpack_structure), run before the envelope decode
+│   ├── msgpack_bounds.rs   # Structural pre-scan (public check_msgpack_structure, msgpack_document_len), run before the envelope decode
 │   ├── checksum.rs         # Standalone xxHash3 checksum/verify primitive (feature = "checksum")
 │   │
 │   ├── encryption/         # (feature = "encryption")

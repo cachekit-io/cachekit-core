@@ -5,7 +5,8 @@
 //! `spec/interop-mode.md` → Decode bounds, pinned by
 //! `tests/vectors/decode-bounds.json`.
 
-/// Why [`check_msgpack_structure`] rejected its input.
+/// Why [`check_msgpack_structure`] or [`msgpack_document_len`] rejected its
+/// input.
 ///
 /// `Display` is the bare reason with no prefix (for example
 /// `nests deeper than 100 levels`), so each caller adds its own. The wording is
@@ -26,7 +27,8 @@ fn reject(reason: impl Into<String>) -> MsgpackStructureError {
 /// at most `min(max_depth, bytes.len())` of them (8 KiB at a depth of 1024), and
 /// allocates nothing proportional to any declared length.
 ///
-/// Trailing bytes after the root element are left to the decoder.
+/// Bytes after the document are neither read nor rejected. To find where the
+/// document ends, call [`msgpack_document_len`], which runs this same walk.
 ///
 /// `max_depth` is the caller's bound. The protocol (`spec/interop-mode.md` →
 /// Decode bounds) requires one in `32..=1024`; this function does not enforce
@@ -69,6 +71,40 @@ pub fn check_msgpack_structure(
     bytes: &[u8],
     max_depth: usize,
 ) -> Result<(), MsgpackStructureError> {
+    msgpack_document_len(bytes, max_depth).map(|_| ())
+}
+
+/// Runs the walk [`check_msgpack_structure`] describes and returns the length,
+/// in bytes, of the document at the start of `bytes`.
+///
+/// It accepts and rejects exactly what [`check_msgpack_structure`] does. The
+/// walk stops where the document ends, so the length is at least 1 and at most
+/// `bytes.len()`, and a length below `bytes.len()` means trailing bytes follow.
+/// A caller that requires the input to be exactly one document compares the
+/// two instead of walking the input a second time.
+///
+/// # Errors
+///
+/// The same [`MsgpackStructureError`], for the same inputs, as
+/// [`check_msgpack_structure`].
+///
+/// # Examples
+///
+/// ```
+/// use cachekit_core::msgpack_document_len;
+///
+/// // nil, then two bytes the walk never reads (so 0xc1 is not rejected here).
+/// let input = [0xc0, 0xc1, 0xff];
+/// assert_eq!(msgpack_document_len(&input, 100), Ok(1));
+///
+/// // [[nil], "x"]: five bytes, the whole input.
+/// let doc = [0x92, 0x91, 0xc0, 0xa1, b'x'];
+/// assert_eq!(msgpack_document_len(&doc, 100), Ok(doc.len()));
+/// ```
+pub fn msgpack_document_len(
+    bytes: &[u8],
+    max_depth: usize,
+) -> Result<usize, MsgpackStructureError> {
     fn be(bytes: &[u8], pos: usize, width: usize) -> Result<u64, MsgpackStructureError> {
         let end = pos
             .checked_add(width)
@@ -136,7 +172,7 @@ pub fn check_msgpack_structure(
             return Err(reject("declares more elements than the input can back"));
         }
     }
-    Ok(())
+    Ok(pos)
 }
 
 #[cfg(test)]
@@ -154,6 +190,10 @@ mod tests {
 
     fn check(bytes: &[u8]) -> Result<(), String> {
         check_msgpack_structure(bytes, MAX_DEPTH).map_err(|e| e.to_string())
+    }
+
+    fn doc_len(bytes: &[u8]) -> Result<usize, String> {
+        msgpack_document_len(bytes, MAX_DEPTH).map_err(|e| e.to_string())
     }
 
     /// `count` copies of a collection header, then `tail`.
@@ -203,6 +243,7 @@ mod tests {
         ];
         for doc in docs {
             assert_eq!(check(doc), Ok(()), "{doc:02x?}");
+            assert_eq!(doc_len(doc), Ok(doc.len()), "{doc:02x?}");
         }
     }
 
@@ -233,8 +274,29 @@ mod tests {
     }
 
     #[test]
-    fn leaves_trailing_bytes_to_the_decoder() {
+    fn stops_where_the_document_ends_and_reports_its_length() {
+        // The trailing 0xc1 is never read, so it is not the reserved-marker error.
         assert_eq!(check(&[0xc0, 0xc1, 0xff]), Ok(()));
+        assert_eq!(doc_len(&[0xc0, 0xc1, 0xff]), Ok(1));
+        // {"a": [nil, bin8(2)]}, then a trailing fixmap(1) the walk never opens.
+        let doc = [0x81, 0xa1, b'a', 0x92, 0xc0, 0xc4, 0x02, 0xff, 0xff];
+        assert_eq!(doc_len(&doc), Ok(doc.len()));
+        assert_eq!(doc_len(&[&doc[..], &[0x81]].concat()), Ok(doc.len()));
+    }
+
+    #[test]
+    fn both_entry_points_reject_alike() {
+        let too_deep = nested(&[0x91], MAX_DEPTH + 1, &[0xc0]);
+        let cases: &[&[u8]] = &[
+            &[],
+            &[0x91, 0xc1],
+            &[0xdd, 0xff, 0xff, 0xff, 0xff],
+            &too_deep,
+        ];
+        for bytes in cases {
+            assert!(check(bytes).is_err(), "{bytes:02x?}");
+            assert_eq!(doc_len(bytes).map(|_| ()), check(bytes), "{bytes:02x?}");
+        }
     }
 
     #[test]
@@ -292,6 +354,8 @@ mod tests {
         assert!(storage.retrieve(&legacy).is_ok());
         for doc in [bin, legacy] {
             assert_eq!(check(&doc), Ok(()));
+            assert_eq!(doc_len(&doc), Ok(doc.len()));
+            assert_eq!(doc_len(&[&doc[..], &doc[..]].concat()), Ok(doc.len()));
             for end in 0..doc.len() {
                 assert!(
                     check(&doc[..end]).is_err(),
