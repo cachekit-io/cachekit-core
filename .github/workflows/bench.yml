@@ -22,6 +22,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# bash -eo pipefail, so a failing benchmark is not hidden by the tee after it.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   readme-table:
     name: README table / ${{ matrix.os }}

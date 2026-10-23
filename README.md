@@ -309,33 +309,40 @@ cachekit-core/
 
 ## Performance
 
-Benchmarks on Apple M2 Max (64KB payload, compressible data):
+Single-threaded time per call of cachekit-core's own operations, and the payload bytes each one processes per second, measured with `examples/bench_throughput.rs` on GitHub-hosted runners with Rust 1.99.1.
 
-| Operation | Throughput | Notes |
-|:----------|:-----------|:------|
-| LZ4 compress | ~15 GB/s | Highly compressible data |
-| LZ4 decompress | ~37 GB/s | |
-| xxHash3-64 | ~36 GB/s | 19x faster than Blake3 |
-| AES-256-GCM encrypt | ~6 GB/s | ARM Crypto Extensions |
-| AES-256-GCM decrypt | ~6 GB/s | ARM Crypto Extensions |
+**x86-64 Linux**: `ubuntu-latest` runner, AMD EPYC 9V45 (4 vCPUs), AES-NI
 
-<details>
-<summary><strong>1KB payload (per-call overhead visible)</strong></summary>
+| Operation | 1 KiB | 64 KiB |
+|:----------|------:|-------:|
+| `ByteStorage::store` | 868 ns · 1.18 GB/s | 38.78 µs · 1.69 GB/s |
+| `ByteStorage::retrieve` | 303 ns · 3.38 GB/s | 12.39 µs · 5.29 GB/s |
+| `encrypt_aes_gcm` | 332 ns · 3.08 GB/s | 7.61 µs · 8.61 GB/s |
+| `decrypt_aes_gcm` | 310 ns · 3.30 GB/s | 6.60 µs · 9.93 GB/s |
 
-| Operation | Throughput |
-|:----------|:-----------|
-| LZ4 compress | ~2 GB/s |
-| LZ4 decompress | ~14 GB/s |
-| xxHash3-64 | ~10 GB/s |
-| AES-256-GCM encrypt | ~3.6 GB/s |
-| AES-256-GCM decrypt | ~4.4 GB/s |
+**arm64 macOS**: `macos-latest` runner, Apple M1 (virtual, 3 vCPUs), ARM Crypto Extensions
 
-</details>
+| Operation | 1 KiB | 64 KiB |
+|:----------|------:|-------:|
+| `ByteStorage::store` | 1.47 µs · 0.70 GB/s | 87.88 µs · 0.75 GB/s |
+| `ByteStorage::retrieve` | 493 ns · 2.08 GB/s | 20.65 µs · 3.17 GB/s |
+| `encrypt_aes_gcm` | 576 ns · 1.78 GB/s | 15.22 µs · 4.31 GB/s |
+| `decrypt_aes_gcm` | 444 ns · 2.30 GB/s | 13.15 µs · 4.98 GB/s |
+
+- `store` compresses with LZ4, checksums with xxHash3-64 and wraps both in the MessagePack envelope. `retrieve` checks the envelope, decompresses and verifies the checksum.
+- `encrypt_aes_gcm` and `decrypt_aes_gcm` are `ZeroKnowledgeEncryptor`'s AES-256-GCM calls, with an AAD shaped like the SDKs'. Their speed does not depend on the bytes.
+- The payload is MessagePack-encoded records (`benches/common/mod.rs`), the corpus `hot_path` and `perf_ir` also use. LZ4 compresses it to 0.57 of its size at 1 KiB and to 0.38 at 64 KiB.
+- Each figure is the median of 21 timed batches. Three x86-64 runs on this CPU agreed within 4%, and two arm64 runs within 20%. Hosted runners are shared virtual machines and do not always get the same CPU model; other machines give other figures.
+
+To print the table for your own machine, run `cargo run --release --example bench_throughput --features encryption`, or run the **Bench** workflow from the Actions tab.
+
+> [!NOTE]
+> Earlier versions of this table timed the raw LZ4, xxHash3 and AES primitives, not cachekit-core's calls, on a 256-byte repeating pattern that LZ4 compresses almost perfectly. Those figures were up to an order of magnitude higher than what `store` and `retrieve` deliver on real payloads.
 
 > [!TIP]
 > Hardware acceleration is auto-detected. ARM64 uses ARM Crypto Extensions; x86-64 uses AES-NI.
 
-The figures above come from `examples/bench_throughput.rs` on highly compressible data. The Criterion suite in `benches/hot_path.rs` needs the `encryption` feature (`make bench`, or `cargo bench --features encryption`; a plain `cargo bench` skips it). It runs the ByteStorage roundtrip on three corpora side by side: `byte_storage/roundtrip` (synthetic ramp, kept for history), `byte_storage/roundtrip_msgpack` (realistic msgpack records, about 0.38 LZ4 ratio at 64 KB) and `byte_storage/roundtrip_incompressible`. The bench profile keeps symbols, so callgrind and perf attribute cost to functions.
+The Criterion suite in `benches/hot_path.rs` needs the `encryption` feature (`make bench`, or `cargo bench --features encryption`; a plain `cargo bench` skips it). It runs the ByteStorage roundtrip on three corpora side by side: `byte_storage/roundtrip` (synthetic ramp, kept for history), `byte_storage/roundtrip_msgpack` (realistic msgpack records, about 0.38 LZ4 ratio at 64 KB) and `byte_storage/roundtrip_incompressible`. The bench profile keeps symbols, so callgrind and perf attribute cost to functions.
 
 ### Instruction counts
 
