@@ -332,7 +332,7 @@ Single-threaded time per call of cachekit-core's own operations, and the payload
 - `store` compresses with LZ4, checksums with xxHash3-64 and wraps both in the MessagePack envelope. `retrieve` checks the envelope, decompresses and verifies the checksum.
 - `encrypt_aes_gcm` and `decrypt_aes_gcm` are `ZeroKnowledgeEncryptor`'s AES-256-GCM calls, with an AAD shaped like the SDKs'. Their speed does not depend on the bytes.
 - The payload is MessagePack-encoded records (`benches/common/mod.rs`), the corpus `hot_path` and `perf_ir` also use. LZ4 compresses it to 0.57 of its size at 1 KiB and to 0.38 at 64 KiB.
-- Each figure is the median of 21 timed batches. Three x86-64 runs on this CPU agreed within 4%, and two arm64 runs within 20%. Hosted runners are shared virtual machines and do not always get the same CPU model; other machines give other figures.
+- Each figure is the median of 21 timed batches. Hosted runners are shared virtual machines: three x86-64 runs on this CPU model agreed within 4%, and three arm64 runs within 20% on all but one cell (`retrieve` at 64 KiB, up to 1.7 times as long). x86-64 runners also come with other CPU models (an EPYC 9V74 run took 1.3 to 1.4 times as long), and other machines give other figures.
 
 To print the table for your own machine, run `cargo run --release --example bench_throughput --features encryption`, or run the **Bench** workflow from the Actions tab.
 
