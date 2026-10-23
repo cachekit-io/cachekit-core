@@ -179,3 +179,8 @@ name = "perf_ir"
 harness = false
 bench = false
 required-features = ["encryption"]
+
+# The README's Performance table; it times encrypt/decrypt too.
+[[example]]
+name = "bench_throughput"
+required-features = ["encryption"]
