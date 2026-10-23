@@ -65,12 +65,12 @@ Run these from the repository root.
 
 ### Quick Fuzzing (corpus only, up to 120s per target)
 ```bash
-make fuzz-quick
+rustup run nightly make fuzz-quick
 ```
 
 ### Deep Fuzzing (30 min per target)
 ```bash
-make fuzz-deep
+rustup run nightly make fuzz-deep
 ```
 
 ### Corpus Maintenance

@@ -15,25 +15,30 @@ This fuzzing suite provides **14 fuzz targets** covering:
 
 ### Prerequisites
 ```bash
-# Install cargo-fuzz (libfuzzer-based; targets build on the nightly toolchain)
+# Install cargo-fuzz (libfuzzer-based) and the nightly toolchain it builds with
 cargo install cargo-fuzz
+rustup toolchain install nightly
+
+# Coverage reports also need the LLVM tools for nightly
+rustup component add --toolchain nightly llvm-tools-preview
 ```
+
+The root `make fuzz-*` targets call `cargo fuzz` on your default toolchain. On stable, every target fails to build and the run still reports success, so run them through `rustup run nightly` as shown below.
 
 ### Basic Fuzzing Workflow
 Run these from the repository root.
 ```bash
 # Quick corpus-only smoke test (up to 120s per target, every target)
-make fuzz-quick
+rustup run nightly make fuzz-quick
 
-# Fuzz single target for development (60s by default; set TIME=<seconds>)
-cd fuzz && make target TARGET=byte_storage_corrupted_envelope
+# Fuzz single target for development (60 seconds)
+cd fuzz && cargo +nightly fuzz run byte_storage_corrupted_envelope -- -max_total_time=60
 
 # Deep fuzzing of one target (8 hours, production validation)
-cd fuzz && make target TARGET=encryption_key_derivation TIME=28800
-
-# Generate coverage report
-cd fuzz && make coverage
+cd fuzz && cargo +nightly fuzz run encryption_key_derivation -- -max_total_time=28800
 ```
+
+For a coverage report, see [Coverage Reporting](#coverage-reporting).
 
 ## Fuzz Targets
 
@@ -141,17 +146,17 @@ The `quick-fuzz` job in `.github/workflows/security.yml` runs on every push and 
 
 ```bash
 # Simulate CI smoke tests locally (from the repository root)
-make fuzz-quick
+rustup run nightly make fuzz-quick
 ```
 
 ### Deep Fuzzing (Production Validation)
 Run before releases or periodically, from the repository root:
 ```bash
 # Every target, 30 minutes each
-make fuzz-deep
+rustup run nightly make fuzz-deep
 
 # One target, 8 hours (production-grade validation)
-cd fuzz && make target TARGET=encryption_key_derivation TIME=28800
+cd fuzz && cargo +nightly fuzz run encryption_key_derivation -- -max_total_time=28800
 ```
 
 ## Crash Triage
@@ -184,12 +189,22 @@ cargo +nightly fuzz tmin byte_storage_corrupted_envelope artifacts/byte_storage_
 
 ## Coverage Reporting
 
+Coverage replays a target's corpus (`fuzz/corpus/<target>/`), so fuzz the target first. Run these from the `fuzz/` directory:
 ```bash
-# Generate LLVM coverage report (from the repository root)
-cd fuzz && make coverage
+TARGET=byte_storage_corrupted_envelope
+
+# Replay the corpus with coverage instrumentation; writes coverage/$TARGET/coverage.profdata
+cargo +nightly fuzz coverage "$TARGET"
+
+# Render an HTML report with nightly's llvm-cov
+HOST=$(rustc +nightly -vV | sed -n 's/^host: //p')
+"$(rustc +nightly --print target-libdir)/../bin/llvm-cov" show \
+  "target/$HOST/coverage/$HOST/release/$TARGET" \
+  -instr-profile="coverage/$TARGET/coverage.profdata" \
+  -format=html -output-dir=coverage/html
 
 # View HTML report
-open fuzz/coverage/html/index.html
+open coverage/html/index.html
 ```
 
 **Note**: Fuzzing coverage measures code paths explored, not test quality. Use this to identify untested paths.
@@ -210,7 +225,7 @@ cd fuzz && ./scripts/minimize_corpus.sh
 
 **"Fuzzing too slow"**
 - Reduce input size limits in targets (e.g., `if data.len() > 1024 { return; }`)
-- Use `make fuzz-quick` for rapid iteration
+- Fuzz one target with a short `-max_total_time` for rapid iteration
 - Check for expensive operations in hot paths
 
 **"Crash can't be reproduced"**
@@ -221,10 +236,10 @@ cargo +nightly fuzz run TARGET artifacts/TARGET/crash-xyz -- -exact_artifact_pat
 
 ### Performance Tips
 
-1. **Start small**: Use `make fuzz-quick` to verify targets compile and run
+1. **Start small**: Use `rustup run nightly make fuzz-quick` to verify targets compile and run
 2. **Parallelize**: Run multiple targets simultaneously on multi-core machines
 3. **Seed wisely**: Good corpus seeds improve coverage 10-100x faster
-4. **Monitor coverage**: Use `make coverage` in `fuzz/` to identify unexplored paths
+4. **Monitor coverage**: Use [Coverage Reporting](#coverage-reporting) to identify unexplored paths
 
 ## Architecture Notes
 
@@ -251,7 +266,7 @@ When adding new fuzz targets:
 3. Create corpus subdirectory with `.gitkeep`
 4. Document attack vector in this README
 5. Add target to `FUZZ_TARGETS` list in `fuzz/Makefile` and to the `quick-fuzz` matrix in `.github/workflows/security.yml`
-6. Verify with `cd fuzz && make target TARGET=your_new_target`
+6. Verify with `cd fuzz && cargo +nightly fuzz run your_new_target -- -max_total_time=60`
 
 ## References
 
