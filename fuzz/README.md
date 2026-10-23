@@ -15,27 +15,30 @@ This fuzzing suite provides **14 fuzz targets** covering:
 
 ### Prerequisites
 ```bash
-# Install cargo-fuzz (libfuzzer-based)
+# Install cargo-fuzz (libfuzzer-based) and the nightly toolchain it builds with
 cargo install cargo-fuzz
+rustup toolchain install nightly
 
-# Install AFL++ (optional, for mutation-based fuzzing)
-cargo install cargo-afl
+# Coverage reports also need the LLVM tools for nightly
+rustup component add --toolchain nightly llvm-tools-preview
 ```
+
+The root `make fuzz-*` targets call `cargo fuzz` on your default toolchain. On stable, every target fails to build and the run still reports success, so run them through `rustup run nightly` as shown below.
 
 ### Basic Fuzzing Workflow
+Run these from the repository root.
 ```bash
-# Quick smoke test (60s per target, ~14min total)
-cd rust && make fuzz-quick
+# Quick corpus-only smoke test (up to 120s per target, every target)
+rustup run nightly make fuzz-quick
 
-# Fuzz single target for development
-cd rust && make fuzz-target TARGET=byte_storage_corrupted_envelope
+# Fuzz single target for development (60 seconds)
+(cd fuzz && cargo +nightly fuzz run byte_storage_corrupted_envelope -- -max_total_time=60)
 
-# Deep fuzzing (8 hours per target, production validation)
-cd rust && make fuzz-deep TARGET=encryption_key_derivation
-
-# Generate coverage report
-cd rust && make fuzz-coverage
+# Deep fuzzing of one target (8 hours, production validation)
+(cd fuzz && cargo +nightly fuzz run encryption_key_derivation -- -max_total_time=28800)
 ```
+
+For a coverage report, see [Coverage Reporting](#coverage-reporting).
 
 ## Fuzz Targets
 
@@ -104,7 +107,7 @@ cd rust && make fuzz-coverage
 
 ### Directory Structure
 ```
-rust/fuzz/corpus/
+fuzz/corpus/
 ├── byte_storage/
 │   ├── valid_envelopes/         # Valid MessagePack envelopes
 │   ├── corrupted_envelopes/     # Known corruption patterns
@@ -120,15 +123,16 @@ rust/fuzz/corpus/
 ```
 
 ### Corpus Scripts
+Run these from the repository root.
 ```bash
 # Generate initial corpus from test fixtures
-cd rust/fuzz && ./scripts/generate_corpus.sh
+(cd fuzz && ./scripts/generate_corpus.sh)
 
 # Minimize corpus (deduplicate, reduce size)
-cd rust/fuzz && ./scripts/minimize_corpus.sh
+(cd fuzz && ./scripts/minimize_corpus.sh)
 
 # Validate corpus integrity (< 10MB total)
-cd rust/fuzz && ./scripts/validate_corpus.sh
+(cd fuzz && ./scripts/validate_corpus.sh)
 ```
 
 **Corpus Size Limit**: Total corpus should remain under 10MB for fast CI smoke tests.
@@ -136,32 +140,36 @@ cd rust/fuzz && ./scripts/validate_corpus.sh
 ## CI Integration
 
 ### Smoke Tests (PR Validation)
-`.github/workflows/fuzz-smoke.yml` runs on every pull request:
-- 60 seconds per target (~14 minutes total)
+The `quick-fuzz` job in `.github/workflows/security.yml` runs on every push and pull request:
+- One job per target, corpus only (`-runs=0`), up to 120 seconds each
 - Catches fuzzing regressions before merge
-- Uploads crash artifacts on failure
 
 ```bash
-# Simulate CI smoke tests locally
-cd rust && make fuzz-quick
+# Simulate CI smoke tests locally (from the repository root)
+rustup run nightly make fuzz-quick
 ```
 
 ### Deep Fuzzing (Production Validation)
-Run before releases or periodically:
+Run before releases or periodically, from the repository root:
 ```bash
-# 8 hours per target (production-grade validation)
-cd rust && make fuzz-deep TARGET=encryption_key_derivation
+# Every target, 30 minutes each
+rustup run nightly make fuzz-deep
+
+# One target, 8 hours (production-grade validation)
+(cd fuzz && cargo +nightly fuzz run encryption_key_derivation -- -max_total_time=28800)
 ```
 
 ## Crash Triage
 
 ### Automated Crash Analysis
 ```bash
-# Triage crashes: deduplicate, minimize, generate regression tests
-cd rust/fuzz && ./scripts/triage_crashes.sh
+# Triage crashes: deduplicate, minimize, generate regression tests (from the repository root)
+(cd fuzz && ./scripts/triage_crashes.sh)
 
-# Output: deduplicated_crashes.txt with stack traces and minimized inputs
+# Output: fuzz/triage_report.txt (git-ignored) with stack traces and minimized inputs
 ```
+
+The script exits 0 when it finds no crashes, and 1 when it finds crashes or `fuzz/artifacts/` does not exist.
 
 **Workflow:**
 1. Find all crash artifacts in `artifacts/`
@@ -170,34 +178,33 @@ cd rust/fuzz && ./scripts/triage_crashes.sh
 4. Generate regression test templates (`#[test] #[should_panic]`)
 
 ### Manual Crash Reproduction
+Run these from the `fuzz/` directory.
 ```bash
 # Reproduce specific crash
-cargo fuzz run byte_storage_corrupted_envelope artifacts/crash-xyz
+cargo +nightly fuzz run byte_storage_corrupted_envelope artifacts/byte_storage_corrupted_envelope/crash-xyz
 
 # Minimize crash input
-cargo fuzz cmin byte_storage_corrupted_envelope
-```
-
-## AFL++ Fuzzing (Alternative Engine)
-
-AFL++ provides mutation-based fuzzing complementary to libfuzzer's coverage-guided approach:
-
-```bash
-# Build AFL++ target
-cd rust && cargo afl build --features afl
-
-# Run AFL++ fuzzer
-cd rust && make fuzz-afl TARGET=byte_storage_corrupted_envelope
+cargo +nightly fuzz tmin byte_storage_corrupted_envelope artifacts/byte_storage_corrupted_envelope/crash-xyz
 ```
 
 ## Coverage Reporting
 
+Coverage replays a target's corpus (`fuzz/corpus/<target>/`), so fuzz the target first. Run these from the `fuzz/` directory:
 ```bash
-# Generate LLVM coverage report
-cd rust && make fuzz-coverage
+TARGET=byte_storage_corrupted_envelope
+
+# Replay the corpus with coverage instrumentation; writes coverage/$TARGET/coverage.profdata
+cargo +nightly fuzz coverage "$TARGET"
+
+# Render an HTML report with nightly's llvm-cov
+HOST=$(rustc +nightly -vV | sed -n 's/^host: //p')
+"$(rustc +nightly --print target-libdir)/../bin/llvm-cov" show \
+  "target/$HOST/coverage/$HOST/release/$TARGET" \
+  -instr-profile="coverage/$TARGET/coverage.profdata" \
+  -format=html -output-dir=coverage/html
 
 # View HTML report
-open rust/fuzz/coverage/html/index.html
+open coverage/html/index.html
 ```
 
 **Note**: Fuzzing coverage measures code paths explored, not test quality. Use this to identify untested paths.
@@ -213,26 +220,26 @@ cargo install cargo-fuzz
 
 **"Corpus too large (>10MB)"**
 ```bash
-cd rust/fuzz && ./scripts/minimize_corpus.sh
+(cd fuzz && ./scripts/minimize_corpus.sh)
 ```
 
 **"Fuzzing too slow"**
 - Reduce input size limits in targets (e.g., `if data.len() > 1024 { return; }`)
-- Use `fuzz-quick` for rapid iteration
+- Fuzz one target with a short `-max_total_time` for rapid iteration
 - Check for expensive operations in hot paths
 
 **"Crash can't be reproduced"**
 ```bash
-# Ensure same libfuzzer version
-cargo fuzz run TARGET artifacts/crash-xyz -- -exact_artifact_path=artifacts/crash-xyz
+# Ensure same libfuzzer version (from the fuzz/ directory)
+cargo +nightly fuzz run TARGET artifacts/TARGET/crash-xyz -- -exact_artifact_path=artifacts/TARGET/crash-xyz
 ```
 
 ### Performance Tips
 
-1. **Start small**: Use `fuzz-quick` to verify targets compile and run
+1. **Start small**: Use `rustup run nightly make fuzz-quick` to verify targets compile and run
 2. **Parallelize**: Run multiple targets simultaneously on multi-core machines
 3. **Seed wisely**: Good corpus seeds improve coverage 10-100x faster
-4. **Monitor coverage**: Use `fuzz-coverage` to identify unexplored paths
+4. **Monitor coverage**: Use [Coverage Reporting](#coverage-reporting) to identify unexplored paths
 
 ## Architecture Notes
 
@@ -251,12 +258,6 @@ All fuzz targets enforce fail-closed behavior:
 - **Panic** = Test failure (fuzzer reports bug)
 - **Undefined behavior** = Instant failure (sanitizers catch)
 
-### Multi-Engine Strategy
-
-- **Libfuzzer** (default): Coverage-guided, fast iteration, LLVM sanitizers
-- **AFL++**: Mutation-based, finds different bug classes, mature tooling
-- Both engines share corpus for cross-pollination
-
 ## Contributing
 
 When adding new fuzz targets:
@@ -264,12 +265,11 @@ When adding new fuzz targets:
 2. Add target to `Cargo.toml` [[bin]] section
 3. Create corpus subdirectory with `.gitkeep`
 4. Document attack vector in this README
-5. Add target to `FUZZ_TARGETS` list in `rust/Makefile`
-6. Verify with `make fuzz-target TARGET=your_new_target`
+5. Add target to `FUZZ_TARGETS` list in `fuzz/Makefile` and to the `quick-fuzz` matrix in `.github/workflows/security.yml`
+6. Verify with `(cd fuzz && cargo +nightly fuzz run your_new_target -- -max_total_time=60)`
 
 ## References
 
 - [Rust Fuzz Book](https://rust-fuzz.github.io/book/)
 - [libfuzzer documentation](https://llvm.org/docs/LibFuzzer.html)
-- [AFL++ documentation](https://aflplus.plus/)
-- [cachekit security architecture](../../SECURITY.md)
+- [cachekit security architecture](../SECURITY.md)

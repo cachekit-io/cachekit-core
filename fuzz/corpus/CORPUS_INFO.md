@@ -61,23 +61,25 @@ Validated with `scripts/validate_corpus.sh`:
 
 ## Usage
 
-### Quick Fuzzing (60s per target)
+Run these from the repository root.
+
+### Quick Fuzzing (corpus only, up to 120s per target)
 ```bash
-make fuzz-quick
+rustup run nightly make fuzz-quick
 ```
 
-### Deep Fuzzing (8hr per target)
+### Deep Fuzzing (30 min per target)
 ```bash
-make fuzz-deep
+rustup run nightly make fuzz-deep
 ```
 
 ### Corpus Maintenance
 ```bash
 # Minimize corpus (remove redundancy)
-./scripts/minimize_corpus.sh
+(cd fuzz && ./scripts/minimize_corpus.sh)
 
 # Re-validate after changes
-./scripts/validate_corpus.sh
+(cd fuzz && ./scripts/validate_corpus.sh)
 ```
 
 ## Maintenance Notes
@@ -89,6 +91,4 @@ make fuzz-deep
 
 ## References
 
-- Design document: `.spec-workflow/specs/rust-fuzzing-enhancement/design.md`
-- Fuzzing guide: `rust/fuzz/README.md`
-- Task specification: `.spec-workflow/specs/rust-fuzzing-enhancement/tasks.md`
+- Fuzzing guide: `fuzz/README.md`
