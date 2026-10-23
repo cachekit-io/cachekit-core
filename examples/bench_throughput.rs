@@ -4,7 +4,8 @@
 //!
 //! Times cachekit-core's own calls on the realistic msgpack payload that
 //! `benches/hot_path.rs` and `benches/perf_ir.rs` use, so all three measure the
-//! same bytes. Each figure is the median of 21 batches of at least 10 ms.
+//! same bytes. Each figure is the median of 21 batches, and the median batch
+//! runs for at least 10 ms.
 //! Inputs and results go through `black_box`, so the optimizer cannot drop
 //! the work being timed. The output is a Markdown table.
 
@@ -41,17 +42,26 @@ fn ns_per_op(mut op: impl FnMut()) -> f64 {
         }
         n *= 2;
     }
-    let mut samples: Vec<f64> = (0..BATCHES)
-        .map(|_| {
-            let start = Instant::now();
-            for _ in 0..n {
-                op();
-            }
-            start.elapsed().as_nanos() as f64 / f64::from(n)
-        })
-        .collect();
-    samples.sort_by(f64::total_cmp);
-    samples[BATCHES / 2]
+    loop {
+        let mut samples: Vec<f64> = (0..BATCHES)
+            .map(|_| {
+                let start = Instant::now();
+                for _ in 0..n {
+                    op();
+                }
+                start.elapsed().as_nanos() as f64 / f64::from(n)
+            })
+            .collect();
+        samples.sort_by(f64::total_cmp);
+        let median = samples[BATCHES / 2];
+        // A pause during calibration can leave `n` too small. Judge the batches
+        // as timed, by their median rather than one by one, so no sample is
+        // dropped for being fast.
+        if median * f64::from(n) >= MIN_BATCH.as_nanos() as f64 {
+            return median;
+        }
+        n *= 2;
+    }
 }
 
 /// "1.23 µs · 0.83 GB/s". One byte per nanosecond is one GB/s.
