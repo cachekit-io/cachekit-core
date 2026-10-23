@@ -18,9 +18,9 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+# No concurrency group: GitHub keeps at most one run of a group pending and
+# cancels it when the next one queues, and several manual runs are how the
+# spread between runs is measured.
 
 # bash -eo pipefail, so a failing benchmark is not hidden by the tee after it.
 defaults:
@@ -66,4 +66,4 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Run the README benchmark
-        run: cargo run --release --example bench_throughput --features encryption | tee -a "$GITHUB_STEP_SUMMARY"
+        run: target/release/examples/bench_throughput | tee -a "$GITHUB_STEP_SUMMARY"
