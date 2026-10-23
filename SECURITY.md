@@ -178,7 +178,10 @@ caller that decodes untrusted MessagePack outside `ByteStorage` can apply the
 same rules at its own depth bound. It needs no optional feature. It returns a
 `MsgpackStructureError` whose `Display` is the bare reason, with no prefix, and
 it does not enforce the protocol's `32..=1024` range on `max_depth`: choosing
-the bound is the caller's job.
+the bound is the caller's job. Neither does it reject trailing bytes:
+`msgpack_document_len(bytes, max_depth)` runs the same walk, with the same
+errors, and returns the document's length, so a caller that must consume
+exactly one document rejects any input whose length differs from it.
 
 ### Dependencies
 
