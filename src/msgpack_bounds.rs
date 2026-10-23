@@ -19,7 +19,7 @@ fn reject(reason: impl Into<String>) -> MsgpackStructureError {
     MsgpackStructureError(reason.into())
 }
 
-/// Checks that `bytes` hold one MessagePack document whose declared structure
+/// Checks that `bytes` begin with one MessagePack document whose declared structure
 /// the input can actually back, before any decoder sees them.
 ///
 /// A header-only walk: str/bin/ext payloads are skipped by offset, never read,
