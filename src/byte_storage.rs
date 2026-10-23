@@ -3,7 +3,7 @@
 //! Provides integrity-protected byte storage with security validation:
 //! - 512MB size limits for decompression bomb protection
 //! - 1000x max compression ratio enforcement
-//! - xxHash3-64 checksums for corruption detection (19x faster than Blake3)
+//! - xxHash3-64 checksums for corruption detection
 
 #[cfg(feature = "compression")]
 use lz4_flex;

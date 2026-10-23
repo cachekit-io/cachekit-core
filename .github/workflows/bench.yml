@@ -1,0 +1,69 @@
+name: Bench
+
+# Prints the README's Performance table into the job summary, measured on
+# GitHub-hosted runners: x86-64 Linux and arm64 macOS. Run it from the Actions
+# tab to refresh the README. A PR that changes the example runs it as well, so
+# the figures a PR quotes come from the code it ships. Informational only:
+# nothing here gates a merge.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - examples/bench_throughput.rs
+      - benches/common/**
+      - .github/workflows/bench.yml
+
+permissions:
+  contents: read
+
+# No concurrency group: GitHub keeps at most one run of a group pending and
+# cancels it when the next one queues, and several manual runs are how the
+# spread between runs is measured.
+
+# bash -eo pipefail, so a failing benchmark is not hidden by the tee after it.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  readme-table:
+    name: README table / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Build
+        run: cargo build --release --example bench_throughput --features encryption
+
+      - name: Record the machine
+        env:
+          RUNNER_LABEL: ${{ matrix.os }}
+        run: |
+          {
+            echo "### $RUNNER_LABEL"
+            echo
+            echo '```text'
+            rustc --version
+            if [ "$RUNNER_OS" = macOS ]; then
+              sysctl -n machdep.cpu.brand_string hw.ncpu
+            else
+              lscpu | grep -E '^(Model name|CPU\(s\)):'
+            fi
+            echo '```'
+            echo
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Run the README benchmark
+        run: target/release/examples/bench_throughput | tee -a "$GITHUB_STEP_SUMMARY"

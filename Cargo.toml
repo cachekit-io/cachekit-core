@@ -33,7 +33,8 @@ rmp-serde = { version = "1.3", optional = true }
 lz4_flex = { version = "0.12", features = ["frame", "std"], optional = true }
 
 # Fast non-cryptographic hashing for data integrity (optional)
-# xxHash3-64: ~36 GB/s, sufficient for corruption detection (security via AES-GCM auth tag)
+# xxHash3-64: fast enough to run on every store and retrieve; it detects corruption, while
+# the AES-GCM auth tag provides security
 xxhash-rust = { version = "0.8", features = ["xxh3"], optional = true }
 
 # Encryption dependencies (all optional, gated by encryption feature)
@@ -179,3 +180,9 @@ name = "perf_ir"
 harness = false
 bench = false
 required-features = ["encryption"]
+
+# The README's Performance table. It times ByteStorage's store and retrieve, which need the
+# three default features, and encrypt/decrypt.
+[[example]]
+name = "bench_throughput"
+required-features = ["compression", "checksum", "messagepack", "encryption"]

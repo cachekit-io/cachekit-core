@@ -1,121 +1,146 @@
-//! Quick throughput verification - run with: cargo run --release --example bench_throughput --all-features
-use std::time::Instant;
+//! Wall-clock figures for the README's Performance table.
+//!
+//! Run with: `cargo run --release --example bench_throughput --features encryption`
+//!
+//! Times cachekit-core's own calls on the realistic msgpack payload that
+//! `benches/hot_path.rs` and `benches/perf_ir.rs` use, so all three measure the
+//! same bytes. Each figure is the median of 21 batches, and the median batch
+//! runs for at least 10 ms.
+//! Inputs and results go through `black_box`, so the optimizer cannot drop
+//! the work being timed. The output is a Markdown table.
 
-fn bench_size(size: usize, iterations: usize) {
-    // Compressible data (repeating pattern)
-    let data: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
-    // Pseudo-random data for encryption
-    let random: Vec<u8> = (0..size).map(|i| ((i * 17 + 31) % 256) as u8).collect();
+use std::hint::black_box;
+use std::time::{Duration, Instant};
 
-    let size_label = if size >= 1024 * 1024 {
-        format!("{}MB", size / 1024 / 1024)
-    } else if size >= 1024 {
-        format!("{}KB", size / 1024)
+use cachekit_core::{derive_domain_key, ByteStorage, StorageEnvelope, ZeroKnowledgeEncryptor};
+
+#[path = "../benches/common/mod.rs"]
+mod common;
+use common::msgpack_payload;
+
+/// A typical cached value and a large object.
+const SIZES: [usize; 2] = [1024, 64 * 1024];
+const BATCHES: usize = 21;
+const MIN_BATCH: Duration = Duration::from_millis(10);
+
+// The key, tenant and AAD fixtures of benches/perf_ir.rs.
+const MASTER_KEY: [u8; 32] = [0x42; 32];
+const TENANT: &str = "tenant-123";
+const AAD: &[u8] = b"\x03\x00\x00\x00\x0atenant-123\x00\x00\x00\x10ns:bench:func:x";
+
+/// Median nanoseconds per call of `op`.
+fn ns_per_op(mut op: impl FnMut()) -> f64 {
+    // Double the batch until one takes MIN_BATCH; this also warms up.
+    let mut n: u32 = 1;
+    loop {
+        let start = Instant::now();
+        for _ in 0..n {
+            op();
+        }
+        if start.elapsed() >= MIN_BATCH {
+            break;
+        }
+        n *= 2;
+    }
+    loop {
+        let mut samples: Vec<f64> = (0..BATCHES)
+            .map(|_| {
+                let start = Instant::now();
+                for _ in 0..n {
+                    op();
+                }
+                start.elapsed().as_nanos() as f64 / f64::from(n)
+            })
+            .collect();
+        samples.sort_by(f64::total_cmp);
+        let median = samples[BATCHES / 2];
+        // A pause during calibration can leave `n` too small. Judge the batches
+        // as timed, by their median rather than one by one, so no sample is
+        // dropped for being fast.
+        if median * f64::from(n) >= MIN_BATCH.as_nanos() as f64 {
+            return median;
+        }
+        n *= 2;
+    }
+}
+
+/// "1.23 µs · 0.83 GB/s". One byte per nanosecond is one GB/s.
+fn cell(ns: f64, bytes: usize) -> String {
+    let time = if ns < 1_000.0 {
+        format!("{ns:.0} ns")
+    } else if ns < 1_000_000.0 {
+        format!("{:.2} µs", ns / 1_000.0)
     } else {
-        format!("{}B", size)
+        format!("{:.2} ms", ns / 1_000_000.0)
     };
-
-    println!("\n=== {} data, {} iterations ===", size_label, iterations);
-
-    // LZ4 Compress
-    {
-        let start = Instant::now();
-        for _ in 0..iterations {
-            let _ = lz4_flex::compress_prepend_size(&data);
-        }
-        let elapsed = start.elapsed();
-        let bytes_per_sec = (size * iterations) as f64 / elapsed.as_secs_f64();
-        println!("LZ4 compress:    {:.2} GB/s", bytes_per_sec / 1e9);
-    }
-
-    // LZ4 Decompress
-    {
-        let compressed = lz4_flex::compress_prepend_size(&data);
-        let start = Instant::now();
-        for _ in 0..iterations {
-            let _ = lz4_flex::decompress_size_prepended(&compressed).unwrap();
-        }
-        let elapsed = start.elapsed();
-        let bytes_per_sec = (size * iterations) as f64 / elapsed.as_secs_f64();
-        println!("LZ4 decompress:  {:.2} GB/s", bytes_per_sec / 1e9);
-    }
-
-    // xxHash3-64
-    {
-        use xxhash_rust::xxh3::xxh3_64;
-        let start = Instant::now();
-        for _ in 0..iterations {
-            let _ = xxh3_64(&data);
-        }
-        let elapsed = start.elapsed();
-        let bytes_per_sec = (size * iterations) as f64 / elapsed.as_secs_f64();
-        println!("xxHash3-64:      {:.2} GB/s", bytes_per_sec / 1e9);
-    }
-
-    // AES-256-GCM Encrypt
-    #[cfg(feature = "encryption")]
-    {
-        use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
-        let key_bytes = [0u8; 32];
-        let unbound = UnboundKey::new(&AES_256_GCM, &key_bytes).unwrap();
-        let key = LessSafeKey::new(unbound);
-        let nonce_bytes = [0u8; 12];
-
-        let start = Instant::now();
-        for _ in 0..iterations {
-            let mut buf = random.clone();
-            let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-            let _ = key.seal_in_place_append_tag(nonce, Aad::empty(), &mut buf);
-        }
-        let elapsed = start.elapsed();
-        let bytes_per_sec = (size * iterations) as f64 / elapsed.as_secs_f64();
-        println!("AES-GCM enc:     {:.2} GB/s", bytes_per_sec / 1e9);
-    }
-
-    // AES-256-GCM Decrypt
-    #[cfg(feature = "encryption")]
-    {
-        use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
-        let key_bytes = [0u8; 32];
-        let unbound = UnboundKey::new(&AES_256_GCM, &key_bytes).unwrap();
-        let key = LessSafeKey::new(unbound);
-        let nonce_bytes = [0u8; 12];
-
-        let mut encrypted = random.clone();
-        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-        key.seal_in_place_append_tag(nonce, Aad::empty(), &mut encrypted)
-            .unwrap();
-
-        let start = Instant::now();
-        for _ in 0..iterations {
-            let mut buf = encrypted.clone();
-            let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-            let _ = key.open_in_place(nonce, Aad::empty(), &mut buf);
-        }
-        let elapsed = start.elapsed();
-        let bytes_per_sec = (size * iterations) as f64 / elapsed.as_secs_f64();
-        println!("AES-GCM dec:     {:.2} GB/s", bytes_per_sec / 1e9);
-    }
-
-    // Suppress unused variable warning when encryption feature is disabled
-    let _ = random;
+    format!("{time} · {:.2} GB/s", bytes as f64 / ns)
 }
 
 fn main() {
+    let storage = ByteStorage::new(None);
+    let encryptor = ZeroKnowledgeEncryptor::new().unwrap();
+    let key = derive_domain_key(&MASTER_KEY, "encryption", TENANT.as_bytes()).unwrap();
+
+    let mut rows = [
+        ("`ByteStorage::store`", Vec::new()),
+        ("`ByteStorage::retrieve`", Vec::new()),
+        ("`encrypt_aes_gcm`", Vec::new()),
+        ("`decrypt_aes_gcm`", Vec::new()),
+    ];
+    let mut ratios = Vec::new();
+    for size in SIZES {
+        let payload = msgpack_payload(size);
+        let envelope = storage.store(&payload, None).unwrap();
+        let ciphertext = encryptor.encrypt_aes_gcm(&payload, &key, AAD).unwrap();
+        let compressed = rmp_serde::from_slice::<StorageEnvelope>(&envelope)
+            .unwrap()
+            .compressed_data
+            .len();
+        ratios.push(format!("{:.2}", compressed as f64 / size as f64));
+
+        let timings = [
+            ns_per_op(|| {
+                black_box(storage.store(black_box(&payload), None).unwrap());
+            }),
+            ns_per_op(|| {
+                black_box(storage.retrieve(black_box(&envelope)).unwrap());
+            }),
+            ns_per_op(|| {
+                black_box(
+                    encryptor
+                        .encrypt_aes_gcm(black_box(&payload), &key, AAD)
+                        .unwrap(),
+                );
+            }),
+            ns_per_op(|| {
+                black_box(
+                    encryptor
+                        .decrypt_aes_gcm(black_box(&ciphertext), &key, AAD)
+                        .unwrap(),
+                );
+            }),
+        ];
+        for (row, ns) in rows.iter_mut().zip(timings) {
+            row.1.push(cell(ns, size));
+        }
+    }
+
+    let accel = if encryptor.hardware_acceleration_enabled() {
+        "yes"
+    } else {
+        "no"
+    };
     println!(
-        "Throughput benchmark ({}/{})\n",
+        "cachekit-core {} on {}/{}, AES hardware acceleration: {accel}",
+        env!("CARGO_PKG_VERSION"),
         std::env::consts::OS,
-        std::env::consts::ARCH
+        std::env::consts::ARCH,
     );
-
-    // Small data (call overhead visible)
-    bench_size(1024, 100_000); // 1KB
-
-    // Medium data (more realistic)
-    bench_size(64 * 1024, 10_000); // 64KB
-
-    // Large data (peak throughput)
-    bench_size(1024 * 1024, 100); // 1MB
-
-    println!("\nNote: 1KB shows call overhead; larger sizes show peak throughput.");
+    let ratios = ratios.join(", ");
+    println!("LZ4 compressed/raw ratio: {ratios} (1 KiB, 64 KiB)\n");
+    println!("| Operation | 1 KiB | 64 KiB |");
+    println!("|:----------|------:|-------:|");
+    for (name, cells) in rows {
+        println!("| {name} | {} |", cells.join(" | "));
+    }
 }
