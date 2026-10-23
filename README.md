@@ -339,7 +339,7 @@ Single-threaded time per call of cachekit-core's own operations, and the payload
 To print the table for your own machine, run `cargo run --release --example bench_throughput --features encryption`, or run the **Bench** workflow from the Actions tab.
 
 > [!NOTE]
-> Earlier versions of this table timed the raw LZ4, xxHash3 and AES primitives, not cachekit-core's calls, on a 256-byte repeating pattern that LZ4 compresses almost perfectly. Those figures were up to an order of magnitude higher than what `store` and `retrieve` deliver on real payloads.
+> Earlier versions of this table timed the raw LZ4, xxHash3 and AES primitives, not cachekit-core's calls, on a 256-byte repeating pattern that LZ4 compresses almost perfectly. At 64 KiB they read about 15 GB/s for LZ4 compression and 37 GB/s for decompression; on real payloads, `store` and `retrieve` in the tables above move 0.6 to 2.6 GB/s.
 
 > [!TIP]
 > Hardware acceleration is auto-detected. ARM64 uses ARM Crypto Extensions; x86-64 uses AES-NI.
