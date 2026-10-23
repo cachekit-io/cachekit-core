@@ -342,7 +342,6 @@ impl ZeroKnowledgeEncryptor {
             return Err(EncryptionError::InvalidKeyLength(key.len()));
         }
 
-        std::hint::black_box(plaintext.to_vec()); // seeded regression, reverted next commit
         // Create AES-256-GCM key
         let unbound_key = UnboundKey::new(&AES_256_GCM, key)
             .map_err(|_| EncryptionError::EncryptionFailed("Invalid key".into()))?;
