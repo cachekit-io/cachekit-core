@@ -101,7 +101,7 @@ jobs:
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Run tests before publish
-        run: cargo test --all-features
+        run: cargo test --locked --all-features
 
       - name: Package and verify the crate
         # Builds the packaged crate — the build `publish` skips with --no-verify.
@@ -139,9 +139,10 @@ jobs:
         # dependency-free crate.
         run: |
           cargo sbom --output-format cyclone_dx_json_1_6 > sbom.cdx.json
-          count=$(jq '.components | length' sbom.cdx.json)
+          count=$(jq -e '.components | length' sbom.cdx.json) || {
+            echo "::error::SBOM is empty or not JSON"; exit 1; }
           echo "SBOM components: $count"
-          if [ "$count" -lt 1 ]; then
+          if [ "${count:-0}" -lt 1 ]; then
             echo "::error::SBOM lists no components"
             exit 1
           fi
