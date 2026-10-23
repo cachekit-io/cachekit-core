@@ -1,6 +1,6 @@
 # cachekit-core - Development Makefile
 
-.PHONY: help check test lint clippy audit deny vet fmt fmt-check bench bench-quick perf-ir perf-ir-update fuzz-quick fuzz-deep sbom clean
+.PHONY: help check test lint clippy audit deny vet fmt fmt-check bench bench-quick perf-ir perf-ir-update perf-ir-vs-base fuzz-quick fuzz-deep sbom clean
 .DEFAULT_GOAL := help
 
 # Colors for output
@@ -94,6 +94,14 @@ perf-ir: ## Instruction-count gate: fail on >=1% Ir/op regression (needs valgrin
 perf-ir-update: ## Ratchet Ir/op budgets down to the measured figures (never up)
 	$(call require_binary,cargo,Install Rust: https://rustup.rs)
 	@cargo bench -p cachekit-core --features encryption --bench perf_ir -- --update $(ARGS)
+
+# The CI form of the gate: measures the merge-base with PERF_IR_BASE on this
+# machine, then gates the working tree against those figures, so it needs no
+# committed budgets for this machine. Needs valgrind and git.
+PERF_IR_BASE ?= origin/main
+perf-ir-vs-base: ## Instruction-count gate against the merge-base with PERF_IR_BASE (default origin/main)
+	$(call require_binary,cargo,Install Rust: https://rustup.rs)
+	@scripts/perf-ir-vs-base.sh $(PERF_IR_BASE) $(ARGS)
 
 fuzz-quick: ## Quick corpus-only fuzz run (2 min per target)
 	@echo "$(BLUE)Running quick fuzzing (2 min per target)...$(RESET)"
