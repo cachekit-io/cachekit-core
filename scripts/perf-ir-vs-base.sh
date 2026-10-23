@@ -36,7 +36,15 @@ echo "== base $base: recording Ir/op on this machine"
 git -C "$root" worktree add --detach "$scratch/base" "$base" >/dev/null
 # --update --allow-increase on every case re-records the base's own budget
 # file with this machine's figures, whatever toolchain the committed set had.
-(cd "$scratch/base" && "${gate[@]}" --update --allow-increase "$@" && cases >"$scratch/base-cases")
+# The base builds into its own target dir, never the working tree's: in a
+# shared one, cargo's mtime check can take the base build's newer outputs as
+# fresh for the head's older sources and gate the base binary against itself.
+(
+  cd "$scratch/base"
+  export CARGO_TARGET_DIR="$scratch/base-target"
+  "${gate[@]}" --update --allow-increase "$@"
+  cases >"$scratch/base-cases"
+)
 cp "$scratch/base/benches/perf_ir_baselines.json" "$scratch/budgets.json"
 
 echo "== head $(git -C "$root" rev-parse HEAD): gating against the base figures"
