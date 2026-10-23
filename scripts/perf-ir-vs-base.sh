@@ -43,9 +43,14 @@ cp -R "$root/benches" "$scratch/base/benches"
 # The base builds into its own target dir, never the working tree's: in a
 # shared one, cargo's mtime check can take the base build's newer outputs as
 # fresh for the head's older sources and gate the base binary against itself.
+# The copied benches build against the base's Cargo.toml and Cargo.lock, never
+# the head's: taking the head's would measure the base library with the head's
+# dependencies and hide a dependency regression. So a change that adds a bench
+# dev-dependency or edits a [[bench]] target cannot be compared here either.
 if ! (cd "$scratch/base" && CARGO_TARGET_DIR="$scratch/base-target" "${gate[@]}" --update --allow-increase "$@"); then
-  echo "perf-ir-vs-base: the working tree's benches/ could not measure the base library;" \
-    "if they call API the base does not have, the change is not comparable here" >&2
+  echo "perf-ir-vs-base: not comparable: the working tree's benches/ could not build or run against" \
+    "the base. They may call API the base lacks, or this change edits bench dev-dependencies or" \
+    "[[bench]] targets in Cargo.toml." >&2
   exit 2
 fi
 cp "$scratch/base/benches/perf_ir_baselines.json" "$scratch/budgets.json"
