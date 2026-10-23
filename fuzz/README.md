@@ -32,10 +32,10 @@ Run these from the repository root.
 rustup run nightly make fuzz-quick
 
 # Fuzz single target for development (60 seconds)
-cd fuzz && cargo +nightly fuzz run byte_storage_corrupted_envelope -- -max_total_time=60
+(cd fuzz && cargo +nightly fuzz run byte_storage_corrupted_envelope -- -max_total_time=60)
 
 # Deep fuzzing of one target (8 hours, production validation)
-cd fuzz && cargo +nightly fuzz run encryption_key_derivation -- -max_total_time=28800
+(cd fuzz && cargo +nightly fuzz run encryption_key_derivation -- -max_total_time=28800)
 ```
 
 For a coverage report, see [Coverage Reporting](#coverage-reporting).
@@ -126,13 +126,13 @@ fuzz/corpus/
 Run these from the repository root.
 ```bash
 # Generate initial corpus from test fixtures
-cd fuzz && ./scripts/generate_corpus.sh
+(cd fuzz && ./scripts/generate_corpus.sh)
 
 # Minimize corpus (deduplicate, reduce size)
-cd fuzz && ./scripts/minimize_corpus.sh
+(cd fuzz && ./scripts/minimize_corpus.sh)
 
 # Validate corpus integrity (< 10MB total)
-cd fuzz && ./scripts/validate_corpus.sh
+(cd fuzz && ./scripts/validate_corpus.sh)
 ```
 
 **Corpus Size Limit**: Total corpus should remain under 10MB for fast CI smoke tests.
@@ -156,7 +156,7 @@ Run before releases or periodically, from the repository root:
 rustup run nightly make fuzz-deep
 
 # One target, 8 hours (production-grade validation)
-cd fuzz && cargo +nightly fuzz run encryption_key_derivation -- -max_total_time=28800
+(cd fuzz && cargo +nightly fuzz run encryption_key_derivation -- -max_total_time=28800)
 ```
 
 ## Crash Triage
@@ -164,7 +164,7 @@ cd fuzz && cargo +nightly fuzz run encryption_key_derivation -- -max_total_time=
 ### Automated Crash Analysis
 ```bash
 # Triage crashes: deduplicate, minimize, generate regression tests (from the repository root)
-cd fuzz && ./scripts/triage_crashes.sh
+(cd fuzz && ./scripts/triage_crashes.sh)
 
 # Output: fuzz/triage_report.txt (git-ignored) with stack traces and minimized inputs
 ```
@@ -220,7 +220,7 @@ cargo install cargo-fuzz
 
 **"Corpus too large (>10MB)"**
 ```bash
-cd fuzz && ./scripts/minimize_corpus.sh
+(cd fuzz && ./scripts/minimize_corpus.sh)
 ```
 
 **"Fuzzing too slow"**
@@ -266,7 +266,7 @@ When adding new fuzz targets:
 3. Create corpus subdirectory with `.gitkeep`
 4. Document attack vector in this README
 5. Add target to `FUZZ_TARGETS` list in `fuzz/Makefile` and to the `quick-fuzz` matrix in `.github/workflows/security.yml`
-6. Verify with `cd fuzz && cargo +nightly fuzz run your_new_target -- -max_total_time=60`
+6. Verify with `(cd fuzz && cargo +nightly fuzz run your_new_target -- -max_total_time=60)`
 
 ## References
 

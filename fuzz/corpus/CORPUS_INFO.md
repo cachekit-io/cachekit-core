@@ -76,10 +76,10 @@ rustup run nightly make fuzz-deep
 ### Corpus Maintenance
 ```bash
 # Minimize corpus (remove redundancy)
-cd fuzz && ./scripts/minimize_corpus.sh
+(cd fuzz && ./scripts/minimize_corpus.sh)
 
 # Re-validate after changes
-cd fuzz && ./scripts/validate_corpus.sh
+(cd fuzz && ./scripts/validate_corpus.sh)
 ```
 
 ## Maintenance Notes
