@@ -90,7 +90,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
@@ -121,7 +121,7 @@ jobs:
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
       sha256: ${{ steps.sbom.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
@@ -176,7 +176,7 @@ jobs:
       # `verify`), no cache, and no third-party action besides
       # rust-lang/crates-io-auth-action, which mints the token. The rest are
       # first-party actions/*.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
