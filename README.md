@@ -318,26 +318,25 @@ Single-threaded time per call of cachekit-core's own operations, and the payload
 
 | Operation | 1 KiB | 64 KiB |
 |:----------|------:|-------:|
-| `ByteStorage::store` | 1.47 µs · 0.70 GB/s | 63.45 µs · 1.03 GB/s |
-| `ByteStorage::retrieve` | 550 ns · 1.86 GB/s | 25.47 µs · 2.57 GB/s |
-| `encrypt_aes_gcm` | 530 ns · 1.93 GB/s | 33.60 µs · 1.95 GB/s |
-| `decrypt_aes_gcm` | 449 ns · 2.28 GB/s | 11.32 µs · 5.79 GB/s |
+| `ByteStorage::store` | 1.46 µs · 0.70 GB/s | 63.31 µs · 1.04 GB/s |
+| `ByteStorage::retrieve` | 555 ns · 1.84 GB/s | 25.26 µs · 2.59 GB/s |
+| `encrypt_aes_gcm` | 444 ns · 2.31 GB/s | 10.93 µs · 5.99 GB/s |
+| `decrypt_aes_gcm` | 455 ns · 2.25 GB/s | 10.52 µs · 6.23 GB/s |
 
 **arm64 macOS**: `macos-latest` runner, Apple M1 (virtual, 3 vCPUs), ARM Crypto Extensions
 
 | Operation | 1 KiB | 64 KiB |
 |:----------|------:|-------:|
-| `ByteStorage::store` | 2.06 µs · 0.50 GB/s | 111.08 µs · 0.59 GB/s |
-| `ByteStorage::retrieve` | 599 ns · 1.71 GB/s | 25.51 µs · 2.57 GB/s |
-| `encrypt_aes_gcm` | 710 ns · 1.44 GB/s | 18.99 µs · 3.45 GB/s |
-| `decrypt_aes_gcm` | 562 ns · 1.82 GB/s | 16.11 µs · 4.07 GB/s |
+| `ByteStorage::store` | 1.81 µs · 0.57 GB/s | 98.92 µs · 0.66 GB/s |
+| `ByteStorage::retrieve` | 602 ns · 1.70 GB/s | 21.46 µs · 3.05 GB/s |
+| `encrypt_aes_gcm` | 526 ns · 1.95 GB/s | 13.79 µs · 4.75 GB/s |
+| `decrypt_aes_gcm` | 568 ns · 1.80 GB/s | 13.26 µs · 4.94 GB/s |
 
 - `store` compresses with LZ4, checksums with xxHash3-64 and wraps both in the MessagePack envelope. `retrieve` checks the envelope, decompresses and verifies the checksum.
 - `encrypt_aes_gcm` and `decrypt_aes_gcm` are `ZeroKnowledgeEncryptor`'s AES-256-GCM calls with a 34-byte AAD.
-- `encrypt_aes_gcm` copies the plaintext more often than `decrypt_aes_gcm` copies the ciphertext. At 64 KiB that shows on some CPUs: on the EPYC 7763, encrypting took three times as long as decrypting.
 - The payload is MessagePack-encoded records (`benches/common/mod.rs`), the corpus `hot_path` and `perf_ir` also use. LZ4 compresses it to 0.57 of its size at 1 KiB and to 0.38 at 64 KiB.
 - Each figure is the median of 21 timed batches, from one run on the CPU named. Three runs on the EPYC 7763 agreed within 12%, and within 3% on all but one cell; five arm64 runs varied by up to 2x on a cell.
-- Hosted runners are shared virtual machines, and x86-64 ones also come with other CPU models (AMD EPYC 9V74 and 9V45, Intel Xeon 6973P-C). On those the same calls took from a quarter as long (`encrypt_aes_gcm` at 64 KiB on the 9V45) to 1.4 times as long (`store` at 64 KiB on the Xeon). Other machines give other figures.
+- Hosted runners are shared virtual machines, and x86-64 ones also come with other CPU models (AMD EPYC 9V74 and 9V45, Intel Xeon 6973P-C). On those the same calls took different times, for example 0.6 times as long (`decrypt_aes_gcm` at 64 KiB on the 9V45) and 1.4 times as long (`store` at 64 KiB on the Xeon). Other machines give other figures.
 
 To print the table for your own machine, run `cargo run --release --example bench_throughput --features encryption`, or run the **Bench** workflow from the Actions tab.
 
