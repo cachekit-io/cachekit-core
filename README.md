@@ -336,7 +336,7 @@ Single-threaded time per call of cachekit-core's own operations, and the payload
 - `encrypt_aes_gcm` and `decrypt_aes_gcm` are `ZeroKnowledgeEncryptor`'s AES-256-GCM calls with a 34-byte AAD.
 - The payload is MessagePack-encoded records (`benches/common/mod.rs`), the corpus `hot_path` and `perf_ir` also use. LZ4 compresses it to 0.57 of its size at 1 KiB and to 0.38 at 64 KiB.
 - Each figure is the median of 21 timed batches, from one run on the CPU named. Three runs on the EPYC 7763 agreed within 12%, and within 3% on all but one cell; five arm64 runs varied by up to 2x on a cell.
-- Hosted runners are shared virtual machines, and x86-64 ones also come with other CPU models (AMD EPYC 9V74 and 9V45, Intel Xeon 6973P-C). On those the same calls took different times, for example 0.6 times as long (`decrypt_aes_gcm` at 64 KiB on the 9V45) and 1.4 times as long (`store` at 64 KiB on the Xeon). Other machines give other figures.
+- Hosted runners are shared virtual machines, and x86-64 ones also come with other CPU models (AMD EPYC 9V74 and 9V45, Intel Xeon 6973P-C). On those, the same calls took different times, for example 0.6 times as long (`decrypt_aes_gcm` at 64 KiB on the 9V45) and 1.4 times as long (`store` at 64 KiB on the Xeon). Other machines give other figures.
 
 To print the table for your own machine, run `cargo run --release --example bench_throughput --features encryption`, or run the **Bench** workflow from the Actions tab.
 
