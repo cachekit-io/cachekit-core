@@ -351,20 +351,20 @@ impl ZeroKnowledgeEncryptor {
         let nonce_bytes = self.generate_nonce()?;
         let nonce = Nonce::assume_unique_for_key(nonce_bytes);
 
-        // Prepare plaintext for in-place encryption
-        let mut ciphertext = Vec::from(plaintext);
+        // Build the output in one buffer sized for [nonce(12)][ciphertext][tag(16)]
+        // and seal the plaintext in place after the nonce: one allocation, one copy.
+        // seal_in_place_append_tag would grow an exact-size Vec by the tag, which
+        // reallocates and copies the payload again.
+        let mut result = Vec::with_capacity(12 + plaintext.len() + 16);
+        result.extend_from_slice(&nonce_bytes);
+        result.extend_from_slice(plaintext);
 
-        // Encrypt in-place with authentication
-        aead_key
-            .seal_in_place_append_tag(nonce, Aad::from(aad), &mut ciphertext)
+        let tag = aead_key
+            .seal_in_place_separate_tag(nonce, Aad::from(aad), &mut result[12..])
             .map_err(|e| {
                 EncryptionError::EncryptionFailed(format!("AES-GCM encryption failed: {:?}", e))
             })?;
-
-        // Format result: nonce + encrypted_data_with_tag
-        let mut result = Vec::with_capacity(12 + ciphertext.len());
-        result.extend_from_slice(&nonce_bytes);
-        result.extend_from_slice(&ciphertext);
+        result.extend_from_slice(tag.as_ref());
 
         Ok(result)
     }
