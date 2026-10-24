@@ -236,8 +236,8 @@ jobs:
         # Downloads what crates.io now serves and compares it with the digest
         # the attestations name. A mismatch means the attestations cover a
         # file nobody can download. The crate is already live and a version
-        # cannot be re-uploaded, so a re-run cannot repair it: yank the
-        # version and release a patch. This step makes the mismatch loud.
+        # cannot be re-uploaded, so a re-run cannot repair it: release a
+        # patch, then yank the version. This step makes the mismatch loud.
         run: |
           mkdir "$RUNNER_TEMP/uploaded"
           for path in target/package/cachekit-core-[0-9]*.crate; do
@@ -247,6 +247,6 @@ jobs:
           done
           cd "$RUNNER_TEMP/uploaded"
           if ! sha256sum --strict -c ../attested.sha256; then
-            echo "::error::crates.io serves a .crate that differs from the attested file. The version is live and cannot be re-uploaded: do not re-run. Yank the version, then release a patch."
+            echo "::error::crates.io serves a .crate that differs from the attested file. The version is live and cannot be re-uploaded: do not re-run. Release a patch, then yank the version."
             exit 1
           fi
