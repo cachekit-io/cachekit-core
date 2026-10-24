@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.7.0...cachekit-core-v0.7.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **bench:** measure cachekit-core's own calls for the README performance table (LAB-10638) ([#117](https://github.com/cachekit-io/cachekit-core/issues/117)) ([c96707c](https://github.com/cachekit-io/cachekit-core/commit/c96707c83b2cdb92a756420fd264c97636cc3fcf))
+
+
+### Performance Improvements
+
+* **encryption:** seal in one buffer so encrypt allocates and copies once (LAB-10640) ([#127](https://github.com/cachekit-io/cachekit-core/issues/127)) ([58a4bcb](https://github.com/cachekit-io/cachekit-core/commit/58a4bcbce2c34fa9a44cd7a290887c99bca9928f))
+* **msgpack:** report the document length from the structural walk (LAB-10538) ([#120](https://github.com/cachekit-io/cachekit-core/issues/120)) ([b695bb3](https://github.com/cachekit-io/cachekit-core/commit/b695bb3e4f75ab5a5b69cd91e7db58f23a12631e))
+
 ## [0.7.0](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.6.0...cachekit-core-v0.7.0) (2026-10-08)
 
 
