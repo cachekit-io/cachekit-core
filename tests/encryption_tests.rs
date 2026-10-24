@@ -1061,3 +1061,36 @@ mod error_handling {
         );
     }
 }
+
+// ============================================================================
+// Differential Test (independent AES-256-GCM oracle)
+// ============================================================================
+
+// Native only: there encrypt_aes_gcm runs on ring, so RustCrypto's aes-gcm is an
+// independent implementation to check its output bytes against.
+#[cfg(not(target_arch = "wasm32"))]
+mod oracle {
+    use super::*;
+    use aes_gcm::aead::{Aead, KeyInit, Payload};
+    use aes_gcm::{Aes256Gcm, Nonce};
+
+    #[test]
+    fn test_output_matches_independent_aes_gcm() {
+        let key = [0x42u8; 32];
+        let aad = b"ns:test:func:mod.fn:args:oracle";
+        let encryptor = ZeroKnowledgeEncryptor::new().unwrap();
+        let oracle = Aes256Gcm::new_from_slice(&key).unwrap();
+
+        // Around the 16-byte AES block boundary, plus the empty and large cases.
+        for len in [0usize, 1, 15, 16, 17, 1024, 65536] {
+            let msg: Vec<u8> = (0..len).map(|i| (i * 31 + 7) as u8).collect();
+            let out = encryptor.encrypt_aes_gcm(&msg, &key, aad).unwrap();
+
+            assert_eq!(out.len(), 12 + len + 16, "output length at {len}");
+            let expected = oracle
+                .encrypt(Nonce::from_slice(&out[..12]), Payload { msg: &msg, aad })
+                .unwrap();
+            assert_eq!(&out[12..], &expected[..], "ciphertext+tag differ at {len}");
+        }
+    }
+}
