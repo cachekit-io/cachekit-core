@@ -353,8 +353,8 @@ impl ZeroKnowledgeEncryptor {
 
         // Build the output in one buffer sized for [nonce(12)][ciphertext][tag(16)]
         // and seal the plaintext in place after the nonce: one allocation, one copy.
-        // seal_in_place_append_tag would grow an exact-size Vec by the tag, which
-        // reallocates and copies the payload again.
+        // seal_in_place_append_tag seals the whole buffer, so the nonce prefix could
+        // not share it, and growing a separate exact-size Vec by the tag reallocates.
         let mut result = Vec::with_capacity(12 + plaintext.len() + 16);
         result.extend_from_slice(&nonce_bytes);
         result.extend_from_slice(plaintext);

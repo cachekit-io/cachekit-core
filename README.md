@@ -335,13 +335,13 @@ Single-threaded time per call of cachekit-core's own operations, and the payload
 - `store` compresses with LZ4, checksums with xxHash3-64 and wraps both in the MessagePack envelope. `retrieve` checks the envelope, decompresses and verifies the checksum.
 - `encrypt_aes_gcm` and `decrypt_aes_gcm` are `ZeroKnowledgeEncryptor`'s AES-256-GCM calls with a 34-byte AAD.
 - The payload is MessagePack-encoded records (`benches/common/mod.rs`), the corpus `hot_path` and `perf_ir` also use. LZ4 compresses it to 0.57 of its size at 1 KiB and to 0.38 at 64 KiB.
-- Each figure is the median of 21 timed batches, from one run on the CPU named. Three runs on the EPYC 7763 agreed within 12%, and within 3% on all but one cell; five arm64 runs varied by up to 2x on a cell.
+- Each figure is the median of 21 timed batches, from one run on the CPU named. Two runs of this code on the EPYC 7763 agreed within 2% on every cell but one (`decrypt_aes_gcm` at 64 KiB, 23%); three arm64 runs varied by up to 30% on a cell.
 - Hosted runners are shared virtual machines, and x86-64 ones also come with other CPU models (AMD EPYC 9V74 and 9V45, Intel Xeon 6973P-C). On those, the same calls took different times, for example 0.6 times as long (`decrypt_aes_gcm` at 64 KiB on the 9V45) and 1.4 times as long (`store` at 64 KiB on the Xeon). Other machines give other figures.
 
 To print the table for your own machine, run `cargo run --release --example bench_throughput --features encryption`, or run the **Bench** workflow from the Actions tab.
 
 > [!NOTE]
-> Earlier versions of this table timed the raw LZ4, xxHash3 and AES primitives, not cachekit-core's calls, on a 256-byte repeating pattern that LZ4 compresses almost perfectly. At 64 KiB they read about 15 GB/s for LZ4 compression and 37 GB/s for decompression; on real payloads, `store` and `retrieve` in the tables above move 0.6 to 2.6 GB/s.
+> Earlier versions of this table timed the raw LZ4, xxHash3 and AES primitives, not cachekit-core's calls, on a 256-byte repeating pattern that LZ4 compresses almost perfectly. At 64 KiB they read about 15 GB/s for LZ4 compression and 37 GB/s for decompression; on real payloads, `store` and `retrieve` in the tables above move 0.6 to 3.1 GB/s.
 
 > [!TIP]
 > Hardware acceleration is auto-detected. ARM64 uses ARM Crypto Extensions; x86-64 uses AES-NI.

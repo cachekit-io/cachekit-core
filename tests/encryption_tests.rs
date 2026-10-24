@@ -1063,7 +1063,7 @@ mod error_handling {
 }
 
 // ============================================================================
-// Known-Answer Tests (independent AES-256-GCM oracle)
+// Differential Test (independent AES-256-GCM oracle)
 // ============================================================================
 
 // Native only: there encrypt_aes_gcm runs on ring, so RustCrypto's aes-gcm is an
