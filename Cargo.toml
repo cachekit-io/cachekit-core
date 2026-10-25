@@ -115,7 +115,7 @@ messagepack = ["dep:rmp-serde"]
 # Encryption (AES-256-GCM with HKDF-SHA256 key derivation)
 # Native: ring provides hardware-accelerated AES-256-GCM (target-conditional dep above)
 # wasm32: aes-gcm (pure Rust) is used instead — automatically selected via cfg(target_arch)
-# aes-gcm/aes/getrandom compile on native but are dead code (all usage behind wasm32 cfg);
+# aes-gcm/aes/getrandom compile on native but are dead code in non-test native builds;
 # the compiler optimizes them out.
 encryption = [
     "dep:ring",
