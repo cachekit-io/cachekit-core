@@ -298,10 +298,6 @@ criteria = "safe-to-deploy"
 version = "1.1.1+spec-1.1.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.twox-hash]]
-version = "2.1.2"
-criteria = "safe-to-deploy"
-
 [[exemptions.typenum]]
 version = "1.20.0"
 criteria = "safe-to-deploy"

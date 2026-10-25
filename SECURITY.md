@@ -84,9 +84,35 @@ including when the envelope declares `original_size == 0`.
 the decompressed output is bounded by `min(512 MiB, 1000 × compressed_data.len())`
 regardless of what the envelope claims. `extract` then re-checks the produced
 length, because a decompressor's size argument sizes a buffer; it never asserts
-the decoded length. Keep `lz4_flex`'s default `safe-decode` feature on: it
-decodes into a zero-filled fixed-length buffer, where the non-safe decoder uses
-`with_capacity` + `set_len`.
+the decoded length. `Cargo.toml` turns `lz4_flex`'s default features off and
+sets `safe-decode` and `checked-decode` explicitly, so they no longer depend on
+upstream defaults. Keep `safe-decode` on: decode input is untrusted, and it
+selects the decoder that runs under `forbid(unsafe_code)` and decodes into a
+zero-filled fixed-length buffer, where the non-safe decoder uses
+`with_capacity` + `set_len` (RUSTSEC-2026-0041 was a bug in that block
+decoder).
+
+The encoder is `lz4_flex`'s unsafe one (`safe-encode` off) on 64-bit targets.
+It runs the same matching algorithm as the safe encoder and writes the same
+bytes, with unchecked pointer reads and writes (into the output's uninitialised
+capacity, followed by `set_len`) in place of bounds-checked slice access, which
+makes each compression cheaper. Its input is the caller's value, which can
+carry attacker-chosen bytes, so the `byte_storage_compress` fuzz target builds
+`lz4_flex` with the same features (`fuzz/Cargo.toml`; a default-features entry
+there would unify the safe encoder back in).
+
+Every target narrower than 64 bits (i686, armv7, 32-bit Windows, wasm32) keeps
+the safe encoder through a target-specific dependency. In `lz4_flex` 0.12 the
+encoder sizes its output with `input_len * 110 / 100` in `usize`, which wraps
+on a 32-bit target for inputs above about 37 MiB, below this crate's 512 MiB
+input cap. The unsafe encoder's capacity check uses the same wrapped figure, so
+it would write past its allocation; the safe encoder panics instead. On wasm32
+the value, the encoder and any key material also share one linear memory, and
+the fuzzers and Miri run on 64-bit targets only.
+
+Below 64 bytes, `StorageEnvelope::new` does not call the encoder at all. It
+writes the input as one literals-only LZ4 block, which every LZ4 block decoder
+reads.
 
 - **`original_size` does not act as a bound.** It is attacker-controlled on any
   backend an attacker can write to. It *does* size the allocation, but only

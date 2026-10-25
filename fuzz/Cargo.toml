@@ -13,7 +13,10 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
 rmp-serde = "1"
-lz4_flex = "0.12"
+# Must match cachekit-core's native lz4_flex features: a default-features entry
+# here would unify `safe-encode` back on, and the fuzzers would exercise the
+# safe encoder instead of the one that ships.
+lz4_flex = { version = "0.12", default-features = false, features = ["std", "safe-decode", "checked-decode"] }
 
 [dependencies.cachekit-core]
 path = ".."

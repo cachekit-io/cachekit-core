@@ -45,6 +45,47 @@ const MAX_COMPRESSED_SIZE: usize = 512 * 1024 * 1024; // 512MB limit
 /// Uses u64 for integer-only arithmetic to prevent floating-point precision bypass attacks
 const MAX_COMPRESSION_RATIO: u64 = 1000;
 
+/// Inputs shorter than this are written as one literals-only LZ4 block instead
+/// of going through `lz4_flex::compress`.
+///
+/// `lz4_flex::compress` zeroes an 8 KiB hash table on every call, which costs
+/// more than the whole store for a tiny value, and below LZ4's 13-byte minimum
+/// its output is literals-only anyway. The price is stored size: a compressible
+/// input under the threshold is no longer shrunk; its block is the input plus
+/// 1 byte (plus 2 from 15 bytes up). Compressed bytes are not canonical
+/// (protocol `spec/wire-format.md`, "Compressed-byte reproducibility"), and
+/// every reader decodes a literals-only block.
+#[cfg(feature = "compression")]
+const LITERAL_BLOCK_THRESHOLD: usize = 64;
+
+// The literal block writes the length in at most one extra byte, which holds
+// for literal lengths up to 15 + 254.
+#[cfg(feature = "compression")]
+const _: () = assert!(LITERAL_BLOCK_THRESHOLD - 1 <= 15 + 254);
+
+/// The LZ4 block `StorageEnvelope::new` writes for `data`.
+///
+/// Below the threshold it is one LZ4 sequence with no match: a token whose
+/// high nibble is the literal length (15 = one more length byte follows), then
+/// the literals. This is the LZ4 block format's last-sequence form, so it is a
+/// complete block on its own.
+#[cfg(feature = "compression")]
+fn compress_block(data: &[u8]) -> Vec<u8> {
+    if data.len() >= LITERAL_BLOCK_THRESHOLD {
+        return lz4_flex::compress(data);
+    }
+    let len = data.len();
+    let mut block = Vec::with_capacity(len + 2);
+    if len < 15 {
+        block.push((len as u8) << 4);
+    } else {
+        block.push(0xF0);
+        block.push((len - 15) as u8);
+    }
+    block.extend_from_slice(data);
+    block
+}
+
 /// Storage envelope for raw byte storage
 /// Contains compressed data with integrity checking
 #[derive(Serialize, Deserialize)]
@@ -79,8 +120,8 @@ impl StorageEnvelope {
 
         let original_size = data.len() as u32;
 
-        // Compress with LZ4
-        let compressed_data = lz4_flex::compress(data);
+        // Compress with LZ4 (a literals-only block below LITERAL_BLOCK_THRESHOLD)
+        let compressed_data = compress_block(data);
 
         // Security: Check compressed size
         if compressed_data.len() > MAX_COMPRESSED_SIZE {
@@ -236,7 +277,8 @@ impl ByteStorage {
         Ok((data, envelope.format))
     }
 
-    /// Get compression ratio for given data
+    /// Get compression ratio for given data: input length over the length of
+    /// the LZ4 block `store()` writes for it
     #[cfg(feature = "compression")]
     pub fn estimate_compression(&self, data: &[u8]) -> Result<f64, ByteStorageError> {
         // Security: Check size before compression
@@ -244,7 +286,7 @@ impl ByteStorage {
             return Err(ByteStorageError::InputTooLarge);
         }
 
-        let compressed = lz4_flex::compress(data);
+        let compressed = compress_block(data);
 
         Ok(data.len() as f64 / compressed.len() as f64)
     }
@@ -328,9 +370,113 @@ mod tests {
 
     #[test]
     fn test_compression_works() {
-        let data = b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_vec(); // Highly compressible
+        // At the threshold, so it takes the lz4_flex path, not the literal block
+        let data = vec![b'a'; LITERAL_BLOCK_THRESHOLD]; // Highly compressible
         let envelope = StorageEnvelope::new(&data, "test".to_string()).unwrap();
         assert!(envelope.compressed_data.len() < data.len());
+    }
+
+    #[test]
+    fn below_threshold_writes_a_literals_only_block() {
+        for len in [0, 1, 14, 15, LITERAL_BLOCK_THRESHOLD - 1] {
+            // Compressible, so a literals-only block is the writer's choice,
+            // not what lz4_flex would emit anyway
+            let data = vec![b'a'; len];
+            let envelope = StorageEnvelope::new(&data, "test".to_string()).unwrap();
+            let block = &envelope.compressed_data;
+
+            let token = block[0];
+            assert_eq!(token & 0x0F, 0, "len {len}: token has a match length");
+            let header = if len < 15 {
+                assert_eq!(usize::from(token >> 4), len, "len {len}: literal length");
+                1
+            } else {
+                assert_eq!(token >> 4, 15, "len {len}: literal length nibble");
+                assert_eq!(usize::from(block[1]) + 15, len, "len {len}: length byte");
+                2
+            };
+            assert_eq!(&block[header..], &data[..], "len {len}: literals");
+            assert_eq!(lz4_flex::decompress(block, len).unwrap(), data, "len {len}");
+        }
+    }
+
+    #[test]
+    fn at_threshold_writes_lz4_flex_output() {
+        for data in [
+            vec![b'a'; LITERAL_BLOCK_THRESHOLD],
+            (0..LITERAL_BLOCK_THRESHOLD as u8).collect::<Vec<u8>>(),
+        ] {
+            let envelope = StorageEnvelope::new(&data, "test".to_string()).unwrap();
+            assert_eq!(envelope.compressed_data, lz4_flex::compress(&data));
+        }
+    }
+
+    #[test]
+    fn below_threshold_incompressible_input_matches_lz4_flex() {
+        // Distinct bytes leave lz4_flex no match, so its output is a literals-only
+        // block too: the literal-block writer changes no bytes for such input
+        for len in 0..LITERAL_BLOCK_THRESHOLD {
+            let data: Vec<u8> = (0..len as u8).collect();
+            assert_eq!(
+                compress_block(&data),
+                lz4_flex::compress(&data),
+                "len {len}"
+            );
+        }
+    }
+
+    #[test]
+    fn store_roundtrips_around_and_above_threshold() {
+        // Repetitive, periodic and pseudo-random inputs either side of the
+        // threshold, so the lz4_flex encoder's match, literal and end-of-input
+        // paths all run (and run under Miri, which checks the unsafe encoder)
+        let storage = ByteStorage::new(None);
+        let mut state: u32 = 0x9E37_79B9;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as u8
+        };
+        for len in [
+            LITERAL_BLOCK_THRESHOLD - 1,
+            LITERAL_BLOCK_THRESHOLD,
+            LITERAL_BLOCK_THRESHOLD + 1,
+            100,
+            1000,
+            4103,
+        ] {
+            let inputs = [
+                vec![b'z'; len],
+                (0..len).map(|i| (i % 251) as u8).collect::<Vec<u8>>(),
+                (0..len).map(|_| next()).collect::<Vec<u8>>(),
+            ];
+            for data in inputs {
+                let stored = storage.store(&data, None).unwrap();
+                assert_eq!(storage.retrieve(&stored).unwrap().0, data, "len {len}");
+            }
+        }
+    }
+
+    #[test]
+    fn estimate_compression_reports_what_store_writes() {
+        let storage = ByteStorage::new(None);
+        for len in [
+            0,
+            32,
+            LITERAL_BLOCK_THRESHOLD - 1,
+            LITERAL_BLOCK_THRESHOLD,
+            1024,
+        ] {
+            let data = vec![b'a'; len];
+            let envelope = StorageEnvelope::new(&data, "test".to_string()).unwrap();
+            let expected = len as f64 / envelope.compressed_data.len() as f64;
+            assert_eq!(
+                storage.estimate_compression(&data).unwrap(),
+                expected,
+                "len {len}"
+            );
+        }
     }
 
     #[test]
