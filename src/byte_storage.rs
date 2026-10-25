@@ -45,17 +45,25 @@ const MAX_COMPRESSED_SIZE: usize = 512 * 1024 * 1024; // 512MB limit
 /// Uses u64 for integer-only arithmetic to prevent floating-point precision bypass attacks
 const MAX_COMPRESSION_RATIO: u64 = 1000;
 
-/// Envelope length from which `store` encodes through `rmp_serde::to_vec`'s
-/// growing buffer instead of a buffer allocated once at the exact length.
+/// Buffer length from which `store` and `retrieve` keep their copying
+/// allocation pattern. `store` compares the encoded envelope length: from
+/// here on it encodes through `rmp_serde::to_vec`'s growing buffer instead of
+/// a buffer allocated once at the exact length. `retrieve` and `validate`
+/// compare the compressed payload length: from here on they copy the payload
+/// out of the input instead of borrowing it.
 ///
-/// glibc's malloc raises its mmap and trim thresholds to the largest mmap-ed
-/// chunk freed so far, so dropping one payload-sized buffer can send a large
-/// store's other payload-sized buffers to fresh pages on every call. For a
-/// large envelope, `to_vec`'s doubled reallocation is often that chunk: with
-/// an exact-size buffer instead, 1 MB incompressible stores took about a
-/// third more page faults and 30% more CPU under glibc's defaults.
-/// Below 64 KiB the growing buffer stays under glibc's minimum mmap threshold
-/// (128 KiB) even doubled, so it is never mmap-ed, and replacing it cannot
+/// glibc's malloc raises its mmap threshold to the largest mmap-ed chunk
+/// freed so far, and its trim threshold to twice that, and trims the top of the heap once it holds more free
+/// memory than the trim threshold, so dropping one payload-sized buffer can
+/// send a large operation's other payload-sized buffers to fresh pages on
+/// every call. Measured on 1 MB incompressible values under glibc's defaults:
+/// an exact-size store buffer took about a third more page faults and 30%
+/// more CPU per store (`to_vec`'s doubled reallocation had been the chunk that
+/// raised the thresholds), and a borrowed payload took each read from no page
+/// faults to about a thousand, several times the CPU (its remaining buffers
+/// grew the heap past the trim threshold and were trimmed again every call).
+/// Below 64 KiB neither buffer reaches glibc's minimum mmap threshold
+/// (128 KiB), even doubled, so it is never mmap-ed, and removing it cannot
 /// move either threshold.
 #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
 const LARGE_PAYLOAD: usize = 64 * 1024;
@@ -103,6 +111,8 @@ fn compress_block(data: &[u8]) -> Vec<u8> {
 
 /// Storage envelope for raw byte storage
 /// Contains compressed data with integrity checking
+// `retrieve` and `validate` decode into its private borrowing twin,
+// `borrowed::StorageEnvelope`: change the two together.
 #[derive(Serialize, Deserialize)]
 pub struct StorageEnvelope {
     /// Compressed payload data
@@ -157,31 +167,7 @@ impl StorageEnvelope {
     /// Extract and validate data from envelope
     #[cfg(all(feature = "compression", feature = "checksum"))]
     pub fn extract(&self) -> Result<Vec<u8>, ByteStorageError> {
-        // Unit tests only: the allocation probe's positive control.
-        #[cfg(test)]
-        crate::read_allocation_probe::reserve_first_control(
-            &self.compressed_data,
-            self.original_size,
-        );
-
-        check_decompression_bound(self.compressed_data.len(), self.original_size)?;
-
-        // Decompress (with validated sizes)
-        let decompressed = lz4_flex::decompress(&self.compressed_data, self.original_size as usize)
-            .map_err(|_| ByteStorageError::DecompressionFailed)?;
-
-        // Verify checksum (checksum validation happens AFTER decompression to prevent processing corrupted data)
-        // false -> ChecksumMismatch (preserve the error variant; verify_checksum returns bool)
-        if !crate::checksum::verify_checksum(&decompressed, &self.checksum) {
-            return Err(ByteStorageError::ChecksumMismatch);
-        }
-
-        // Verify size (final safety check)
-        if decompressed.len() != self.original_size as usize {
-            return Err(ByteStorageError::SizeValidationFailed);
-        }
-
-        Ok(decompressed)
+        extract_payload(&self.compressed_data, &self.checksum, self.original_size)
     }
 
     /// Exact length of this envelope's MessagePack encoding: the bytes
@@ -303,10 +289,44 @@ impl StorageEnvelope {
     }
 }
 
-/// Decompression bound, checked by `extract` before it allocates the output.
+/// Decompress and verify one envelope's payload. `StorageEnvelope::extract`
+/// forwards to it, and `retrieve` and `validate` call it on the borrowed
+/// decode, so every read path runs the same checks in the same order.
+#[cfg(all(feature = "compression", feature = "checksum"))]
+fn extract_payload(
+    compressed_data: &[u8],
+    checksum: &[u8; 8],
+    original_size: u32,
+) -> Result<Vec<u8>, ByteStorageError> {
+    // Unit tests only: the allocation probe's positive control.
+    #[cfg(test)]
+    crate::read_allocation_probe::reserve_first_control(compressed_data, original_size);
+
+    check_decompression_bound(compressed_data.len(), original_size)?;
+
+    // Decompress (with validated sizes)
+    let decompressed = lz4_flex::decompress(compressed_data, original_size as usize)
+        .map_err(|_| ByteStorageError::DecompressionFailed)?;
+
+    // Verify checksum (checksum validation happens AFTER decompression to prevent processing corrupted data)
+    // false -> ChecksumMismatch (preserve the error variant; verify_checksum returns bool)
+    if !crate::checksum::verify_checksum(&decompressed, checksum) {
+        return Err(ByteStorageError::ChecksumMismatch);
+    }
+
+    // Verify size (final safety check)
+    if decompressed.len() != original_size as usize {
+        return Err(ByteStorageError::SizeValidationFailed);
+    }
+
+    Ok(decompressed)
+}
+
+/// Decompression bound, checked by `extract_payload` before it allocates the
+/// output.
 ///
-/// A separate function so the Kani proofs verify the predicate `extract`
-/// actually runs, not a restatement of it.
+/// A separate function so the Kani proofs verify the predicate
+/// `extract_payload` actually runs, not a restatement of it.
 #[cfg(all(feature = "compression", feature = "checksum"))]
 fn check_decompression_bound(
     compressed_len: usize,
@@ -397,7 +417,7 @@ impl ByteStorage {
 
         let envelope = decode_envelope(envelope_bytes)?;
 
-        // Extract and validate data (all security checks happen inside extract())
+        // Extract and validate data (all security checks happen inside extract_payload())
         let data = envelope.extract()?;
 
         Ok((data, envelope.format))
@@ -419,7 +439,7 @@ impl ByteStorage {
 
     /// Validate an envelope by fully extracting it and discarding the result
     ///
-    /// This runs `StorageEnvelope::extract`, so it decompresses the payload and
+    /// This runs `extract_payload`, so it decompresses the payload and
     /// allocates up to the decompression bound. It is not a cheap structural
     /// pre-screen for untrusted envelopes.
     #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
@@ -459,7 +479,9 @@ impl Default for ByteStorage {
 /// decode. Serde's derive skips an unknown map key with `IgnoredAny`, which
 /// recurses, so the depth bound has to hold before `rmp_serde` sees the bytes.
 #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
-fn decode_envelope(envelope_bytes: &[u8]) -> Result<StorageEnvelope, ByteStorageError> {
+fn decode_envelope(
+    envelope_bytes: &[u8],
+) -> Result<borrowed::StorageEnvelope<'_>, ByteStorageError> {
     // Nesting bound for the envelope decode. The protocol requires 32..=1024;
     // 100 matches cachekit-rs and cachekit-ts. A legitimate envelope nests 2 deep.
     const MAX_DEPTH: usize = 100;
@@ -468,6 +490,98 @@ fn decode_envelope(envelope_bytes: &[u8]) -> Result<StorageEnvelope, ByteStorage
     })?;
     rmp_serde::from_slice(envelope_bytes)
         .map_err(|e| ByteStorageError::DeserializationFailed(e.to_string()))
+}
+
+/// What `retrieve` and `validate` decode: `StorageEnvelope` with
+/// `compressed_data` borrowed from the input instead of copied out of it,
+/// below `LARGE_PAYLOAD`.
+///
+/// A module of its own so the struct can share `StorageEnvelope`'s Rust name:
+/// serde's derive puts that name in its "expected struct ..." errors, which
+/// bindings surface (cachekit-py pins one). Same fields, order and field
+/// decoders, so it accepts exactly the inputs `StorageEnvelope` does, with
+/// the same error messages (`borrowed_decode_matches_owned_decode`). A legacy
+/// int-array payload still decodes, into an owned buffer.
+#[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
+mod borrowed {
+    use std::borrow::Cow;
+
+    use serde::de::{Deserializer, Error, SeqAccess, Visitor};
+    use serde::Deserialize;
+
+    use super::{extract_payload, ByteStorageError, LARGE_PAYLOAD};
+
+    #[derive(Deserialize)]
+    pub(super) struct StorageEnvelope<'a> {
+        #[serde(borrow, deserialize_with = "borrow_payload")]
+        pub(super) compressed_data: Cow<'a, [u8]>,
+        pub(super) checksum: [u8; 8],
+        pub(super) original_size: u32,
+        pub(super) format: String,
+    }
+
+    impl StorageEnvelope<'_> {
+        /// `StorageEnvelope::extract`, on the borrowed payload.
+        pub(super) fn extract(&self) -> Result<Vec<u8>, ByteStorageError> {
+            extract_payload(&self.compressed_data, &self.checksum, self.original_size)
+        }
+    }
+
+    /// serde_bytes' `ByteBuf` decode, which `StorageEnvelope::compressed_data`
+    /// uses, except that a `bin` or `str` payload under `LARGE_PAYLOAD` is
+    /// borrowed. Owned bytes and strings reach `visit_bytes` and `visit_str`
+    /// through serde's default methods. serde_bytes' own `Cow` decode borrows
+    /// too, but words its type error differently.
+    fn borrow_payload<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Cow<'de, [u8]>, D::Error> {
+        struct PayloadVisitor;
+
+        impl<'de> Visitor<'de> for PayloadVisitor {
+            type Value = Cow<'de, [u8]>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("byte array")
+            }
+
+            fn visit_borrowed_bytes<E: Error>(self, v: &'de [u8]) -> Result<Self::Value, E> {
+                Ok(borrow_below_large(v))
+            }
+
+            fn visit_borrowed_str<E: Error>(self, v: &'de str) -> Result<Self::Value, E> {
+                Ok(borrow_below_large(v.as_bytes()))
+            }
+
+            fn visit_bytes<E: Error>(self, v: &[u8]) -> Result<Self::Value, E> {
+                Ok(Cow::Owned(v.to_vec()))
+            }
+
+            fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(Cow::Owned(v.as_bytes().to_vec()))
+            }
+
+            // Legacy int-array payload, pre-allocation capped as serde_bytes caps it.
+            fn visit_seq<V: SeqAccess<'de>>(self, mut seq: V) -> Result<Self::Value, V::Error> {
+                let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(4096));
+                while let Some(b) = seq.next_element()? {
+                    bytes.push(b);
+                }
+                Ok(Cow::Owned(bytes))
+            }
+        }
+
+        deserializer.deserialize_byte_buf(PayloadVisitor)
+    }
+
+    /// Borrow a payload shorter than `LARGE_PAYLOAD`; copy a longer one, as
+    /// the owned decode does.
+    fn borrow_below_large(v: &[u8]) -> Cow<'_, [u8]> {
+        if v.len() < LARGE_PAYLOAD {
+            Cow::Borrowed(v)
+        } else {
+            Cow::Owned(v.to_vec())
+        }
+    }
 }
 
 #[cfg(all(
@@ -858,6 +972,134 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    /// Every envelope in the wire-format fixture (accepted, rejected and
+    /// payload-rejected), plus malformed shapes the fixture does not carry.
+    fn decode_corpus() -> Vec<(String, Vec<u8>)> {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/vectors/wire-format.json")).unwrap();
+        let mut corpus = Vec::new();
+        for group in ["vectors", "reject_vectors", "payload_reject_vectors"] {
+            for v in fixture[group].as_array().unwrap() {
+                let hex = v["envelope_hex"].as_str().unwrap();
+                corpus.push((
+                    v["name"].as_str().unwrap().to_string(),
+                    hex::decode(hex).unwrap(),
+                ));
+            }
+        }
+        let checksum = [0x98, 0, 1, 2, 3, 4, 5, 6, 0xCC, 0xFF];
+        for (name, payload) in [
+            ("payload_str", &[0xA3, b'a', b'b', b'c'][..]),
+            ("payload_int", &[0x07][..]),
+            ("payload_nil", &[0xC0][..]),
+            ("payload_map", &[0x80][..]),
+            ("payload_bool", &[0xC3][..]),
+            ("payload_ext", &[0xD4, 0x01, 0x00][..]),
+            ("payload_float", &[0xCA, 0, 0, 0, 0][..]),
+            ("legacy_bad_element", &[0x92, 0x01, 0xA1, b'x'][..]),
+            ("payload_truncated_bin", &[0xC4, 0x09, 0x00][..]),
+        ] {
+            let mut env = vec![0x94];
+            env.extend_from_slice(payload);
+            env.extend_from_slice(&checksum);
+            env.extend_from_slice(&[0x03, 0xA4, b't', b'e', b's', b't']);
+            corpus.push((name.to_string(), env));
+        }
+        // Map form with the field names, map form missing one, not an array.
+        let mut named =
+            rmp_serde::to_vec_named(&StorageEnvelope::new(b"named", "f".into()).unwrap()).unwrap();
+        corpus.push(("map_form".into(), named.clone()));
+        named[0] = 0x83;
+        corpus.push(("map_form_missing_field".into(), named));
+        corpus.push(("not_an_array".into(), vec![0xA2, b'h', b'i']));
+        corpus.push(("empty".into(), vec![]));
+        corpus
+    }
+
+    #[test]
+    fn borrowed_decode_matches_owned_decode() {
+        // The borrowed decode accepts exactly what the owned one does, into
+        // the same fields, and fails with the same message (bindings surface
+        // that text: cachekit-py pins several of the fixture's messages).
+        for (name, bytes) in decode_corpus() {
+            let owned = rmp_serde::from_slice::<StorageEnvelope>(&bytes);
+            let borrowed = rmp_serde::from_slice::<borrowed::StorageEnvelope>(&bytes);
+            match (owned, borrowed) {
+                (Ok(o), Ok(b)) => {
+                    assert_eq!(o.compressed_data, &*b.compressed_data, "[{name}] payload");
+                    assert_eq!(o.checksum, b.checksum, "[{name}] checksum");
+                    assert_eq!(o.original_size, b.original_size, "[{name}] original_size");
+                    assert_eq!(o.format, b.format, "[{name}] format");
+                }
+                (Err(o), Err(b)) => assert_eq!(o.to_string(), b.to_string(), "[{name}] error"),
+                (o, b) => panic!("[{name}] owned {:?} vs borrowed {:?}", o.err(), b.err()),
+            }
+        }
+    }
+
+    #[test]
+    fn bin_payload_is_borrowed_and_legacy_payload_is_owned() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/vectors/wire-format.json")).unwrap();
+        use std::borrow::Cow;
+        let mut seen = (0, 0);
+        for v in fixture["vectors"].as_array().unwrap() {
+            let bytes = hex::decode(v["envelope_hex"].as_str().unwrap()).unwrap();
+            let envelope = decode_envelope(&bytes).unwrap();
+            let name = v["name"].as_str().unwrap();
+            if name.ends_with("_bin") {
+                seen.0 += 1;
+                assert!(
+                    matches!(envelope.compressed_data, Cow::Borrowed(_)),
+                    "[{name}] bin payload copied"
+                );
+            } else {
+                seen.1 += 1;
+                assert!(
+                    matches!(envelope.compressed_data, Cow::Owned(_)),
+                    "[{name}] legacy payload"
+                );
+            }
+        }
+        assert!(
+            seen.0 > 0 && seen.1 > 0,
+            "fixture has both encodings: {seen:?}"
+        );
+
+        // From LARGE_PAYLOAD the payload is copied, as the owned decode does
+        let storage = ByteStorage::new(None);
+        for (len, borrowed) in [(LARGE_PAYLOAD - 512, true), (LARGE_PAYLOAD + 512, false)] {
+            let data = xorshift_bytes(len);
+            let stored = storage.store(&data, None).unwrap();
+            let envelope = decode_envelope(&stored).unwrap();
+            let payload = envelope.compressed_data.len();
+            assert_eq!(
+                payload < LARGE_PAYLOAD,
+                borrowed,
+                "len {len}: payload {payload}"
+            );
+            assert_eq!(
+                matches!(envelope.compressed_data, Cow::Borrowed(_)),
+                borrowed,
+                "len {len}: payload {payload}"
+            );
+            assert_eq!(storage.retrieve(&stored).unwrap().0, data, "len {len}");
+        }
+    }
+
+    /// Incompressible bytes, so the envelope and its payload track `len`.
+    fn xorshift_bytes(len: usize) -> Vec<u8> {
+        let mut state: u32 = 0x9E37_79B9;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as u8
+            })
+            .collect()
+    }
+
     /// An envelope with chosen field values, for the encoding width boundaries.
     fn envelope_with(
         payload_len: usize,
@@ -913,32 +1155,29 @@ mod tests {
     #[test]
     fn store_and_encode_into_write_rmp_serde_bytes() {
         let storage = ByteStorage::new(None);
-        // xorshift bytes: incompressible, so the envelope tracks the input length
-        let mut state: u32 = 0x9E37_79B9;
-        let mut noise = |len: usize| -> Vec<u8> {
-            (0..len)
-                .map(|_| {
-                    state ^= state << 13;
-                    state ^= state >> 17;
-                    state ^= state << 5;
-                    state as u8
-                })
-                .collect()
-        };
-        for data in [
-            vec![],
-            vec![b'a'; 63],
-            vec![b'a'; 64],
-            (0..70_000).map(|i| (i * 7919 % 251) as u8).collect(),
-            noise(LARGE_PAYLOAD - 64),
-            noise(LARGE_PAYLOAD),
-            noise(300_000),
+        // (input, whether its envelope is at or above LARGE_PAYLOAD)
+        for (data, large) in [
+            (vec![], false),
+            (vec![b'a'; 63], false),
+            (vec![b'a'; 64], false),
+            ((0..70_000).map(|i| (i * 7919 % 251) as u8).collect(), false),
+            // either side of the gate: LZ4 adds ~257 length bytes to a literal run
+            (xorshift_bytes(LARGE_PAYLOAD - 512), false),
+            (xorshift_bytes(LARGE_PAYLOAD), true),
+            (xorshift_bytes(300_000), true),
         ] {
             let envelope = StorageEnvelope::new(&data, "msgpack".to_string()).unwrap();
             let expected = rmp_serde::to_vec(&envelope).unwrap();
 
             let stored = storage.store(&data, None).unwrap();
             assert_eq!(stored, expected, "store, len {}", data.len());
+            assert_eq!(
+                stored.len() >= LARGE_PAYLOAD,
+                large,
+                "gate side, len {}: envelope {}",
+                data.len(),
+                stored.len()
+            );
             if stored.len() < LARGE_PAYLOAD {
                 // allocated once at its final length, no reallocation
                 assert_eq!(

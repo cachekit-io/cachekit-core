@@ -17,7 +17,7 @@
 //! this read's alone.
 //!
 //! This lives in the crate's unit tests, compiled only under `cfg(test)`,
-//! because the positive control needs a hook inside `StorageEnvelope::extract`
+//! because the positive control needs a hook inside `extract_payload`
 //! ([`reserve_first_control`]), and only `cfg(test)` code can reach it. No
 //! published build compiles any of this, the hook included.
 
@@ -64,7 +64,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
-/// Positive-control hook, called by `StorageEnvelope::extract` after the
+/// Positive-control hook, called by `extract_payload` after the
 /// envelope is decoded and before the size and ratio checks. When armed on
 /// this thread it runs the reader's own decoder at `original_size` there and
 /// discards the result: a reserve-first build of this reader. The decoder
@@ -123,7 +123,8 @@ mod tests {
             let (envelope, original_size) = reject_vector(name);
             let (result, requested) = retrieve_counted(&envelope);
             assert_eq!(result.err(), Some(expected), "[{name}] wrong rejection");
-            // Decoding the envelope allocates compressed_data, so a probe that
+            // Decoding the envelope allocates (the format string, and these
+            // vectors' legacy int-array payload), so a probe that
             // sees nothing is not counting this thread's allocations.
             assert!(requested > 0, "[{name}] probe saw no allocation at all");
             assert!(
