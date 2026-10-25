@@ -123,7 +123,8 @@ mod tests {
             let (envelope, original_size) = reject_vector(name);
             let (result, requested) = retrieve_counted(&envelope);
             assert_eq!(result.err(), Some(expected), "[{name}] wrong rejection");
-            // Decoding the envelope allocates compressed_data, so a probe that
+            // Decoding the envelope allocates (the format string, and these
+            // vectors' legacy int-array payload), so a probe that
             // sees nothing is not counting this thread's allocations.
             assert!(requested > 0, "[{name}] probe saw no allocation at all");
             assert!(

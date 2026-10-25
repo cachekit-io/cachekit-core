@@ -142,32 +142,41 @@ impl StorageEnvelope {
     /// Extract and validate data from envelope
     #[cfg(all(feature = "compression", feature = "checksum"))]
     pub fn extract(&self) -> Result<Vec<u8>, ByteStorageError> {
-        // Unit tests only: the allocation probe's positive control.
-        #[cfg(test)]
-        crate::read_allocation_probe::reserve_first_control(
-            &self.compressed_data,
-            self.original_size,
-        );
-
-        check_decompression_bound(self.compressed_data.len(), self.original_size)?;
-
-        // Decompress (with validated sizes)
-        let decompressed = lz4_flex::decompress(&self.compressed_data, self.original_size as usize)
-            .map_err(|_| ByteStorageError::DecompressionFailed)?;
-
-        // Verify checksum (checksum validation happens AFTER decompression to prevent processing corrupted data)
-        // false -> ChecksumMismatch (preserve the error variant; verify_checksum returns bool)
-        if !crate::checksum::verify_checksum(&decompressed, &self.checksum) {
-            return Err(ByteStorageError::ChecksumMismatch);
-        }
-
-        // Verify size (final safety check)
-        if decompressed.len() != self.original_size as usize {
-            return Err(ByteStorageError::SizeValidationFailed);
-        }
-
-        Ok(decompressed)
+        extract_payload(&self.compressed_data, &self.checksum, self.original_size)
     }
+}
+
+/// Decompress and verify one envelope's payload: the checks `extract` makes,
+/// in its order. `retrieve` and `validate` call it on the borrowed decode, so
+/// every read path runs the same checks.
+#[cfg(all(feature = "compression", feature = "checksum"))]
+fn extract_payload(
+    compressed_data: &[u8],
+    checksum: &[u8; 8],
+    original_size: u32,
+) -> Result<Vec<u8>, ByteStorageError> {
+    // Unit tests only: the allocation probe's positive control.
+    #[cfg(test)]
+    crate::read_allocation_probe::reserve_first_control(compressed_data, original_size);
+
+    check_decompression_bound(compressed_data.len(), original_size)?;
+
+    // Decompress (with validated sizes)
+    let decompressed = lz4_flex::decompress(compressed_data, original_size as usize)
+        .map_err(|_| ByteStorageError::DecompressionFailed)?;
+
+    // Verify checksum (checksum validation happens AFTER decompression to prevent processing corrupted data)
+    // false -> ChecksumMismatch (preserve the error variant; verify_checksum returns bool)
+    if !crate::checksum::verify_checksum(&decompressed, checksum) {
+        return Err(ByteStorageError::ChecksumMismatch);
+    }
+
+    // Verify size (final safety check)
+    if decompressed.len() != original_size as usize {
+        return Err(ByteStorageError::SizeValidationFailed);
+    }
+
+    Ok(decompressed)
 }
 
 /// Decompression bound, checked by `extract` before it allocates the output.
@@ -271,7 +280,7 @@ impl ByteStorage {
 
         let envelope = decode_envelope(envelope_bytes)?;
 
-        // Extract and validate data (all security checks happen inside extract())
+        // Extract and validate data (all security checks happen inside extract_payload())
         let data = envelope.extract()?;
 
         Ok((data, envelope.format))
@@ -333,7 +342,9 @@ impl Default for ByteStorage {
 /// decode. Serde's derive skips an unknown map key with `IgnoredAny`, which
 /// recurses, so the depth bound has to hold before `rmp_serde` sees the bytes.
 #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
-fn decode_envelope(envelope_bytes: &[u8]) -> Result<StorageEnvelope, ByteStorageError> {
+fn decode_envelope(
+    envelope_bytes: &[u8],
+) -> Result<borrowed::StorageEnvelope<'_>, ByteStorageError> {
     // Nesting bound for the envelope decode. The protocol requires 32..=1024;
     // 100 matches cachekit-rs and cachekit-ts. A legitimate envelope nests 2 deep.
     const MAX_DEPTH: usize = 100;
@@ -342,6 +353,93 @@ fn decode_envelope(envelope_bytes: &[u8]) -> Result<StorageEnvelope, ByteStorage
     })?;
     rmp_serde::from_slice(envelope_bytes)
         .map_err(|e| ByteStorageError::DeserializationFailed(e.to_string()))
+}
+
+/// What `retrieve` and `validate` decode: `StorageEnvelope` with
+/// `compressed_data` borrowed from the input instead of copied out of it.
+///
+/// A module of its own so the struct can share `StorageEnvelope`'s Rust name:
+/// serde's derive puts that name in its "expected struct ..." errors, which
+/// bindings surface (cachekit-py pins one). Same fields, order and field
+/// decoders, so it accepts exactly the inputs `StorageEnvelope` does, with
+/// the same error messages (`borrowed_decode_matches_owned_decode`). A legacy
+/// int-array payload still decodes, into an owned buffer.
+#[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
+mod borrowed {
+    use std::borrow::Cow;
+
+    use serde::de::{Deserializer, Error, SeqAccess, Visitor};
+    use serde::Deserialize;
+
+    use super::{extract_payload, ByteStorageError};
+
+    #[derive(Deserialize)]
+    pub(super) struct StorageEnvelope<'a> {
+        #[serde(borrow, deserialize_with = "borrow_payload")]
+        pub(super) compressed_data: Cow<'a, [u8]>,
+        pub(super) checksum: [u8; 8],
+        pub(super) original_size: u32,
+        pub(super) format: String,
+    }
+
+    impl StorageEnvelope<'_> {
+        /// `StorageEnvelope::extract`, on the borrowed payload.
+        pub(super) fn extract(&self) -> Result<Vec<u8>, ByteStorageError> {
+            extract_payload(&self.compressed_data, &self.checksum, self.original_size)
+        }
+    }
+
+    /// serde_bytes' `ByteBuf` decode, which `StorageEnvelope::compressed_data`
+    /// uses, except that a `bin` or `str` payload is borrowed. serde_bytes'
+    /// own `Cow` decode borrows too, but words its type error differently.
+    fn borrow_payload<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Cow<'de, [u8]>, D::Error> {
+        struct PayloadVisitor;
+
+        impl<'de> Visitor<'de> for PayloadVisitor {
+            type Value = Cow<'de, [u8]>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("byte array")
+            }
+
+            fn visit_borrowed_bytes<E: Error>(self, v: &'de [u8]) -> Result<Self::Value, E> {
+                Ok(Cow::Borrowed(v))
+            }
+
+            fn visit_borrowed_str<E: Error>(self, v: &'de str) -> Result<Self::Value, E> {
+                Ok(Cow::Borrowed(v.as_bytes()))
+            }
+
+            fn visit_bytes<E: Error>(self, v: &[u8]) -> Result<Self::Value, E> {
+                Ok(Cow::Owned(v.to_vec()))
+            }
+
+            fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(Cow::Owned(v.as_bytes().to_vec()))
+            }
+
+            fn visit_byte_buf<E: Error>(self, v: Vec<u8>) -> Result<Self::Value, E> {
+                Ok(Cow::Owned(v))
+            }
+
+            fn visit_string<E: Error>(self, v: String) -> Result<Self::Value, E> {
+                Ok(Cow::Owned(v.into_bytes()))
+            }
+
+            // Legacy int-array payload, pre-allocation capped as serde_bytes caps it.
+            fn visit_seq<V: SeqAccess<'de>>(self, mut seq: V) -> Result<Self::Value, V::Error> {
+                let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(4096));
+                while let Some(b) = seq.next_element()? {
+                    bytes.push(b);
+                }
+                Ok(Cow::Owned(bytes))
+            }
+        }
+
+        deserializer.deserialize_byte_buf(PayloadVisitor)
+    }
 }
 
 #[cfg(all(
@@ -730,6 +828,101 @@ mod tests {
         // Should succeed at exactly the limit
         let result = storage.store(&max_size_data, None);
         assert!(result.is_ok());
+    }
+
+    /// Every envelope in the wire-format fixture (accepted, rejected and
+    /// payload-rejected), plus malformed shapes the fixture does not carry.
+    fn decode_corpus() -> Vec<(String, Vec<u8>)> {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/vectors/wire-format.json")).unwrap();
+        let mut corpus = Vec::new();
+        for group in ["vectors", "reject_vectors", "payload_reject_vectors"] {
+            for v in fixture[group].as_array().unwrap() {
+                let hex = v["envelope_hex"].as_str().unwrap();
+                corpus.push((
+                    v["name"].as_str().unwrap().to_string(),
+                    hex::decode(hex).unwrap(),
+                ));
+            }
+        }
+        let checksum = [0x98, 0, 1, 2, 3, 4, 5, 6, 0xCC, 0xFF];
+        for (name, payload) in [
+            ("payload_str", &[0xA3, b'a', b'b', b'c'][..]),
+            ("payload_int", &[0x07][..]),
+            ("payload_nil", &[0xC0][..]),
+            ("payload_map", &[0x80][..]),
+            ("payload_bool", &[0xC3][..]),
+            ("payload_ext", &[0xD4, 0x01, 0x00][..]),
+            ("payload_float", &[0xCA, 0, 0, 0, 0][..]),
+            ("legacy_bad_element", &[0x92, 0x01, 0xA1, b'x'][..]),
+            ("payload_truncated_bin", &[0xC4, 0x09, 0x00][..]),
+        ] {
+            let mut env = vec![0x94];
+            env.extend_from_slice(payload);
+            env.extend_from_slice(&checksum);
+            env.extend_from_slice(&[0x03, 0xA4, b't', b'e', b's', b't']);
+            corpus.push((name.to_string(), env));
+        }
+        // Map form with the field names, map form missing one, not an array.
+        let mut named =
+            rmp_serde::to_vec_named(&StorageEnvelope::new(b"named", "f".into()).unwrap()).unwrap();
+        corpus.push(("map_form".into(), named.clone()));
+        named[0] = 0x83;
+        corpus.push(("map_form_missing_field".into(), named));
+        corpus.push(("not_an_array".into(), vec![0xA2, b'h', b'i']));
+        corpus.push(("empty".into(), vec![]));
+        corpus
+    }
+
+    #[test]
+    fn borrowed_decode_matches_owned_decode() {
+        // The borrowed decode accepts exactly what the owned one does, into
+        // the same fields, and fails with the same message (bindings surface
+        // that text: cachekit-py pins several of the fixture's messages).
+        for (name, bytes) in decode_corpus() {
+            let owned = rmp_serde::from_slice::<StorageEnvelope>(&bytes);
+            let borrowed = rmp_serde::from_slice::<borrowed::StorageEnvelope>(&bytes);
+            match (owned, borrowed) {
+                (Ok(o), Ok(b)) => {
+                    assert_eq!(o.compressed_data, &*b.compressed_data, "[{name}] payload");
+                    assert_eq!(o.checksum, b.checksum, "[{name}] checksum");
+                    assert_eq!(o.original_size, b.original_size, "[{name}] original_size");
+                    assert_eq!(o.format, b.format, "[{name}] format");
+                }
+                (Err(o), Err(b)) => assert_eq!(o.to_string(), b.to_string(), "[{name}] error"),
+                (o, b) => panic!("[{name}] owned {:?} vs borrowed {:?}", o.err(), b.err()),
+            }
+        }
+    }
+
+    #[test]
+    fn bin_payload_is_borrowed_and_legacy_payload_is_owned() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/vectors/wire-format.json")).unwrap();
+        use std::borrow::Cow;
+        let mut seen = (0, 0);
+        for v in fixture["vectors"].as_array().unwrap() {
+            let bytes = hex::decode(v["envelope_hex"].as_str().unwrap()).unwrap();
+            let envelope = decode_envelope(&bytes).unwrap();
+            let name = v["name"].as_str().unwrap();
+            if name.ends_with("_bin") {
+                seen.0 += 1;
+                assert!(
+                    matches!(envelope.compressed_data, Cow::Borrowed(_)),
+                    "[{name}] bin payload copied"
+                );
+            } else {
+                seen.1 += 1;
+                assert!(
+                    matches!(envelope.compressed_data, Cow::Owned(_)),
+                    "[{name}] legacy payload"
+                );
+            }
+        }
+        assert!(
+            seen.0 > 0 && seen.1 > 0,
+            "fixture has both encodings: {seen:?}"
+        );
     }
 
     #[test]
