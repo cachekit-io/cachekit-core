@@ -45,6 +45,23 @@ const MAX_COMPRESSED_SIZE: usize = 512 * 1024 * 1024; // 512MB limit
 /// Uses u64 for integer-only arithmetic to prevent floating-point precision bypass attacks
 const MAX_COMPRESSION_RATIO: u64 = 1000;
 
+/// Buffer length from which store and retrieve keep the allocation pattern
+/// they had before their copy-saving changes.
+///
+/// Removing a payload-sized buffer can make a large operation slower under
+/// glibc's default malloc. glibc raises its mmap and trim thresholds to the
+/// largest mmap-ed chunk freed so far, and trims the top of the heap once it
+/// holds more free memory than the trim threshold, so whether the other
+/// payload-sized buffers of an operation come from fresh pages depends on
+/// which buffers it allocates. Measured on 1 MB incompressible values: with
+/// the payload borrowed instead of copied, the remaining buffers of each
+/// retrieve grew the heap past the trim threshold and were trimmed again, so
+/// every retrieve faulted its pages back in (0 to 947 page faults per
+/// operation, 7 times the CPU). Below 64 KiB no buffer reaches glibc's minimum
+/// mmap threshold of 128 KiB, so a change there cannot move either threshold.
+#[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
+const LARGE_PAYLOAD: usize = 64 * 1024;
+
 /// Inputs shorter than this are written as one literals-only LZ4 block instead
 /// of going through `lz4_flex::compress`.
 ///
@@ -356,7 +373,8 @@ fn decode_envelope(
 }
 
 /// What `retrieve` and `validate` decode: `StorageEnvelope` with
-/// `compressed_data` borrowed from the input instead of copied out of it.
+/// `compressed_data` borrowed from the input instead of copied out of it,
+/// below `LARGE_PAYLOAD`.
 ///
 /// A module of its own so the struct can share `StorageEnvelope`'s Rust name:
 /// serde's derive puts that name in its "expected struct ..." errors, which
@@ -371,7 +389,7 @@ mod borrowed {
     use serde::de::{Deserializer, Error, SeqAccess, Visitor};
     use serde::Deserialize;
 
-    use super::{extract_payload, ByteStorageError};
+    use super::{extract_payload, ByteStorageError, LARGE_PAYLOAD};
 
     #[derive(Deserialize)]
     pub(super) struct StorageEnvelope<'a> {
@@ -405,11 +423,11 @@ mod borrowed {
             }
 
             fn visit_borrowed_bytes<E: Error>(self, v: &'de [u8]) -> Result<Self::Value, E> {
-                Ok(Cow::Borrowed(v))
+                Ok(borrow_below_large(v))
             }
 
             fn visit_borrowed_str<E: Error>(self, v: &'de str) -> Result<Self::Value, E> {
-                Ok(Cow::Borrowed(v.as_bytes()))
+                Ok(borrow_below_large(v.as_bytes()))
             }
 
             fn visit_bytes<E: Error>(self, v: &[u8]) -> Result<Self::Value, E> {
@@ -439,6 +457,16 @@ mod borrowed {
         }
 
         deserializer.deserialize_byte_buf(PayloadVisitor)
+    }
+
+    /// Borrow a payload shorter than `LARGE_PAYLOAD`; copy a longer one, as
+    /// the owned decode does.
+    fn borrow_below_large(v: &[u8]) -> Cow<'_, [u8]> {
+        if v.len() < LARGE_PAYLOAD {
+            Cow::Borrowed(v)
+        } else {
+            Cow::Owned(v.to_vec())
+        }
     }
 }
 
