@@ -92,15 +92,23 @@ zero-filled fixed-length buffer, where the non-safe decoder uses
 `with_capacity` + `set_len` (RUSTSEC-2026-0041 was a bug in that block
 decoder).
 
-The encoder is `lz4_flex`'s unsafe one (`safe-encode` off) on native targets.
+The encoder is `lz4_flex`'s unsafe one (`safe-encode` off) on 64-bit targets.
 It runs the same matching algorithm as the safe encoder and writes the same
-bytes, with pointer reads in place of bounds-checked slice reads, which makes
-each compression cheaper. Its input is the caller's value, which can carry
-attacker-chosen bytes, so the `byte_storage_compress` fuzz target builds
+bytes, with unchecked pointer reads and writes (into the output's uninitialised
+capacity, followed by `set_len`) in place of bounds-checked slice access, which
+makes each compression cheaper. Its input is the caller's value, which can
+carry attacker-chosen bytes, so the `byte_storage_compress` fuzz target builds
 `lz4_flex` with the same features (`fuzz/Cargo.toml`; a default-features entry
-there would unify the safe encoder back in). wasm32 builds keep the safe
-encoder through a target-specific dependency: there the value, the encoder and
-any key material share one linear memory, and the fuzzers run native only.
+there would unify the safe encoder back in).
+
+Every target narrower than 64 bits (i686, armv7, 32-bit Windows, wasm32) keeps
+the safe encoder through a target-specific dependency. In `lz4_flex` 0.12 the
+encoder sizes its output with `input_len * 110 / 100` in `usize`, which wraps
+on a 32-bit target for inputs above about 37 MiB, below this crate's 512 MiB
+input cap. The unsafe encoder's capacity check uses the same wrapped figure, so
+it would write past its allocation; the safe encoder panics instead. On wasm32
+the value, the encoder and any key material also share one linear memory, and
+the fuzzers and Miri run on 64-bit targets only.
 
 Below 64 bytes, `StorageEnvelope::new` does not call the encoder at all. It
 writes the input as one literals-only LZ4 block, which every LZ4 block decoder

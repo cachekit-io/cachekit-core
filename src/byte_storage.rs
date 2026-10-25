@@ -51,34 +51,30 @@ const MAX_COMPRESSION_RATIO: u64 = 1000;
 /// `lz4_flex::compress` zeroes an 8 KiB hash table on every call, which costs
 /// more than the whole store for a tiny value, and below LZ4's 13-byte minimum
 /// its output is literals-only anyway. The price is stored size: a compressible
-/// input under the threshold is no longer shrunk (at most `T - 1` bytes of
-/// payload plus 2 bytes of block header). Compressed bytes are not canonical
+/// input under the threshold is no longer shrunk; its block is the input plus
+/// 1 byte (plus 2 from 15 bytes up). Compressed bytes are not canonical
 /// (protocol `spec/wire-format.md`, "Compressed-byte reproducibility"), and
 /// every reader decodes a literals-only block.
 #[cfg(feature = "compression")]
 const LITERAL_BLOCK_THRESHOLD: usize = 64;
 
-// `literal_block` writes the length in at most one extra byte, which holds
+// The literal block writes the length in at most one extra byte, which holds
 // for literal lengths up to 15 + 254.
 #[cfg(feature = "compression")]
-const _: () = assert!(LITERAL_BLOCK_THRESHOLD <= 15 + 255);
+const _: () = assert!(LITERAL_BLOCK_THRESHOLD - 1 <= 15 + 254);
 
 /// The LZ4 block `StorageEnvelope::new` writes for `data`.
+///
+/// Below the threshold it is one LZ4 sequence with no match: a token whose
+/// high nibble is the literal length (15 = one more length byte follows), then
+/// the literals. This is the LZ4 block format's last-sequence form, so it is a
+/// complete block on its own.
 #[cfg(feature = "compression")]
 fn compress_block(data: &[u8]) -> Vec<u8> {
     if data.len() >= LITERAL_BLOCK_THRESHOLD {
         return lz4_flex::compress(data);
     }
-    literal_block(data)
-}
-
-/// One LZ4 sequence with no match: a token whose high nibble is the literal
-/// length (15 = one more length byte follows), then the literals. This is the
-/// LZ4 block format's last-sequence form, so it is a complete block on its own.
-#[cfg(feature = "compression")]
-fn literal_block(data: &[u8]) -> Vec<u8> {
     let len = data.len();
-    debug_assert!(len < LITERAL_BLOCK_THRESHOLD);
     let mut block = Vec::with_capacity(len + 2);
     if len < 15 {
         block.push((len as u8) << 4);
