@@ -17,7 +17,7 @@
 //! this read's alone.
 //!
 //! This lives in the crate's unit tests, compiled only under `cfg(test)`,
-//! because the positive control needs a hook inside `StorageEnvelope::extract`
+//! because the positive control needs a hook inside `extract_payload`
 //! ([`reserve_first_control`]), and only `cfg(test)` code can reach it. No
 //! published build compiles any of this, the hook included.
 
@@ -64,7 +64,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
-/// Positive-control hook, called by `StorageEnvelope::extract` after the
+/// Positive-control hook, called by `extract_payload` after the
 /// envelope is decoded and before the size and ratio checks. When armed on
 /// this thread it runs the reader's own decoder at `original_size` there and
 /// discards the result: a reserve-first build of this reader. The decoder

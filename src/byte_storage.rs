@@ -45,20 +45,26 @@ const MAX_COMPRESSED_SIZE: usize = 512 * 1024 * 1024; // 512MB limit
 /// Uses u64 for integer-only arithmetic to prevent floating-point precision bypass attacks
 const MAX_COMPRESSION_RATIO: u64 = 1000;
 
-/// Payload length from which `retrieve` and `validate` copy the envelope's
-/// compressed payload out of the input instead of borrowing it.
+/// Buffer length from which `store` and `retrieve` keep their copying
+/// allocation pattern. `store` compares the encoded envelope length: from
+/// here on it encodes through `rmp_serde::to_vec`'s growing buffer instead of
+/// a buffer allocated once at the exact length. `retrieve` and `validate`
+/// compare the compressed payload length: from here on they copy the payload
+/// out of the input instead of borrowing it.
 ///
-/// glibc's malloc trims the top of the heap once it holds more free memory
-/// than its trim threshold, and raises that threshold (with its mmap
-/// threshold) to the largest mmap-ed chunk freed so far, so dropping one
-/// payload-sized buffer can change whether a large read's other buffers come
-/// from fresh pages. With 1 MB incompressible payloads borrowed, each read's
-/// remaining buffers grew the heap past the trim threshold and were trimmed
-/// again at the end of the call, so every read faulted its pages back in
-/// (from none to about a thousand page faults per read, several times the
-/// CPU). Below 64 KiB the copy this skips is under glibc's minimum mmap
-/// threshold (128 KiB), so it is never mmap-ed and cannot raise either
-/// threshold, and in measurement page faults matched the copying decode.
+/// glibc's malloc raises its mmap and trim thresholds to the largest mmap-ed
+/// chunk freed so far, and trims the top of the heap once it holds more free
+/// memory than the trim threshold, so dropping one payload-sized buffer can
+/// send a large operation's other payload-sized buffers to fresh pages on
+/// every call. Measured on 1 MB incompressible values under glibc's defaults:
+/// an exact-size store buffer took about a third more page faults and 30%
+/// more CPU per store (`to_vec`'s doubled reallocation had been the chunk that
+/// raised the thresholds), and a borrowed payload took each read from no page
+/// faults to about a thousand, several times the CPU (its remaining buffers
+/// grew the heap past the trim threshold and were trimmed again every call).
+/// Below 64 KiB neither buffer reaches glibc's minimum mmap threshold
+/// (128 KiB), even doubled, so it is never mmap-ed, and removing it cannot
+/// move either threshold.
 #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
 const LARGE_PAYLOAD: usize = 64 * 1024;
 
@@ -104,6 +110,9 @@ fn compress_block(data: &[u8]) -> Vec<u8> {
 }
 
 /// Storage envelope for raw byte storage
+///
+/// `retrieve` and `validate` decode into its private borrowing twin,
+/// `borrowed::StorageEnvelope`: change the two together.
 /// Contains compressed data with integrity checking
 #[derive(Serialize, Deserialize)]
 pub struct StorageEnvelope {
@@ -160,6 +169,124 @@ impl StorageEnvelope {
     #[cfg(all(feature = "compression", feature = "checksum"))]
     pub fn extract(&self) -> Result<Vec<u8>, ByteStorageError> {
         extract_payload(&self.compressed_data, &self.checksum, self.original_size)
+    }
+
+    /// Exact length of this envelope's MessagePack encoding: the bytes
+    /// [`encode_into`](Self::encode_into) writes and [`ByteStorage::store`]
+    /// returns.
+    ///
+    /// Computed from the field lengths and values without encoding anything,
+    /// so a caller can allocate the output once, at its final size.
+    #[cfg(feature = "messagepack")]
+    pub fn encoded_len(&self) -> usize {
+        // rmp_serde writes the struct as a 4-element array, `compressed_data`
+        // as bin, `checksum` as an array of 8 uints and every uint in its
+        // shortest form; `encoded_len_matches_rmp_serde` pins each width.
+        fn uint_len(v: u32) -> usize {
+            match v {
+                0..=0x7F => 1,
+                0x80..=0xFF => 2,
+                0x100..=0xFFFF => 3,
+                _ => 5,
+            }
+        }
+        fn bin_header_len(len: usize) -> usize {
+            match len {
+                0..=0xFF => 2,
+                0x100..=0xFFFF => 3,
+                _ => 5,
+            }
+        }
+        fn str_header_len(len: usize) -> usize {
+            match len {
+                0..=31 => 1,
+                32..=0xFF => 2,
+                0x100..=0xFFFF => 3,
+                _ => 5,
+            }
+        }
+        let checksum_len = 1 + self
+            .checksum
+            .iter()
+            .map(|&b| uint_len(b.into()))
+            .sum::<usize>();
+        let fixed = 1 // fixarray(4)
+            + bin_header_len(self.compressed_data.len())
+            + checksum_len
+            + uint_len(self.original_size)
+            + str_header_len(self.format.len());
+        fixed
+            .saturating_add(self.compressed_data.len())
+            .saturating_add(self.format.len())
+    }
+
+    /// Write this envelope's MessagePack encoding, the bytes
+    /// [`ByteStorage::store`] returns, into `out`, which must be exactly
+    /// [`encoded_len`](Self::encoded_len) bytes long.
+    ///
+    /// For a binding that owns the output memory (a Python `bytes`, say): it
+    /// sizes the buffer with `encoded_len` and writes once, with no
+    /// intermediate `Vec` and no MessagePack dependency of its own. Measure
+    /// before using it for envelopes of 64 KiB and up: removing a
+    /// payload-sized buffer there can make an operation slower under glibc's
+    /// malloc (see `ByteStorage::store`, which therefore does not).
+    ///
+    /// # Errors
+    ///
+    /// `InputTooLarge` when the encoding exceeds the envelope size cap, the
+    /// same final check `store` makes. `SerializationFailed` when `out` is not
+    /// `encoded_len` bytes; nothing written into it is then meaningful.
+    #[cfg(feature = "messagepack")]
+    pub fn encode_into(&self, out: &mut [u8]) -> Result<(), ByteStorageError> {
+        let len = self.capped_encoded_len()?;
+        if out.len() != len {
+            return Err(ByteStorageError::SerializationFailed(format!(
+                "output buffer is {} bytes, the envelope encodes to {len}",
+                out.len()
+            )));
+        }
+        let mut rest = &mut out[..];
+        rmp_serde::encode::write(&mut rest, self)
+            .map_err(|e| ByteStorageError::SerializationFailed(e.to_string()))?;
+        // encoded_len was exact if the write filled the buffer
+        if !rest.is_empty() {
+            return Err(ByteStorageError::SerializationFailed(format!(
+                "envelope encoded {} bytes short of its computed length",
+                rest.len()
+            )));
+        }
+        Ok(())
+    }
+
+    /// `encoded_len`, or `InputTooLarge` past the envelope size cap: the final
+    /// check `store` makes, before anything is encoded.
+    #[cfg(feature = "messagepack")]
+    fn capped_encoded_len(&self) -> Result<usize, ByteStorageError> {
+        let len = self.encoded_len();
+        if len > MAX_COMPRESSED_SIZE {
+            return Err(ByteStorageError::InputTooLarge);
+        }
+        Ok(len)
+    }
+
+    /// The encoding `store` returns. Below `LARGE_PAYLOAD` it goes into a
+    /// `Vec` allocated once at its final length; from there on it keeps
+    /// `rmp_serde::to_vec`'s growing buffer (see `LARGE_PAYLOAD` for why).
+    ///
+    /// `rmp_serde::to_vec` grows its `Vec` from empty, reallocating several
+    /// times for a small envelope and to twice the payload for a large one.
+    #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
+    fn encode(&self) -> Result<Vec<u8>, ByteStorageError> {
+        let len = self.capped_encoded_len()?;
+        if len >= LARGE_PAYLOAD {
+            return rmp_serde::to_vec(self)
+                .map_err(|e| ByteStorageError::SerializationFailed(e.to_string()));
+        }
+        let mut out = Vec::with_capacity(len);
+        rmp_serde::encode::write(&mut out, self)
+            .map_err(|e| ByteStorageError::SerializationFailed(e.to_string()))?;
+        debug_assert_eq!(out.len(), len, "encoded_len must be exact");
+        Ok(out)
     }
 }
 
@@ -264,16 +391,9 @@ impl ByteStorage {
 
         let envelope = StorageEnvelope::new(data, format)?;
 
-        // Serialize envelope with MessagePack
-        let envelope_bytes = rmp_serde::to_vec(&envelope)
-            .map_err(|e| ByteStorageError::SerializationFailed(e.to_string()))?;
-
-        // Security: Final check on serialized envelope size
-        if envelope_bytes.len() > MAX_COMPRESSED_SIZE {
-            return Err(ByteStorageError::InputTooLarge);
-        }
-
-        Ok(envelope_bytes)
+        // Serialize envelope with MessagePack. Security: the final envelope
+        // size check runs inside, before the output is allocated.
+        envelope.encode()
     }
 
     /// Retrieve and validate stored bytes
@@ -319,7 +439,7 @@ impl ByteStorage {
 
     /// Validate an envelope by fully extracting it and discarding the result
     ///
-    /// This runs `StorageEnvelope::extract`, so it decompresses the payload and
+    /// This runs `extract_payload`, so it decompresses the payload and
     /// allocates up to the decompression bound. It is not a cheap structural
     /// pre-screen for untrusted envelopes.
     #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
@@ -944,6 +1064,172 @@ mod tests {
         assert!(
             seen.0 > 0 && seen.1 > 0,
             "fixture has both encodings: {seen:?}"
+        );
+
+        // From LARGE_PAYLOAD the payload is copied, as the owned decode does
+        let storage = ByteStorage::new(None);
+        for (len, borrowed) in [(LARGE_PAYLOAD - 512, true), (LARGE_PAYLOAD + 512, false)] {
+            let data = xorshift_bytes(len);
+            let stored = storage.store(&data, None).unwrap();
+            let envelope = decode_envelope(&stored).unwrap();
+            let payload = envelope.compressed_data.len();
+            assert_eq!(
+                payload < LARGE_PAYLOAD,
+                borrowed,
+                "len {len}: payload {payload}"
+            );
+            assert_eq!(
+                matches!(envelope.compressed_data, Cow::Borrowed(_)),
+                borrowed,
+                "len {len}: payload {payload}"
+            );
+            assert_eq!(storage.retrieve(&stored).unwrap().0, data, "len {len}");
+        }
+    }
+
+    /// Incompressible bytes, so the envelope and its payload track `len`.
+    fn xorshift_bytes(len: usize) -> Vec<u8> {
+        let mut state: u32 = 0x9E37_79B9;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as u8
+            })
+            .collect()
+    }
+
+    /// An envelope with chosen field values, for the encoding width boundaries.
+    fn envelope_with(
+        payload_len: usize,
+        checksum: [u8; 8],
+        size: u32,
+        format_len: usize,
+    ) -> StorageEnvelope {
+        StorageEnvelope {
+            compressed_data: vec![0; payload_len],
+            checksum,
+            original_size: size,
+            format: "f".repeat(format_len),
+        }
+    }
+
+    #[test]
+    fn encoded_len_matches_rmp_serde() {
+        // Each length and value either side of a MessagePack width change:
+        // fixstr/str8/str16/str32, bin8/bin16/bin32, fixint/u8/u16/u32
+        let lengths = [0, 1, 31, 32, 255, 256, 65_535, 65_536, 70_000];
+        let sizes = [0, 127, 128, 255, 256, 65_535, 65_536, u32::MAX];
+        let checksums = [
+            [0x00; 8],
+            [0x7F; 8],
+            [0x80; 8],
+            [0xFF; 8],
+            [0, 0x80, 1, 0xFF, 0x7F, 2, 0xC0, 3],
+        ];
+        for payload_len in lengths {
+            for format_len in lengths {
+                let envelope = envelope_with(payload_len, checksums[4], 1, format_len);
+                let expected = rmp_serde::to_vec(&envelope).unwrap().len();
+                assert_eq!(
+                    envelope.encoded_len(),
+                    expected,
+                    "payload {payload_len}, format {format_len}"
+                );
+            }
+        }
+        for size in sizes {
+            for checksum in checksums {
+                let envelope = envelope_with(3, checksum, size, 7);
+                let expected = rmp_serde::to_vec(&envelope).unwrap().len();
+                assert_eq!(
+                    envelope.encoded_len(),
+                    expected,
+                    "size {size}, checksum {checksum:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn store_and_encode_into_write_rmp_serde_bytes() {
+        let storage = ByteStorage::new(None);
+        let mut gate_sides = [false; 2];
+        for data in [
+            vec![],
+            vec![b'a'; 63],
+            vec![b'a'; 64],
+            (0..70_000).map(|i| (i * 7919 % 251) as u8).collect(),
+            // either side of the gate: LZ4 adds ~257 length bytes to a literal run
+            xorshift_bytes(LARGE_PAYLOAD - 512),
+            xorshift_bytes(LARGE_PAYLOAD),
+            xorshift_bytes(300_000),
+        ] {
+            let envelope = StorageEnvelope::new(&data, "msgpack".to_string()).unwrap();
+            let expected = rmp_serde::to_vec(&envelope).unwrap();
+
+            let stored = storage.store(&data, None).unwrap();
+            assert_eq!(stored, expected, "store, len {}", data.len());
+            gate_sides[usize::from(stored.len() >= LARGE_PAYLOAD)] = true;
+            if stored.len() < LARGE_PAYLOAD {
+                // allocated once at its final length, no reallocation
+                assert_eq!(
+                    stored.capacity(),
+                    stored.len(),
+                    "store capacity, len {}",
+                    data.len()
+                );
+            } else {
+                // a large envelope keeps rmp_serde's growing buffer
+                assert_eq!(
+                    stored.capacity(),
+                    expected.capacity(),
+                    "store capacity, len {}",
+                    data.len()
+                );
+            }
+
+            let mut out = vec![0u8; envelope.encoded_len()];
+            envelope.encode_into(&mut out).unwrap();
+            assert_eq!(out, expected, "encode_into, len {}", data.len());
+        }
+        assert_eq!(
+            gate_sides,
+            [true, true],
+            "an envelope on each side of LARGE_PAYLOAD"
+        );
+    }
+
+    #[test]
+    fn encode_into_rejects_a_wrong_sized_buffer() {
+        let envelope = StorageEnvelope::new(b"payload", "msgpack".to_string()).unwrap();
+        let len = envelope.encoded_len();
+        for wrong in [0, len - 1, len + 1] {
+            let mut out = vec![0u8; wrong];
+            assert!(
+                matches!(
+                    envelope.encode_into(&mut out),
+                    Err(ByteStorageError::SerializationFailed(_))
+                ),
+                "buffer of {wrong} bytes for a {len}-byte envelope"
+            );
+        }
+    }
+
+    #[test]
+    fn encode_into_applies_the_envelope_size_cap() {
+        // Compressed data at the cap: the envelope headers push it over, and
+        // the check runs before the (deliberately tiny) buffer is looked at
+        let envelope = envelope_with(MAX_COMPRESSED_SIZE, [0; 8], 1, 7);
+        assert!(envelope.encoded_len() > MAX_COMPRESSED_SIZE);
+        assert_eq!(
+            envelope.encode_into(&mut []),
+            Err(ByteStorageError::InputTooLarge)
+        );
+        assert_eq!(
+            envelope.encode().err(),
+            Some(ByteStorageError::InputTooLarge)
         );
     }
 
