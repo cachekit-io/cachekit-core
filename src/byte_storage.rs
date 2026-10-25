@@ -45,6 +45,22 @@ const MAX_COMPRESSED_SIZE: usize = 512 * 1024 * 1024; // 512MB limit
 /// Uses u64 for integer-only arithmetic to prevent floating-point precision bypass attacks
 const MAX_COMPRESSION_RATIO: u64 = 1000;
 
+/// Buffer length from which store and retrieve keep the allocation pattern
+/// they had before their copy-saving changes.
+///
+/// Removing a payload-sized buffer can make a large operation slower under
+/// glibc's default malloc. glibc raises its mmap and trim thresholds to the
+/// largest mmap-ed chunk freed so far, so whether the other payload-sized
+/// buffers of an operation come from fresh pages depends on which buffers it
+/// allocates. Measured on 1 MB incompressible values: allocating the store
+/// envelope at its exact length cost 32% more CPU per store (702 to 945 page
+/// faults), because the growing buffer's doubled reallocation had been the
+/// chunk that raised the thresholds. Below 64 KiB no such buffer, doubled or
+/// not, reaches glibc's minimum mmap threshold of 128 KiB, so a change there
+/// cannot move either threshold.
+#[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
+const LARGE_PAYLOAD: usize = 64 * 1024;
+
 /// Inputs shorter than this are written as one literals-only LZ4 block instead
 /// of going through `lz4_flex::compress`.
 ///
@@ -256,20 +272,23 @@ impl StorageEnvelope {
         Ok(())
     }
 
-    /// The encoding in a `Vec` allocated once at its final length.
+    /// The encoding `store` returns. Below `LARGE_PAYLOAD` it goes into a
+    /// `Vec` allocated once at its final length; from there on it keeps
+    /// `rmp_serde::to_vec`'s growing buffer (see `LARGE_PAYLOAD` for why).
     ///
-    /// `rmp_serde::to_vec` grows its `Vec` from empty: a large payload is
-    /// copied in and then reallocated to twice its size when the fields after
-    /// it are written, so a 1 MiB store touched 2 MiB of fresh memory.
-    #[cfg(feature = "messagepack")]
+    /// `rmp_serde::to_vec` grows its `Vec` from empty, reallocating several
+    /// times for a small envelope and to twice the payload for a large one.
+    #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
     fn encode(&self) -> Result<Vec<u8>, ByteStorageError> {
         let len = self.encoded_len();
         if len > MAX_COMPRESSED_SIZE {
             return Err(ByteStorageError::InputTooLarge);
         }
-        let mut out = Vec::new();
-        out.try_reserve_exact(len)
-            .map_err(|e| ByteStorageError::SerializationFailed(e.to_string()))?;
+        if len >= LARGE_PAYLOAD {
+            return rmp_serde::to_vec(self)
+                .map_err(|e| ByteStorageError::SerializationFailed(e.to_string()));
+        }
+        let mut out = Vec::with_capacity(len);
         rmp_serde::encode::write(&mut out, self)
             .map_err(|e| ByteStorageError::SerializationFailed(e.to_string()))?;
         debug_assert_eq!(out.len(), len, "encoded_len must be exact");
@@ -887,24 +906,49 @@ mod tests {
     #[test]
     fn store_and_encode_into_write_rmp_serde_bytes() {
         let storage = ByteStorage::new(None);
+        // xorshift bytes: incompressible, so the envelope tracks the input length
+        let mut state: u32 = 0x9E37_79B9;
+        let mut noise = |len: usize| -> Vec<u8> {
+            (0..len)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    state as u8
+                })
+                .collect()
+        };
         for data in [
             vec![],
             vec![b'a'; 63],
             vec![b'a'; 64],
             (0..70_000).map(|i| (i * 7919 % 251) as u8).collect(),
+            noise(LARGE_PAYLOAD - 64),
+            noise(LARGE_PAYLOAD),
+            noise(300_000),
         ] {
             let envelope = StorageEnvelope::new(&data, "msgpack".to_string()).unwrap();
             let expected = rmp_serde::to_vec(&envelope).unwrap();
 
             let stored = storage.store(&data, None).unwrap();
             assert_eq!(stored, expected, "store, len {}", data.len());
-            // allocated once at its final length, no doubling realloc
-            assert_eq!(
-                stored.capacity(),
-                stored.len(),
-                "store capacity, len {}",
-                data.len()
-            );
+            if stored.len() < LARGE_PAYLOAD {
+                // allocated once at its final length, no reallocation
+                assert_eq!(
+                    stored.capacity(),
+                    stored.len(),
+                    "store capacity, len {}",
+                    data.len()
+                );
+            } else {
+                // a large envelope keeps rmp_serde's growing buffer
+                assert_eq!(
+                    stored.capacity(),
+                    expected.capacity(),
+                    "store capacity, len {}",
+                    data.len()
+                );
+            }
 
             let mut out = vec![0u8; envelope.encoded_len()];
             envelope.encode_into(&mut out).unwrap();
