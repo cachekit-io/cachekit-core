@@ -45,19 +45,18 @@ const MAX_COMPRESSED_SIZE: usize = 512 * 1024 * 1024; // 512MB limit
 /// Uses u64 for integer-only arithmetic to prevent floating-point precision bypass attacks
 const MAX_COMPRESSION_RATIO: u64 = 1000;
 
-/// Buffer length from which store and retrieve keep the allocation pattern
-/// they had before their copy-saving changes.
+/// Envelope length from which `store` encodes through `rmp_serde::to_vec`'s
+/// growing buffer instead of a buffer allocated once at the exact length.
 ///
-/// Removing a payload-sized buffer can make a large operation slower under
-/// glibc's default malloc. glibc raises its mmap and trim thresholds to the
-/// largest mmap-ed chunk freed so far, so whether the other payload-sized
-/// buffers of an operation come from fresh pages depends on which buffers it
-/// allocates. Measured on 1 MB incompressible values: allocating the store
-/// envelope at its exact length cost 32% more CPU per store (702 to 945 page
-/// faults), because the growing buffer's doubled reallocation had been the
-/// chunk that raised the thresholds. Below 64 KiB no such buffer, doubled or
-/// not, reaches glibc's minimum mmap threshold of 128 KiB, so a change there
-/// cannot move either threshold.
+/// glibc's malloc raises its mmap and trim thresholds to the largest mmap-ed
+/// chunk freed so far, so dropping one payload-sized buffer can send a large
+/// store's other payload-sized buffers to fresh pages on every call. For a
+/// large envelope, `to_vec`'s doubled reallocation is often that chunk: with
+/// an exact-size buffer instead, 1 MB incompressible stores took about a
+/// third more page faults and 30% more CPU under glibc's defaults.
+/// Below 64 KiB the growing buffer stays under glibc's minimum mmap threshold
+/// (128 KiB) even doubled, so it is never mmap-ed, and replacing it cannot
+/// move either threshold.
 #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
 const LARGE_PAYLOAD: usize = 64 * 1024;
 
@@ -240,7 +239,10 @@ impl StorageEnvelope {
     ///
     /// For a binding that owns the output memory (a Python `bytes`, say): it
     /// sizes the buffer with `encoded_len` and writes once, with no
-    /// intermediate `Vec` and no MessagePack dependency of its own.
+    /// intermediate `Vec` and no MessagePack dependency of its own. Measure
+    /// before using it for envelopes of 64 KiB and up: removing a
+    /// payload-sized buffer there can make an operation slower under glibc's
+    /// malloc (see `ByteStorage::store`, which therefore does not).
     ///
     /// # Errors
     ///
@@ -249,10 +251,7 @@ impl StorageEnvelope {
     /// `encoded_len` bytes; nothing written into it is then meaningful.
     #[cfg(feature = "messagepack")]
     pub fn encode_into(&self, out: &mut [u8]) -> Result<(), ByteStorageError> {
-        let len = self.encoded_len();
-        if len > MAX_COMPRESSED_SIZE {
-            return Err(ByteStorageError::InputTooLarge);
-        }
+        let len = self.capped_encoded_len()?;
         if out.len() != len {
             return Err(ByteStorageError::SerializationFailed(format!(
                 "output buffer is {} bytes, the envelope encodes to {len}",
@@ -272,6 +271,17 @@ impl StorageEnvelope {
         Ok(())
     }
 
+    /// `encoded_len`, or `InputTooLarge` past the envelope size cap: the final
+    /// check `store` makes, before anything is encoded.
+    #[cfg(feature = "messagepack")]
+    fn capped_encoded_len(&self) -> Result<usize, ByteStorageError> {
+        let len = self.encoded_len();
+        if len > MAX_COMPRESSED_SIZE {
+            return Err(ByteStorageError::InputTooLarge);
+        }
+        Ok(len)
+    }
+
     /// The encoding `store` returns. Below `LARGE_PAYLOAD` it goes into a
     /// `Vec` allocated once at its final length; from there on it keeps
     /// `rmp_serde::to_vec`'s growing buffer (see `LARGE_PAYLOAD` for why).
@@ -280,10 +290,7 @@ impl StorageEnvelope {
     /// times for a small envelope and to twice the payload for a large one.
     #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
     fn encode(&self) -> Result<Vec<u8>, ByteStorageError> {
-        let len = self.encoded_len();
-        if len > MAX_COMPRESSED_SIZE {
-            return Err(ByteStorageError::InputTooLarge);
-        }
+        let len = self.capped_encoded_len()?;
         if len >= LARGE_PAYLOAD {
             return rmp_serde::to_vec(self)
                 .map_err(|e| ByteStorageError::SerializationFailed(e.to_string()));
@@ -859,7 +866,7 @@ mod tests {
         format_len: usize,
     ) -> StorageEnvelope {
         StorageEnvelope {
-            compressed_data: vec![0xAB; payload_len],
+            compressed_data: vec![0; payload_len],
             checksum,
             original_size: size,
             format: "f".repeat(format_len),
