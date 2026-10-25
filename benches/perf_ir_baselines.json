@@ -21,9 +21,9 @@
         "retrieve/1024": 7558,
         "retrieve/64": 2722,
         "retrieve/65536": 416730,
-        "store/1024": 29644,
-        "store/64": 12277,
-        "store/65536": 1080278,
+        "store/1024": 24497,
+        "store/64": 11878,
+        "store/65536": 773217,
         "tenant_keyring_decrypt/1024": 5598,
         "tenant_keyring_decrypt/64": 2623,
         "tenant_keyring_decrypt/65536": 235234

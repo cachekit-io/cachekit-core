@@ -29,8 +29,14 @@ serde_bytes = "0.11"
 # MessagePack serialization (optional)
 rmp-serde = { version = "1.3", optional = true }
 
-# High-performance LZ4 compression (optional)
-lz4_flex = { version = "0.12", features = ["frame", "std"], optional = true }
+# High-performance LZ4 compression (optional). Block API only, so no `frame`.
+# Decode input is untrusted: `safe-decode` and `checked-decode` stay on
+# explicitly (the decoder is the bounds-checked one under `forbid(unsafe_code)`
+# whatever the encode feature is). The encoder is lz4_flex's unsafe one: same
+# algorithm and byte-identical output, with pointer reads instead of
+# bounds-checked slice reads. wasm32 keeps the safe encoder (target table
+# below). See SECURITY.md, "Decompression limits".
+lz4_flex = { version = "0.12", default-features = false, features = ["std", "safe-decode", "checked-decode"], optional = true }
 
 # Fast non-cryptographic hashing for data integrity (optional)
 # xxHash3-64: fast enough to run on every store and retrieve; it detects corruption, while
@@ -58,6 +64,13 @@ aes = { version = "0.8", features = ["zeroize"], optional = true }
 # Does NOT compile on wasm32-unknown-unknown (requires clang for C asm).
 # Kept optional so it is only compiled when the `encryption` feature is active.
 ring = { version = "0.17", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# wasm32 (the Cloudflare Workers build) keeps lz4_flex's safe encoder: there the
+# cached value, the encoder and the tenant keys share one linear memory, and
+# Miri and the fuzz targets run native only. Same features as above plus
+# `safe-encode`; the resolver unions them for wasm32 builds only.
+lz4_flex = { version = "0.12", default-features = false, features = ["std", "safe-decode", "checked-decode", "safe-encode"], optional = true }
 
 [build-dependencies]
 # C header generation (required for ffi feature)

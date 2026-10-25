@@ -84,9 +84,27 @@ including when the envelope declares `original_size == 0`.
 the decompressed output is bounded by `min(512 MiB, 1000 × compressed_data.len())`
 regardless of what the envelope claims. `extract` then re-checks the produced
 length, because a decompressor's size argument sizes a buffer; it never asserts
-the decoded length. Keep `lz4_flex`'s default `safe-decode` feature on: it
-decodes into a zero-filled fixed-length buffer, where the non-safe decoder uses
-`with_capacity` + `set_len`.
+the decoded length. `Cargo.toml` turns `lz4_flex`'s default features off and
+sets `safe-decode` and `checked-decode` explicitly, so they no longer depend on
+upstream defaults. Keep `safe-decode` on: decode input is untrusted, and it
+selects the decoder that runs under `forbid(unsafe_code)` and decodes into a
+zero-filled fixed-length buffer, where the non-safe decoder uses
+`with_capacity` + `set_len` (RUSTSEC-2026-0041 was a bug in that block
+decoder).
+
+The encoder is `lz4_flex`'s unsafe one (`safe-encode` off) on native targets.
+It runs the same matching algorithm as the safe encoder and writes the same
+bytes, with pointer reads in place of bounds-checked slice reads, which makes
+each compression cheaper. Its input is the caller's value, which can carry
+attacker-chosen bytes, so the `byte_storage_compress` fuzz target builds
+`lz4_flex` with the same features (`fuzz/Cargo.toml`; a default-features entry
+there would unify the safe encoder back in). wasm32 builds keep the safe
+encoder through a target-specific dependency: there the value, the encoder and
+any key material share one linear memory, and the fuzzers run native only.
+
+Below 64 bytes, `StorageEnvelope::new` does not call the encoder at all. It
+writes the input as one literals-only LZ4 block, which every LZ4 block decoder
+reads.
 
 - **`original_size` does not act as a bound.** It is attacker-controlled on any
   backend an attacker can write to. It *does* size the allocation, but only
