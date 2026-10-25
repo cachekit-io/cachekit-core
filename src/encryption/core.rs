@@ -562,8 +562,8 @@ mod tests {
     // The wasm32 encrypt body, run natively: byte-identical to ring's AES-256-GCM.
     #[test]
     fn test_rustcrypto_seal_matches_ring() {
-        let key = [0x42u8; 32];
-        let nonce_bytes = [0x07u8; 12];
+        let key: [u8; 32] = std::array::from_fn(|i| i as u8);
+        let nonce_bytes: [u8; 12] = std::array::from_fn(|i| 0xA0 + i as u8);
         let aad = b"cachekit:v3:tenant:ns";
         let ring_key = LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &key).unwrap());
 
