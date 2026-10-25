@@ -45,20 +45,20 @@ const MAX_COMPRESSED_SIZE: usize = 512 * 1024 * 1024; // 512MB limit
 /// Uses u64 for integer-only arithmetic to prevent floating-point precision bypass attacks
 const MAX_COMPRESSION_RATIO: u64 = 1000;
 
-/// Buffer length from which store and retrieve keep the allocation pattern
-/// they had before their copy-saving changes.
+/// Payload length from which `retrieve` and `validate` copy the envelope's
+/// compressed payload out of the input instead of borrowing it.
 ///
-/// Removing a payload-sized buffer can make a large operation slower under
-/// glibc's default malloc. glibc raises its mmap and trim thresholds to the
-/// largest mmap-ed chunk freed so far, and trims the top of the heap once it
-/// holds more free memory than the trim threshold, so whether the other
-/// payload-sized buffers of an operation come from fresh pages depends on
-/// which buffers it allocates. Measured on 1 MB incompressible values: with
-/// the payload borrowed instead of copied, the remaining buffers of each
-/// retrieve grew the heap past the trim threshold and were trimmed again, so
-/// every retrieve faulted its pages back in (0 to 947 page faults per
-/// operation, 7 times the CPU). Below 64 KiB no buffer reaches glibc's minimum
-/// mmap threshold of 128 KiB, so a change there cannot move either threshold.
+/// glibc's malloc trims the top of the heap once it holds more free memory
+/// than its trim threshold, and raises that threshold (with its mmap
+/// threshold) to the largest mmap-ed chunk freed so far, so dropping one
+/// payload-sized buffer can change whether a large read's other buffers come
+/// from fresh pages. With 1 MB incompressible payloads borrowed, each read's
+/// remaining buffers grew the heap past the trim threshold and were trimmed
+/// again at the end of the call, so every read faulted its pages back in
+/// (from none to about a thousand page faults per read, several times the
+/// CPU). Below 64 KiB the copy this skips is under glibc's minimum mmap
+/// threshold (128 KiB), so it is never mmap-ed and cannot raise either
+/// threshold, and in measurement page faults matched the copying decode.
 #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
 const LARGE_PAYLOAD: usize = 64 * 1024;
 
@@ -408,8 +408,10 @@ mod borrowed {
     }
 
     /// serde_bytes' `ByteBuf` decode, which `StorageEnvelope::compressed_data`
-    /// uses, except that a `bin` or `str` payload is borrowed. serde_bytes'
-    /// own `Cow` decode borrows too, but words its type error differently.
+    /// uses, except that a `bin` or `str` payload under `LARGE_PAYLOAD` is
+    /// borrowed. Owned bytes and strings reach `visit_bytes` and `visit_str`
+    /// through serde's default methods. serde_bytes' own `Cow` decode borrows
+    /// too, but words its type error differently.
     fn borrow_payload<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Cow<'de, [u8]>, D::Error> {
@@ -436,14 +438,6 @@ mod borrowed {
 
             fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
                 Ok(Cow::Owned(v.as_bytes().to_vec()))
-            }
-
-            fn visit_byte_buf<E: Error>(self, v: Vec<u8>) -> Result<Self::Value, E> {
-                Ok(Cow::Owned(v))
-            }
-
-            fn visit_string<E: Error>(self, v: String) -> Result<Self::Value, E> {
-                Ok(Cow::Owned(v.into_bytes()))
             }
 
             // Legacy int-array payload, pre-allocation capped as serde_bytes caps it.
