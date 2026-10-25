@@ -168,6 +168,113 @@ impl StorageEnvelope {
 
         Ok(decompressed)
     }
+
+    /// Exact length of this envelope's MessagePack encoding: the bytes
+    /// [`encode_into`](Self::encode_into) writes and [`ByteStorage::store`]
+    /// returns.
+    ///
+    /// Computed from the field lengths and values without encoding anything,
+    /// so a caller can allocate the output once, at its final size.
+    #[cfg(feature = "messagepack")]
+    pub fn encoded_len(&self) -> usize {
+        // rmp_serde writes the struct as a 4-element array, `compressed_data`
+        // as bin, `checksum` as an array of 8 uints and every uint in its
+        // shortest form; `encoded_len_matches_rmp_serde` pins each width.
+        fn uint_len(v: u32) -> usize {
+            match v {
+                0..=0x7F => 1,
+                0x80..=0xFF => 2,
+                0x100..=0xFFFF => 3,
+                _ => 5,
+            }
+        }
+        fn bin_header_len(len: usize) -> usize {
+            match len {
+                0..=0xFF => 2,
+                0x100..=0xFFFF => 3,
+                _ => 5,
+            }
+        }
+        fn str_header_len(len: usize) -> usize {
+            match len {
+                0..=31 => 1,
+                32..=0xFF => 2,
+                0x100..=0xFFFF => 3,
+                _ => 5,
+            }
+        }
+        let checksum_len = 1 + self
+            .checksum
+            .iter()
+            .map(|&b| uint_len(b.into()))
+            .sum::<usize>();
+        let fixed = 1 // fixarray(4)
+            + bin_header_len(self.compressed_data.len())
+            + checksum_len
+            + uint_len(self.original_size)
+            + str_header_len(self.format.len());
+        fixed
+            .saturating_add(self.compressed_data.len())
+            .saturating_add(self.format.len())
+    }
+
+    /// Write this envelope's MessagePack encoding, the bytes
+    /// [`ByteStorage::store`] returns, into `out`, which must be exactly
+    /// [`encoded_len`](Self::encoded_len) bytes long.
+    ///
+    /// For a binding that owns the output memory (a Python `bytes`, say): it
+    /// sizes the buffer with `encoded_len` and writes once, with no
+    /// intermediate `Vec` and no MessagePack dependency of its own.
+    ///
+    /// # Errors
+    ///
+    /// `InputTooLarge` when the encoding exceeds the envelope size cap, the
+    /// same final check `store` makes. `SerializationFailed` when `out` is not
+    /// `encoded_len` bytes; nothing written into it is then meaningful.
+    #[cfg(feature = "messagepack")]
+    pub fn encode_into(&self, out: &mut [u8]) -> Result<(), ByteStorageError> {
+        let len = self.encoded_len();
+        if len > MAX_COMPRESSED_SIZE {
+            return Err(ByteStorageError::InputTooLarge);
+        }
+        if out.len() != len {
+            return Err(ByteStorageError::SerializationFailed(format!(
+                "output buffer is {} bytes, the envelope encodes to {len}",
+                out.len()
+            )));
+        }
+        let mut rest = &mut out[..];
+        rmp_serde::encode::write(&mut rest, self)
+            .map_err(|e| ByteStorageError::SerializationFailed(e.to_string()))?;
+        // encoded_len was exact if the write filled the buffer
+        if !rest.is_empty() {
+            return Err(ByteStorageError::SerializationFailed(format!(
+                "envelope encoded {} bytes short of its computed length",
+                rest.len()
+            )));
+        }
+        Ok(())
+    }
+
+    /// The encoding in a `Vec` allocated once at its final length.
+    ///
+    /// `rmp_serde::to_vec` grows its `Vec` from empty: a large payload is
+    /// copied in and then reallocated to twice its size when the fields after
+    /// it are written, so a 1 MiB store touched 2 MiB of fresh memory.
+    #[cfg(feature = "messagepack")]
+    fn encode(&self) -> Result<Vec<u8>, ByteStorageError> {
+        let len = self.encoded_len();
+        if len > MAX_COMPRESSED_SIZE {
+            return Err(ByteStorageError::InputTooLarge);
+        }
+        let mut out = Vec::new();
+        out.try_reserve_exact(len)
+            .map_err(|e| ByteStorageError::SerializationFailed(e.to_string()))?;
+        rmp_serde::encode::write(&mut out, self)
+            .map_err(|e| ByteStorageError::SerializationFailed(e.to_string()))?;
+        debug_assert_eq!(out.len(), len, "encoded_len must be exact");
+        Ok(out)
+    }
 }
 
 /// Decompression bound, checked by `extract` before it allocates the output.
@@ -238,16 +345,9 @@ impl ByteStorage {
 
         let envelope = StorageEnvelope::new(data, format)?;
 
-        // Serialize envelope with MessagePack
-        let envelope_bytes = rmp_serde::to_vec(&envelope)
-            .map_err(|e| ByteStorageError::SerializationFailed(e.to_string()))?;
-
-        // Security: Final check on serialized envelope size
-        if envelope_bytes.len() > MAX_COMPRESSED_SIZE {
-            return Err(ByteStorageError::InputTooLarge);
-        }
-
-        Ok(envelope_bytes)
+        // Serialize envelope with MessagePack. Security: the final envelope
+        // size check runs inside, before the output is allocated.
+        envelope.encode()
     }
 
     /// Retrieve and validate stored bytes
@@ -730,6 +830,118 @@ mod tests {
         // Should succeed at exactly the limit
         let result = storage.store(&max_size_data, None);
         assert!(result.is_ok());
+    }
+
+    /// An envelope with chosen field values, for the encoding width boundaries.
+    fn envelope_with(
+        payload_len: usize,
+        checksum: [u8; 8],
+        size: u32,
+        format_len: usize,
+    ) -> StorageEnvelope {
+        StorageEnvelope {
+            compressed_data: vec![0xAB; payload_len],
+            checksum,
+            original_size: size,
+            format: "f".repeat(format_len),
+        }
+    }
+
+    #[test]
+    fn encoded_len_matches_rmp_serde() {
+        // Each length and value either side of a MessagePack width change:
+        // fixstr/str8/str16/str32, bin8/bin16/bin32, fixint/u8/u16/u32
+        let lengths = [0, 1, 31, 32, 255, 256, 65_535, 65_536, 70_000];
+        let sizes = [0, 127, 128, 255, 256, 65_535, 65_536, u32::MAX];
+        let checksums = [
+            [0x00; 8],
+            [0x7F; 8],
+            [0x80; 8],
+            [0xFF; 8],
+            [0, 0x80, 1, 0xFF, 0x7F, 2, 0xC0, 3],
+        ];
+        for payload_len in lengths {
+            for format_len in lengths {
+                let envelope = envelope_with(payload_len, checksums[4], 1, format_len);
+                let expected = rmp_serde::to_vec(&envelope).unwrap().len();
+                assert_eq!(
+                    envelope.encoded_len(),
+                    expected,
+                    "payload {payload_len}, format {format_len}"
+                );
+            }
+        }
+        for size in sizes {
+            for checksum in checksums {
+                let envelope = envelope_with(3, checksum, size, 7);
+                let expected = rmp_serde::to_vec(&envelope).unwrap().len();
+                assert_eq!(
+                    envelope.encoded_len(),
+                    expected,
+                    "size {size}, checksum {checksum:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn store_and_encode_into_write_rmp_serde_bytes() {
+        let storage = ByteStorage::new(None);
+        for data in [
+            vec![],
+            vec![b'a'; 63],
+            vec![b'a'; 64],
+            (0..70_000).map(|i| (i * 7919 % 251) as u8).collect(),
+        ] {
+            let envelope = StorageEnvelope::new(&data, "msgpack".to_string()).unwrap();
+            let expected = rmp_serde::to_vec(&envelope).unwrap();
+
+            let stored = storage.store(&data, None).unwrap();
+            assert_eq!(stored, expected, "store, len {}", data.len());
+            // allocated once at its final length, no doubling realloc
+            assert_eq!(
+                stored.capacity(),
+                stored.len(),
+                "store capacity, len {}",
+                data.len()
+            );
+
+            let mut out = vec![0u8; envelope.encoded_len()];
+            envelope.encode_into(&mut out).unwrap();
+            assert_eq!(out, expected, "encode_into, len {}", data.len());
+        }
+    }
+
+    #[test]
+    fn encode_into_rejects_a_wrong_sized_buffer() {
+        let envelope = StorageEnvelope::new(b"payload", "msgpack".to_string()).unwrap();
+        let len = envelope.encoded_len();
+        for wrong in [0, len - 1, len + 1] {
+            let mut out = vec![0u8; wrong];
+            assert!(
+                matches!(
+                    envelope.encode_into(&mut out),
+                    Err(ByteStorageError::SerializationFailed(_))
+                ),
+                "buffer of {wrong} bytes for a {len}-byte envelope"
+            );
+        }
+    }
+
+    #[test]
+    fn encode_into_applies_the_envelope_size_cap() {
+        // Compressed data at the cap: the envelope headers push it over, and
+        // the check runs before the (deliberately tiny) buffer is looked at
+        let envelope = envelope_with(MAX_COMPRESSED_SIZE, [0; 8], 1, 7);
+        assert!(envelope.encoded_len() > MAX_COMPRESSED_SIZE);
+        assert_eq!(
+            envelope.encode_into(&mut []),
+            Err(ByteStorageError::InputTooLarge)
+        );
+        assert_eq!(
+            envelope.encode().err(),
+            Some(ByteStorageError::InputTooLarge)
+        );
     }
 
     #[test]
