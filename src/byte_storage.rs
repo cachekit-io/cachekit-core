@@ -52,8 +52,8 @@ const MAX_COMPRESSION_RATIO: u64 = 1000;
 /// compare the compressed payload length: from here on they copy the payload
 /// out of the input instead of borrowing it.
 ///
-/// glibc's malloc raises its mmap and trim thresholds to the largest mmap-ed
-/// chunk freed so far, and trims the top of the heap once it holds more free
+/// glibc's malloc raises its mmap threshold to the largest mmap-ed chunk
+/// freed so far, and its trim threshold to twice that, and trims the top of the heap once it holds more free
 /// memory than the trim threshold, so dropping one payload-sized buffer can
 /// send a large operation's other payload-sized buffers to fresh pages on
 /// every call. Measured on 1 MB incompressible values under glibc's defaults:
@@ -110,10 +110,9 @@ fn compress_block(data: &[u8]) -> Vec<u8> {
 }
 
 /// Storage envelope for raw byte storage
-///
-/// `retrieve` and `validate` decode into its private borrowing twin,
-/// `borrowed::StorageEnvelope`: change the two together.
 /// Contains compressed data with integrity checking
+// `retrieve` and `validate` decode into its private borrowing twin,
+// `borrowed::StorageEnvelope`: change the two together.
 #[derive(Serialize, Deserialize)]
 pub struct StorageEnvelope {
     /// Compressed payload data
@@ -290,9 +289,9 @@ impl StorageEnvelope {
     }
 }
 
-/// Decompress and verify one envelope's payload: the checks `extract` makes,
-/// in its order. `retrieve` and `validate` call it on the borrowed decode, so
-/// every read path runs the same checks.
+/// Decompress and verify one envelope's payload. `StorageEnvelope::extract`
+/// forwards to it, and `retrieve` and `validate` call it on the borrowed
+/// decode, so every read path runs the same checks in the same order.
 #[cfg(all(feature = "compression", feature = "checksum"))]
 fn extract_payload(
     compressed_data: &[u8],
@@ -323,10 +322,11 @@ fn extract_payload(
     Ok(decompressed)
 }
 
-/// Decompression bound, checked by `extract` before it allocates the output.
+/// Decompression bound, checked by `extract_payload` before it allocates the
+/// output.
 ///
-/// A separate function so the Kani proofs verify the predicate `extract`
-/// actually runs, not a restatement of it.
+/// A separate function so the Kani proofs verify the predicate
+/// `extract_payload` actually runs, not a restatement of it.
 #[cfg(all(feature = "compression", feature = "checksum"))]
 fn check_decompression_bound(
     compressed_len: usize,
@@ -1155,23 +1155,29 @@ mod tests {
     #[test]
     fn store_and_encode_into_write_rmp_serde_bytes() {
         let storage = ByteStorage::new(None);
-        let mut gate_sides = [false; 2];
-        for data in [
-            vec![],
-            vec![b'a'; 63],
-            vec![b'a'; 64],
-            (0..70_000).map(|i| (i * 7919 % 251) as u8).collect(),
+        // (input, whether its envelope is at or above LARGE_PAYLOAD)
+        for (data, large) in [
+            (vec![], false),
+            (vec![b'a'; 63], false),
+            (vec![b'a'; 64], false),
+            ((0..70_000).map(|i| (i * 7919 % 251) as u8).collect(), false),
             // either side of the gate: LZ4 adds ~257 length bytes to a literal run
-            xorshift_bytes(LARGE_PAYLOAD - 512),
-            xorshift_bytes(LARGE_PAYLOAD),
-            xorshift_bytes(300_000),
+            (xorshift_bytes(LARGE_PAYLOAD - 512), false),
+            (xorshift_bytes(LARGE_PAYLOAD), true),
+            (xorshift_bytes(300_000), true),
         ] {
             let envelope = StorageEnvelope::new(&data, "msgpack".to_string()).unwrap();
             let expected = rmp_serde::to_vec(&envelope).unwrap();
 
             let stored = storage.store(&data, None).unwrap();
             assert_eq!(stored, expected, "store, len {}", data.len());
-            gate_sides[usize::from(stored.len() >= LARGE_PAYLOAD)] = true;
+            assert_eq!(
+                stored.len() >= LARGE_PAYLOAD,
+                large,
+                "gate side, len {}: envelope {}",
+                data.len(),
+                stored.len()
+            );
             if stored.len() < LARGE_PAYLOAD {
                 // allocated once at its final length, no reallocation
                 assert_eq!(
@@ -1194,11 +1200,6 @@ mod tests {
             envelope.encode_into(&mut out).unwrap();
             assert_eq!(out, expected, "encode_into, len {}", data.len());
         }
-        assert_eq!(
-            gate_sides,
-            [true, true],
-            "an envelope on each side of LARGE_PAYLOAD"
-        );
     }
 
     #[test]
