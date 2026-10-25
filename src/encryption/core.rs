@@ -26,10 +26,13 @@ use ring::{
     rand::{SecureRandom, SystemRandom},
 };
 
-// wasm32: RustCrypto aes-gcm (pure Rust, compiles on wasm32-unknown-unknown)
+// wasm32: RustCrypto aes-gcm (pure Rust, compiles on wasm32-unknown-unknown).
+// The seal helper also compiles under native tests so they can check it against ring.
 #[cfg(target_arch = "wasm32")]
+use aes_gcm::aead::{Aead, Payload};
+#[cfg(any(target_arch = "wasm32", test))]
 use aes_gcm::{
-    aead::{Aead, KeyInit, Payload},
+    aead::{AeadInPlace, KeyInit},
     Aes256Gcm, Nonce as AesGcmNonce,
 };
 #[cfg(not(target_arch = "wasm32"))]
@@ -456,30 +459,7 @@ impl ZeroKnowledgeEncryptor {
 
         let nonce_bytes = self.generate_nonce()?;
 
-        let cipher = Aes256Gcm::new_from_slice(key)
-            .map_err(|e| EncryptionError::EncryptionFailed(format!("key error: {e}")))?;
-
-        let nonce = AesGcmNonce::from_slice(&nonce_bytes);
-
-        // encrypt() returns ciphertext || tag (no nonce) — same layout as ring's seal_in_place_append_tag
-        let ciphertext_with_tag = cipher
-            .encrypt(
-                nonce,
-                Payload {
-                    msg: plaintext,
-                    aad,
-                },
-            )
-            .map_err(|e| {
-                EncryptionError::EncryptionFailed(format!("AES-GCM encrypt failed: {e}"))
-            })?;
-
-        // Wire format: nonce(12) || ciphertext || tag(16) — identical to native ring output
-        let mut result = Vec::with_capacity(12 + ciphertext_with_tag.len());
-        result.extend_from_slice(&nonce_bytes);
-        result.extend_from_slice(&ciphertext_with_tag);
-
-        Ok(result)
+        seal_aes_gcm_rustcrypto(key, &nonce_bytes, plaintext, aad)
     }
 
     /// Decrypt data using AES-256-GCM with authenticated additional data (wasm32)
@@ -528,6 +508,34 @@ impl ZeroKnowledgeEncryptor {
     }
 }
 
+/// Seal `plaintext` with RustCrypto AES-256-GCM into `[nonce(12)][ciphertext][tag(16)]`.
+///
+/// The wasm32 `encrypt_aes_gcm` body. It builds the output in one buffer and seals in
+/// place after the nonce: one allocation, one plaintext copy. `Aead::encrypt` would
+/// allocate its own `ciphertext || tag` buffer that then had to be copied behind the
+/// nonce. Compiled under native tests too, which check its bytes against ring.
+#[cfg(any(target_arch = "wasm32", test))]
+fn seal_aes_gcm_rustcrypto(
+    key: &[u8],
+    nonce_bytes: &[u8; 12],
+    plaintext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, EncryptionError> {
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|e| EncryptionError::EncryptionFailed(format!("key error: {e}")))?;
+
+    let mut result = Vec::with_capacity(12 + plaintext.len() + 16);
+    result.extend_from_slice(nonce_bytes);
+    result.extend_from_slice(plaintext);
+
+    let tag = cipher
+        .encrypt_in_place_detached(AesGcmNonce::from_slice(nonce_bytes), aad, &mut result[12..])
+        .map_err(|e| EncryptionError::EncryptionFailed(format!("AES-GCM encrypt failed: {e}")))?;
+    result.extend_from_slice(&tag);
+
+    Ok(result)
+}
+
 // Note: Default is intentionally NOT implemented.
 // ZeroKnowledgeEncryptor::new() returns Result for API stability, even though
 // the current implementation is infallible.
@@ -549,6 +557,36 @@ mod tests {
 
         #[cfg(target_arch = "aarch64")]
         assert_eq!(reported, std::arch::is_aarch64_feature_detected!("aes"));
+    }
+
+    // The wasm32 encrypt body, run natively: byte-identical to ring's AES-256-GCM.
+    #[test]
+    fn test_rustcrypto_seal_matches_ring() {
+        let key = [0x42u8; 32];
+        let nonce_bytes = [0x07u8; 12];
+        let aad = b"cachekit:v3:tenant:ns";
+        let ring_key = LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &key).unwrap());
+
+        for len in [0usize, 1, 15, 16, 17, 1024, 65536] {
+            let plaintext: Vec<u8> = (0..len).map(|i| (i * 31 + 7) as u8).collect();
+
+            let out = seal_aes_gcm_rustcrypto(&key, &nonce_bytes, &plaintext, aad).unwrap();
+            assert_eq!(out.len(), 12 + len + 16, "len {len}");
+
+            let mut expected = nonce_bytes.to_vec();
+            let mut sealed = plaintext.clone();
+            let tag = ring_key
+                .seal_in_place_separate_tag(
+                    Nonce::assume_unique_for_key(nonce_bytes),
+                    Aad::from(aad),
+                    &mut sealed,
+                )
+                .unwrap();
+            expected.extend_from_slice(&sealed);
+            expected.extend_from_slice(tag.as_ref());
+
+            assert_eq!(out, expected, "len {len}");
+        }
     }
 
     #[test]
