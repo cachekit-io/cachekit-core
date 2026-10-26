@@ -40,7 +40,7 @@ pub fn msgpack_payload(size: usize) -> Vec<u8> {
             user: format!("user_{:x}", state % 0xff_ffff),
             email: format!("u{}@example{}.com", state % 100_000, state % 7),
             score: (state % 10_000) as f64 / 100.0,
-            active: state % 3 != 0,
+            active: !state.is_multiple_of(3),
             tags: (0..(state % 4) as usize)
                 .map(|i| TAGS[(state as usize >> (8 * i)) % TAGS.len()])
                 .collect(),
