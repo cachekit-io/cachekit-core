@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.7.1...cachekit-core-v0.7.2) (2026-10-26)
+
+
+### Performance Improvements
+
+* **byte-storage:** borrow envelope payloads under 64 KiB on retrieve (LAB-7118) ([#132](https://github.com/cachekit-io/cachekit-core/issues/132)) ([7305b3b](https://github.com/cachekit-io/cachekit-core/commit/7305b3b6c85631fc27caa7d7d7c0cc6b8a1565c9))
+* **byte-storage:** encode store envelopes under 64 KiB into a buffer sized once (LAB-7118) ([#131](https://github.com/cachekit-io/cachekit-core/issues/131)) ([ac2bfe6](https://github.com/cachekit-io/cachekit-core/commit/ac2bfe642c1140136960647b0216eac597feb584))
+* **byte-storage:** lz4_flex unsafe encoder, literals-only block below 64 B (LAB-7140) ([257aa0a](https://github.com/cachekit-io/cachekit-core/commit/257aa0a5904539405e88666903d3e477d6d89981))
+* **encryption:** seal wasm32 AES-GCM in one buffer (LAB-7138) ([#129](https://github.com/cachekit-io/cachekit-core/issues/129)) ([ca409f2](https://github.com/cachekit-io/cachekit-core/commit/ca409f2a9259d938d288cc69421cfe4e47b7133f))
+
 ## [0.7.1](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.7.0...cachekit-core-v0.7.1) (2026-10-24)
 
 
