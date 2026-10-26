@@ -19,10 +19,12 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "Keep proptest below 1.12. proptest 1.12.0 raised its rust-version to 1.88, above this crate's MSRV of 1.85 (rust-version in Cargo.toml), so the 1.85 CI job cannot build it and the whole rust-dev-deps group fails. 1.11.x patches still arrive in that group. Raise or drop this cap when the MSRV reaches 1.88.",
+      "description": "Hold proptest minor and major updates. proptest 1.12.0 raised its rust-version to 1.88, above this crate's MSRV of 1.85 (rust-version in Cargo.toml), so the 1.85 CI job cannot build it and the whole rust-dev-deps group fails. Such an update waits under Pending Approval on the Dependency Dashboard instead; patches within the locked minor still arrive in that group. Vulnerability updates are not held: Renovate forces dependencyDashboardApproval off for them, so a security fix gets its own PR even above the MSRV. That is why this is a hold and not an allowedVersions cap, which would also filter out a GitHub-advisory fix. Drop this rule when the MSRV reaches 1.88.",
       "matchManagers": ["cargo"],
       "matchPackageNames": ["proptest"],
-      "allowedVersions": "<1.12.0"
+      "matchUpdateTypes": ["minor", "major"],
+      "groupName": null,
+      "dependencyDashboardApproval": true
     },
     {
       "description": "Hold wasm-bindgen-test. It is exact-pinned and pins wasm-bindgen exactly in turn, and the wasm32 CI job's wasm-bindgen-test-runner (WASM_BINDGEN_VERSION and WASM_BINDGEN_SHA256 in ci.yml) must match the locked wasm-bindgen, so the pin, Cargo.lock and the runner move together by hand. A Renovate update moves the pin and Cargo.lock but not the runner, so that job's version check fails, and it waits under Pending Approval on the Dependency Dashboard instead. Vulnerability updates are not held.",
