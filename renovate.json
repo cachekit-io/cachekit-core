@@ -25,14 +25,14 @@
       "allowedVersions": "<1.12.0"
     },
     {
-      "description": "Hold wasm-bindgen-test. It is exact-pinned and pins wasm-bindgen exactly in turn, and the wasm32 CI job's wasm-bindgen-test-runner (WASM_BINDGEN_VERSION and WASM_BINDGEN_SHA256 in ci.yml) must match the locked wasm-bindgen, so the pin, Cargo.lock and the runner move together by hand. A Renovate update moves only the crate and fails that job's version check, so it waits under Pending Approval on the Dependency Dashboard instead. Vulnerability updates are not held.",
+      "description": "Hold wasm-bindgen-test. It is exact-pinned and pins wasm-bindgen exactly in turn, and the wasm32 CI job's wasm-bindgen-test-runner (WASM_BINDGEN_VERSION and WASM_BINDGEN_SHA256 in ci.yml) must match the locked wasm-bindgen, so the pin, Cargo.lock and the runner move together by hand. A Renovate update moves the pin and Cargo.lock but not the runner, so that job's version check fails, and it waits under Pending Approval on the Dependency Dashboard instead. Vulnerability updates are not held.",
       "matchManagers": ["cargo"],
       "matchPackageNames": ["wasm-bindgen-test"],
       "groupName": null,
       "dependencyDashboardApproval": true
     },
     {
-      "description": "Hold xxhash-rust. No audit source that supply-chain/ imports covers it, so each new version fails cargo vet until someone records an exemption or audit for that version. Without this rule the version would fail the whole non-major group. It waits under Pending Approval on the Dependency Dashboard instead, and whoever approves it adds the supply-chain entry on that branch. Vulnerability updates are not held.",
+      "description": "Hold xxhash-rust. No audit source that supply-chain/ imports covers it, and audits.toml does not trust its publisher, so each new version fails cargo vet until someone records an exemption or audit for that version. Without this rule the version would fail the whole non-major group. It waits under Pending Approval on the Dependency Dashboard instead, and whoever approves it adds the supply-chain entry on that branch. Vulnerability updates are not held. Drop this rule if either of those changes.",
       "matchManagers": ["cargo"],
       "matchPackageNames": ["xxhash-rust"],
       "groupName": null,
