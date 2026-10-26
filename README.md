@@ -7,7 +7,7 @@
 [![Crates.io](https://img.shields.io/crates/v/cachekit-core.svg)](https://crates.io/crates/cachekit-core)
 [![Documentation](https://docs.rs/cachekit-core/badge.svg)](https://docs.rs/cachekit-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.85-blue.svg)](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0.html)
+[![MSRV](https://img.shields.io/badge/MSRV-1.91-blue.svg)](https://blog.rust-lang.org/2025/10/30/Rust-1.91.0/)
 
 [Features](#features) · [Quick Start](#quick-start) · [FFI](#c-ffi) · [Security](#security) · [Architecture](#architecture)
 
@@ -435,7 +435,7 @@ somewhere inside the decoder does not count.
 
 ## Minimum Supported Rust Version
 
-This crate requires **Rust 1.85** or later (Edition 2024).
+New releases support the latest stable Rust. This release requires **Rust 1.91** or later: `rust-version` in `Cargo.toml` is the oldest toolchain CI tests, and any release may raise it when a dependency needs a newer one.
 
 ---
 

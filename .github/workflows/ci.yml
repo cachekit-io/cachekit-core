@@ -23,8 +23,10 @@ jobs:
       matrix:
         # Full OS matrix for stable only; MSRV and beta on Linux only.
         include:
-          # MSRV - ensures we don't use newer Rust features
-          - rust: "1.85"
+          # rust-version floor from Cargo.toml. New releases support stable
+          # Rust: when a dependency needs a newer toolchain, raise
+          # rust-version and this row together instead of holding it back.
+          - rust: "1.91"
             os: ubuntu-latest
           # Stable - primary target, all platforms
           - rust: stable
@@ -45,7 +47,7 @@ jobs:
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
           toolchain: ${{ matrix.rust }}
-          components: ${{ matrix.rust != '1.85' && 'rustfmt, clippy' || '' }}
+          components: ${{ matrix.rust != '1.91' && 'rustfmt, clippy' || '' }}
 
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
@@ -58,7 +60,7 @@ jobs:
         run: cargo fmt --check
 
       - name: Run clippy
-        if: matrix.rust != '1.85'
+        if: matrix.rust != '1.91'
         run: cargo clippy --all-features -- -D warnings
 
       - name: Run tests (all features)
