@@ -19,6 +19,19 @@
       "dependencyDashboardApproval": true
     },
     {
+      "description": "Keep proptest below 1.12. proptest 1.12.0 raised its rust-version to 1.88, above this crate's MSRV of 1.85 (rust-version in Cargo.toml), so the 1.85 CI job cannot build it and the whole rust-dev-deps group fails. 1.11.x patches still arrive in that group. Raise or drop this cap when the MSRV reaches 1.88.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["proptest"],
+      "allowedVersions": "<1.12.0"
+    },
+    {
+      "description": "Hold wasm-bindgen-test. It is exact-pinned and pins wasm-bindgen exactly in turn, and the wasm32 CI job's wasm-bindgen-test-runner (WASM_BINDGEN_VERSION and WASM_BINDGEN_SHA256 in ci.yml) must match the locked wasm-bindgen, so the pin, Cargo.lock and the runner move together by hand. A Renovate update moves only the crate and fails that job's version check, so it waits under Pending Approval on the Dependency Dashboard instead. Vulnerability updates are not held.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["wasm-bindgen-test"],
+      "groupName": null,
+      "dependencyDashboardApproval": true
+    },
+    {
       "description": "Cargo dev-dependency updates never automerge in this repo. This overrides the shared preset, which automerges them through its rust-dev-deps group and its dev-dependency rule. Crates whose publisher is trusted in supply-chain/audits.toml pass cargo vet with no per-version review, and any dev-dependency update can move a runtime dependency in the shared Cargo.lock. So the rule matches every dev-dependency, not only the trusted crates, and a human merges each one. Keep this rule last in this file: a later rule here that sets automerge would override it.",
       "matchManagers": ["cargo"],
       "matchDepTypes": ["dev-dependencies"],
