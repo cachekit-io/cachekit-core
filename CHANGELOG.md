@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.7.2...cachekit-core-v0.7.3) (2026-10-27)
+
+
+### Bug Fixes
+
+* **byte-storage:** move lz4_flex to 0.13 so 32-bit targets compress past 37 MiB (LAB-11020) ([#141](https://github.com/cachekit-io/cachekit-core/issues/141)) ([d534d8f](https://github.com/cachekit-io/cachekit-core/commit/d534d8fc8fc3cb9519dd7573ae9f3de4c7d01e45))
+
 ## [0.7.2](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.7.1...cachekit-core-v0.7.2) (2026-10-26)
 
 
