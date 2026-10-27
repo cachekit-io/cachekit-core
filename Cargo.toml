@@ -36,7 +36,7 @@ rmp-serde = { version = "1.3", optional = true }
 # unsafe one: same algorithm and byte-identical output, with unchecked pointer
 # reads and writes instead of bounds-checked slice access. Other targets keep
 # the safe encoder (target table below). See SECURITY.md, "Decompression limits".
-lz4_flex = { version = "0.12", default-features = false, features = ["std", "safe-decode", "checked-decode"], optional = true }
+lz4_flex = { version = "0.13", default-features = false, features = ["std", "safe-decode", "checked-decode"], optional = true }
 
 # Fast non-cryptographic hashing for data integrity (optional)
 # xxHash3-64: fast enough to run on every store and retrieve; it detects corruption, while
@@ -67,14 +67,14 @@ ring = { version = "0.17", optional = true }
 
 [target.'cfg(not(target_pointer_width = "64"))'.dependencies]
 # Targets below 64 bits (i686, armv7, win32, wasm32) keep lz4_flex's safe
-# encoder. lz4_flex 0.12's output bound, `input_len * 110 / 100`, wraps in a
-# 32-bit usize above about 37 MiB, inside this crate's 512 MiB input cap: the
-# unsafe encoder would then write past its allocation, where the safe one
-# panics. On wasm32 (the Workers build) the cached value, the encoder and the
-# tenant keys also share one linear memory, and Miri and the fuzzers run 64-bit
-# native only. Cargo unions this `safe-encode` with the features above for
-# these targets only.
-lz4_flex = { version = "0.12", default-features = false, features = ["safe-encode"], optional = true }
+# encoder. On wasm32 (the Workers build) the cached value, the encoder and the
+# tenant keys share one linear memory, and the fuzzers run 64-bit native only,
+# so the unsafe encoder is unexercised on these targets. 0.13 is the floor:
+# 0.12 computed the output bound, `input_len * 110 / 100`, in a usize that
+# overflows on 32 bits above about 37 MiB, inside this crate's 512 MiB input
+# cap (tests/compress_bound_32_bits.rs). Cargo unions this `safe-encode` with
+# the features above for these targets only.
+lz4_flex = { version = "0.13", default-features = false, features = ["safe-encode"], optional = true }
 
 [build-dependencies]
 # C header generation (required for ffi feature)
