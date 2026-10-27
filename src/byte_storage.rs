@@ -669,7 +669,7 @@ mod tests {
     fn store_roundtrips_around_and_above_threshold() {
         // Repetitive, periodic and pseudo-random inputs either side of the
         // threshold, so the lz4_flex encoder's match, literal and end-of-input
-        // paths all run (and run under Miri, which checks the unsafe encoder)
+        // paths all run
         let storage = ByteStorage::new(None);
         let mut state: u32 = 0x9E37_79B9;
         let mut next = move || {

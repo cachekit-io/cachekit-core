@@ -4,8 +4,9 @@
 //! `lz4_flex`, which sizes its output as `16 + 4 + input_len * 110 / 100`.
 //! lz4_flex 0.12 computed that product in `usize`, so on a 32-bit target it
 //! overflowed for any input above 39,045,157 B, far inside the crate's 512 MiB
-//! input cap: a debug build panicked on the multiply and a release build
-//! panicked on the undersized buffer. 0.13 computes it in `u64`. The test input
+//! input cap: a debug build panicked on the multiply, and a release build
+//! panicked when the compressed output outgrew the wrapped bound. 0.13
+//! computes it in `u64`. The test input
 //! is one byte past that boundary. On a 64-bit host the product never
 //! overflows, so only a 32-bit run proves anything. This file runs natively
 //! under libtest and on `wasm32-unknown-unknown` under `wasm-bindgen-test`

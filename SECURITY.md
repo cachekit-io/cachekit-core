@@ -103,13 +103,14 @@ there would unify the safe encoder back in).
 
 Every target narrower than 64 bits (i686, armv7, 32-bit Windows, wasm32) keeps
 the safe encoder through a target-specific dependency. On wasm32 the value, the
-encoder and any key material share one linear memory, and the fuzzers and Miri
-run on 64-bit targets only, so the unsafe encoder is unexercised there. The
-encoder sizes its output as `16 + 4 + input_len * 110 / 100`. `lz4_flex` 0.12
-computed that in `usize`, which wrapped on a 32-bit target for inputs above
-39,045,157 B, below this crate's 512 MiB input cap, and the safe encoder then
-panicked. This crate requires 0.13, which computes the bound in `u64`; the
-`wasm32` CI job stores and retrieves an input one byte past that boundary.
+encoder and any key material share one linear memory, and the fuzzers run on
+64-bit targets only, so the unsafe encoder is unexercised there. The encoder
+sizes its output as `16 + 4 + input_len * 110 / 100`. `lz4_flex` 0.12 computed
+that in `usize`, which overflows on a 32-bit target for inputs above
+39,045,157 B, below this crate's 512 MiB input cap: a debug build panicked on
+the multiply, and a release build panicked when the compressed output outgrew
+the wrapped bound. This crate requires 0.13, which computes the bound in `u64`;
+the `wasm32` CI job stores and retrieves an input one byte past that boundary.
 
 Below 64 bytes, `StorageEnvelope::new` does not call the encoder at all. It
 writes the input as one literals-only LZ4 block, which every LZ4 block decoder
