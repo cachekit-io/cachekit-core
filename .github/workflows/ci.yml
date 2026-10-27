@@ -148,6 +148,18 @@ jobs:
           grep -qxF 'test envelope_ratio_product_wraps_32_bits ... ok' wasm32-test.log
           grep -qE '^test result: ok\. 1 passed; 0 failed' wasm32-test.log
 
+      # lz4_flex's output bound (16 + 4 + len * 110 / 100) must not overflow a
+      # 32-bit usize below the 512 MiB input cap. Same "no tests to run!" guard.
+      - name: Run the LZ4 compress-bound round trip on wasm32
+        shell: bash
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        run: |
+          cargo test --target wasm32-unknown-unknown --features wasm \
+            --test compress_bound_32_bits 2>&1 | tee wasm32-compress-bound.log
+          grep -qxF 'test store_retrieve_past_32_bit_compress_bound ... ok' wasm32-compress-bound.log
+          grep -qE '^test result: ok\. 1 passed; 0 failed' wasm32-compress-bound.log
+
   # Instruction-count gate (README, "Instruction counts"). The committed
   # budgets only hold on the machine they were recorded on, so this job
   # measures the PR's merge-base and the PR on the same runner and fails at
