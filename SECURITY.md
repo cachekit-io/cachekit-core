@@ -55,7 +55,7 @@ This crate protects against:
 This crate does **not** protect against:
 
 - Side-channel attacks on the host system
-- Payload bytes left in process memory: `store` compresses inputs under 4 KiB through a per-thread output buffer (4,524 B) that is never zeroed, so it holds bytes of earlier payloads for the life of the thread, as freed buffers do until they are reused
+- Payload bytes left in process memory: `store` compresses inputs from 64 B to under 4 KiB through a per-thread output buffer (4,524 B) that is not cleared between calls, so it holds bytes of earlier payloads for the life of the thread, as freed buffers do until they are reused
 - Compromise of the master key
 - Denial of service via resource exhaustion (partial protection only)
 - Attacks requiring physical access
