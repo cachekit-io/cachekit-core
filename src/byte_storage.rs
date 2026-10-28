@@ -119,6 +119,10 @@ const _: () = assert!(TABLE_REUSE_LIMIT < u16::MAX as usize);
 #[cfg(feature = "compression")]
 const SCRATCH_LEN: usize = get_maximum_output_size(TABLE_REUSE_LIMIT - 1);
 
+/// This thread's LZ4 hash table and output scratch.
+#[cfg(feature = "compression")]
+type CompressState = RefCell<(Box<CompressTable>, Vec<u8>)>;
+
 #[cfg(feature = "compression")]
 thread_local! {
     /// This thread's LZ4 hash table (8 KiB) and output scratch, both allocated
@@ -130,12 +134,12 @@ thread_local! {
     /// The table is boxed because lz4_flex declares it 64-byte aligned, and
     /// macOS places thread locals with at most 16-byte alignment
     /// (rust-lang/rust#90959): held inline, it would be misaligned there.
-    static COMPRESS_STATE: RefCell<(Box<CompressTable>, Vec<u8>)> =
+    static COMPRESS_STATE: CompressState =
         RefCell::new((Box::new(CompressTable::small()), vec![0; SCRATCH_LEN]));
 }
 
 #[cfg(feature = "compression")]
-const _: () = assert!(std::mem::align_of::<RefCell<(Box<CompressTable>, Vec<u8>)>>() <= 16);
+const _: () = assert!(std::mem::align_of::<CompressState>() <= 16);
 
 /// The LZ4 block `StorageEnvelope::new` writes for `data`.
 ///
