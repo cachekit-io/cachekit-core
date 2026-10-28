@@ -98,9 +98,9 @@ const _: () = assert!(LITERAL_BLOCK_THRESHOLD - 1 <= 15 + 254);
 /// is written into a zeroed buffer, where `compress` on 64-bit targets writes
 /// into uninitialised capacity. The zeroing grows with the input and the
 /// saving does not: on incompressible input they cross near 8 KiB, so from
-/// here on `compress` is the faster of the two. Measured on x86_64 with
-/// lz4_flex 0.13.1, against `compress` per call: 10-40% faster at 64 B-1 KiB,
-/// within noise at 8-16 KiB, about 12% slower at 64 KiB of incompressible input.
+/// here on `compress` is the faster of the two. The block keeps the buffer's
+/// worst-case capacity (about 1.1 times the input, so under 9 KiB) for as
+/// long as its envelope lives; `ByteStorage::store` drops it on return.
 ///
 /// The bound also keeps the reused table in lz4_flex's 16-bit class, the one
 /// a fresh `compress` picks for any input under 65535 B, so the bytes match
@@ -761,13 +761,6 @@ mod tests {
         // switch at 65535 B, and 1 MiB. Sizes run up and then back down on
         // this one thread, so every reuse-range input also follows a 32-bit
         // class input: the shared table must not have been upgraded by it.
-        let mut state: u32 = 0x9E37_79B9;
-        let mut next = move || {
-            state ^= state << 13;
-            state ^= state >> 17;
-            state ^= state << 5;
-            state as u8
-        };
         let sizes = [
             LITERAL_BLOCK_THRESHOLD,
             100,
@@ -785,7 +778,7 @@ mod tests {
             let inputs = [
                 vec![b'z'; len],
                 (0..len).map(|i| (i % 251) as u8).collect::<Vec<u8>>(),
-                (0..len).map(|_| next()).collect::<Vec<u8>>(),
+                xorshift_bytes(len),
             ];
             for data in inputs {
                 assert_eq!(
