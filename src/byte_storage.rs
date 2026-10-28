@@ -95,12 +95,11 @@ const _: () = assert!(LITERAL_BLOCK_THRESHOLD - 1 <= 15 + 254);
 /// `lz4_flex::compress` allocates and frees its hash table on every call, and
 /// shrinks its output with a reallocation. Reusing one table drops both. The
 /// table entry point needs an initialised output slice, though, so the block
-/// is written into a scratch buffer this thread also keeps (zeroed once, at
-/// most `get_maximum_output_size(TABLE_REUSE_LIMIT - 1)`, about 4.4 KiB) and
-/// copied out at its exact length, so the envelope holds no spare capacity.
-/// The copy grows with the output and the saving does not: on incompressible
-/// input, store was slower from about 6 KiB, so from 4 KiB on `compress` is
-/// used.
+/// is written into a scratch buffer this thread also keeps ([`SCRATCH_LEN`],
+/// zeroed once) and copied out at its exact length, so the envelope holds no
+/// spare capacity. The copy grows with the output and the saving does not: on
+/// incompressible input, store was slower from about 6 KiB, so from 4 KiB on
+/// `compress` is used.
 ///
 /// The bound also keeps the reused table in lz4_flex's 16-bit class, the one
 /// a fresh `compress` picks for any input under 65535 B, so the bytes match
@@ -115,13 +114,20 @@ const TABLE_REUSE_LIMIT: usize = 4 * 1024;
 #[cfg(feature = "compression")]
 const _: () = assert!(TABLE_REUSE_LIMIT < u16::MAX as usize);
 
+/// The encoder's worst-case output for the longest input in the reuse range:
+/// 4,524 B.
+#[cfg(feature = "compression")]
+const SCRATCH_LEN: usize = get_maximum_output_size(TABLE_REUSE_LIMIT - 1);
+
 #[cfg(feature = "compression")]
 thread_local! {
-    /// This thread's LZ4 hash table (8 KiB) and output scratch, allocated on
-    /// the thread's first compression in the reuse range and kept for the
-    /// life of the thread.
-    static TABLE: RefCell<(CompressTable, Vec<u8>)> =
-        RefCell::new((CompressTable::small(), Vec::new()));
+    /// This thread's LZ4 hash table (8 KiB) and output scratch, both allocated
+    /// at full size on the thread's first compression in the reuse range and
+    /// kept for the life of the thread. The table is cleared on every call;
+    /// the scratch is only overwritten up to each block's length, so it keeps
+    /// the tail of earlier, longer blocks (LZ4 literals are input bytes).
+    static COMPRESS_STATE: RefCell<(CompressTable, Vec<u8>)> =
+        RefCell::new((CompressTable::small(), vec![0; SCRATCH_LEN]));
 }
 
 /// The LZ4 block `StorageEnvelope::new` writes for `data`.
@@ -156,11 +162,8 @@ fn compress_block(data: &[u8]) -> Result<Vec<u8>, ByteStorageError> {
 #[cfg(feature = "compression")]
 fn compress_with_thread_table(data: &[u8]) -> Result<Vec<u8>, ByteStorageError> {
     let bound = get_maximum_output_size(data.len());
-    let Ok(block) = TABLE.try_with(|cell| {
+    let Ok(block) = COMPRESS_STATE.try_with(|cell| {
         let (table, scratch) = &mut *cell.borrow_mut();
-        if scratch.len() < bound {
-            scratch.resize(bound, 0);
-        }
         compress_into_with_table(data, &mut scratch[..bound], table)
             .map(|written| scratch[..written].to_vec())
     }) else {
@@ -793,6 +796,9 @@ mod tests {
                 assert_eq!(block.capacity(), block.len(), "len {len}");
             }
         }
+        // Growing inputs never grow the scratch past its fixed length
+        COMPRESS_STATE.with(|cell| assert_eq!(cell.borrow().1.capacity(), SCRATCH_LEN));
+        assert_eq!(SCRATCH_LEN, 4524);
     }
 
     #[test]
