@@ -95,12 +95,12 @@ const _: () = assert!(LITERAL_BLOCK_THRESHOLD - 1 <= 15 + 254);
 /// `lz4_flex::compress` allocates and frees its hash table on every call, and
 /// shrinks its output with a reallocation. Reusing one table drops both. The
 /// table entry point needs an initialised output slice, though, so the block
-/// is written into a zeroed buffer, where `compress` on 64-bit targets writes
-/// into uninitialised capacity. The zeroing grows with the input and the
-/// saving does not: on incompressible input they cross near 8 KiB, so from
-/// here on `compress` is the faster of the two. The block keeps the buffer's
-/// worst-case capacity (about 1.1 times the input, so under 9 KiB) for as
-/// long as its envelope lives; `ByteStorage::store` drops it on return.
+/// is written into a scratch buffer this thread also keeps (zeroed once, at
+/// most `get_maximum_output_size(TABLE_REUSE_LIMIT - 1)`, about 4.4 KiB) and
+/// copied out at its exact length, so the envelope holds no spare capacity.
+/// The copy grows with the output and the saving does not: on incompressible
+/// input, store was slower from about 6 KiB, so from 4 KiB on `compress` is
+/// used.
 ///
 /// The bound also keeps the reused table in lz4_flex's 16-bit class, the one
 /// a fresh `compress` picks for any input under 65535 B, so the bytes match
@@ -110,16 +110,18 @@ const _: () = assert!(LITERAL_BLOCK_THRESHOLD - 1 <= 15 + 254);
 /// input through the shared table would change every later block on that
 /// thread.
 #[cfg(feature = "compression")]
-const TABLE_REUSE_LIMIT: usize = 8 * 1024;
+const TABLE_REUSE_LIMIT: usize = 4 * 1024;
 
 #[cfg(feature = "compression")]
 const _: () = assert!(TABLE_REUSE_LIMIT < u16::MAX as usize);
 
 #[cfg(feature = "compression")]
 thread_local! {
-    /// This thread's LZ4 hash table: 8 KiB, allocated on the thread's first
-    /// compression in the reuse range and kept for the life of the thread.
-    static TABLE: RefCell<CompressTable> = RefCell::new(CompressTable::small());
+    /// This thread's LZ4 hash table (8 KiB) and output scratch, allocated on
+    /// the thread's first compression in the reuse range and kept for the
+    /// life of the thread.
+    static TABLE: RefCell<(CompressTable, Vec<u8>)> =
+        RefCell::new((CompressTable::small(), Vec::new()));
 }
 
 /// The LZ4 block `StorageEnvelope::new` writes for `data`.
@@ -153,17 +155,21 @@ fn compress_block(data: &[u8]) -> Result<Vec<u8>, ByteStorageError> {
 /// `lz4_flex::compress(data)`'s bytes, written with this thread's table.
 #[cfg(feature = "compression")]
 fn compress_with_thread_table(data: &[u8]) -> Result<Vec<u8>, ByteStorageError> {
-    let mut block = vec![0u8; get_maximum_output_size(data.len())];
-    let Ok(written) =
-        TABLE.try_with(|table| compress_into_with_table(data, &mut block, &mut table.borrow_mut()))
-    else {
+    let bound = get_maximum_output_size(data.len());
+    let Ok(block) = TABLE.try_with(|cell| {
+        let (table, scratch) = &mut *cell.borrow_mut();
+        if scratch.len() < bound {
+            scratch.resize(bound, 0);
+        }
+        compress_into_with_table(data, &mut scratch[..bound], table)
+            .map(|written| scratch[..written].to_vec())
+    }) else {
         // This thread's locals are being destroyed (a store from another
         // thread local's destructor): a fresh table writes the same bytes.
         return Ok(lz4_flex::compress(data));
     };
-    // The buffer is the encoder's own worst-case bound, so this never fails.
-    block.truncate(written.map_err(|_| ByteStorageError::CompressionFailed)?);
-    Ok(block)
+    // The slice is the encoder's own worst-case bound, so this never fails.
+    block.map_err(|_| ByteStorageError::CompressionFailed)
 }
 
 /// Storage envelope for raw byte storage
@@ -765,7 +771,7 @@ mod tests {
             LITERAL_BLOCK_THRESHOLD,
             100,
             1024,
-            4096,
+            2048,
             TABLE_REUSE_LIMIT - 1,
             TABLE_REUSE_LIMIT,
             16 * 1024,
@@ -781,11 +787,10 @@ mod tests {
                 xorshift_bytes(len),
             ];
             for data in inputs {
-                assert_eq!(
-                    compress_block(&data).unwrap(),
-                    lz4_flex::compress(&data),
-                    "len {len}"
-                );
+                let block = compress_block(&data).unwrap();
+                assert_eq!(block, lz4_flex::compress(&data), "len {len}");
+                // No spare capacity in a block an envelope may keep
+                assert_eq!(block.capacity(), block.len(), "len {len}");
             }
         }
     }
