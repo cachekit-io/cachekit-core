@@ -126,9 +126,16 @@ thread_local! {
     /// kept for the life of the thread. The table is cleared on every call;
     /// the scratch is only overwritten up to each block's length, so it keeps
     /// the tail of earlier, longer blocks (LZ4 literals are input bytes).
-    static COMPRESS_STATE: RefCell<(CompressTable, Vec<u8>)> =
-        RefCell::new((CompressTable::small(), vec![0; SCRATCH_LEN]));
+    ///
+    /// The table is boxed because lz4_flex declares it 64-byte aligned, and
+    /// macOS places thread locals with at most 16-byte alignment
+    /// (rust-lang/rust#90959): held inline, it would be misaligned there.
+    static COMPRESS_STATE: RefCell<(Box<CompressTable>, Vec<u8>)> =
+        RefCell::new((Box::new(CompressTable::small()), vec![0; SCRATCH_LEN]));
 }
+
+#[cfg(feature = "compression")]
+const _: () = assert!(std::mem::align_of::<RefCell<(Box<CompressTable>, Vec<u8>)>>() <= 16);
 
 /// The LZ4 block `StorageEnvelope::new` writes for `data`.
 ///
