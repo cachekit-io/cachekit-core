@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.7.3...cachekit-core-v0.7.4) (2026-10-29)
+
+
+### Performance Improvements
+
+* **byte-storage:** reuse a per-thread LZ4 hash table for 64 B to under 4 KiB inputs (LAB-11080) ([#144](https://github.com/cachekit-io/cachekit-core/issues/144)) ([4533532](https://github.com/cachekit-io/cachekit-core/commit/45335324ab891d5c129601be54b6880da4504314))
+
 ## [0.7.3](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.7.2...cachekit-core-v0.7.3) (2026-10-27)
 
 
