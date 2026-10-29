@@ -6,8 +6,10 @@
 //! - xxHash3-64 checksums for corruption detection
 
 #[cfg(feature = "compression")]
-use lz4_flex;
+use lz4_flex::block::{compress_into_with_table, get_maximum_output_size, CompressTable};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "compression")]
+use std::cell::RefCell;
 use thiserror::Error;
 
 /// Error types for ByteStorage operations
@@ -86,18 +88,76 @@ const LITERAL_BLOCK_THRESHOLD: usize = 64;
 #[cfg(feature = "compression")]
 const _: () = assert!(LITERAL_BLOCK_THRESHOLD - 1 <= 15 + 254);
 
+/// Inputs from [`LITERAL_BLOCK_THRESHOLD`] up to (not including) this length
+/// compress with a hash table this thread keeps; longer ones go through
+/// `lz4_flex::compress`, which allocates a table per call.
+///
+/// `lz4_flex::compress` allocates and frees its hash table on every call, and
+/// shrinks its output with a reallocation. Reusing one table drops both. The
+/// table entry point needs an initialised output slice, though, so the block
+/// is written into a scratch buffer this thread also keeps ([`SCRATCH_LEN`],
+/// zeroed once) and copied out at its exact length, so the envelope holds no
+/// spare capacity. The copy grows with the output and the saving does not: on
+/// incompressible input, store was slower from about 6 KiB, so from 4 KiB on
+/// `compress` is used.
+///
+/// The bound also keeps the reused table in lz4_flex's 16-bit class, the one
+/// a fresh `compress` picks for any input under 65535 B, so the bytes match
+/// it. `compress_into_with_table` clears the table on every call, so no input
+/// affects the next one's bytes, but it upgrades a 16-bit table to the 32-bit
+/// class for an input of 65535 B or more and never downgrades it: a longer
+/// input through the shared table would change every later block on that
+/// thread.
+#[cfg(feature = "compression")]
+const TABLE_REUSE_LIMIT: usize = 4 * 1024;
+
+#[cfg(feature = "compression")]
+const _: () = assert!(TABLE_REUSE_LIMIT < u16::MAX as usize);
+
+/// The encoder's worst-case output for the longest input in the reuse range:
+/// 4,524 B.
+#[cfg(feature = "compression")]
+const SCRATCH_LEN: usize = get_maximum_output_size(TABLE_REUSE_LIMIT - 1);
+
+/// This thread's LZ4 hash table and output scratch.
+#[cfg(feature = "compression")]
+type CompressState = RefCell<(Box<CompressTable>, Vec<u8>)>;
+
+#[cfg(feature = "compression")]
+thread_local! {
+    /// This thread's LZ4 hash table (8 KiB) and output scratch, both allocated
+    /// at full size on the thread's first compression in the reuse range and
+    /// kept for the life of the thread. The table is cleared on every call;
+    /// the scratch is only overwritten up to each block's length, so it keeps
+    /// the tail of earlier, longer blocks (LZ4 literals are input bytes).
+    ///
+    /// The table is boxed because lz4_flex declares it 64-byte aligned, and
+    /// macOS places thread locals with at most 16-byte alignment
+    /// (rust-lang/rust#90959): held inline, it would be misaligned there.
+    static COMPRESS_STATE: CompressState =
+        RefCell::new((Box::new(CompressTable::small()), vec![0; SCRATCH_LEN]));
+}
+
+#[cfg(feature = "compression")]
+const _: () = assert!(std::mem::align_of::<CompressState>() <= 16);
+
 /// The LZ4 block `StorageEnvelope::new` writes for `data`.
 ///
+/// From [`LITERAL_BLOCK_THRESHOLD`] up it is `lz4_flex::compress`'s output,
+/// written with this thread's table below [`TABLE_REUSE_LIMIT`].
 /// Below the threshold it is one LZ4 sequence with no match: a token whose
 /// high nibble is the literal length (15 = one more length byte follows), then
 /// the literals. This is the LZ4 block format's last-sequence form, so it is a
 /// complete block on its own.
 #[cfg(feature = "compression")]
-fn compress_block(data: &[u8]) -> Vec<u8> {
-    if data.len() >= LITERAL_BLOCK_THRESHOLD {
-        return lz4_flex::compress(data);
-    }
+fn compress_block(data: &[u8]) -> Result<Vec<u8>, ByteStorageError> {
     let len = data.len();
+    if len >= TABLE_REUSE_LIMIT {
+        return Ok(lz4_flex::compress(data));
+    }
+    if len >= LITERAL_BLOCK_THRESHOLD {
+        return compress_with_thread_table(data);
+    }
     let mut block = Vec::with_capacity(len + 2);
     if len < 15 {
         block.push((len as u8) << 4);
@@ -106,7 +166,24 @@ fn compress_block(data: &[u8]) -> Vec<u8> {
         block.push((len - 15) as u8);
     }
     block.extend_from_slice(data);
-    block
+    Ok(block)
+}
+
+/// `lz4_flex::compress(data)`'s bytes, written with this thread's table.
+#[cfg(feature = "compression")]
+fn compress_with_thread_table(data: &[u8]) -> Result<Vec<u8>, ByteStorageError> {
+    let bound = get_maximum_output_size(data.len());
+    let Ok(block) = COMPRESS_STATE.try_with(|cell| {
+        let (table, scratch) = &mut *cell.borrow_mut();
+        compress_into_with_table(data, &mut scratch[..bound], table)
+            .map(|written| scratch[..written].to_vec())
+    }) else {
+        // This thread's locals are being destroyed (a store from another
+        // thread local's destructor): a fresh table writes the same bytes.
+        return Ok(lz4_flex::compress(data));
+    };
+    // The slice is the encoder's own worst-case bound, so this never fails.
+    block.map_err(|_| ByteStorageError::CompressionFailed)
 }
 
 /// Storage envelope for raw byte storage
@@ -146,7 +223,7 @@ impl StorageEnvelope {
         let original_size = data.len() as u32;
 
         // Compress with LZ4 (a literals-only block below LITERAL_BLOCK_THRESHOLD)
-        let compressed_data = compress_block(data);
+        let compressed_data = compress_block(data)?;
 
         // Security: Check compressed size
         if compressed_data.len() > MAX_COMPRESSED_SIZE {
@@ -432,7 +509,7 @@ impl ByteStorage {
             return Err(ByteStorageError::InputTooLarge);
         }
 
-        let compressed = compress_block(data);
+        let compressed = compress_block(data)?;
 
         Ok(data.len() as f64 / compressed.len() as f64)
     }
@@ -658,7 +735,7 @@ mod tests {
         for len in 0..LITERAL_BLOCK_THRESHOLD {
             let data: Vec<u8> = (0..len as u8).collect();
             assert_eq!(
-                compress_block(&data),
+                compress_block(&data).unwrap(),
                 lz4_flex::compress(&data),
                 "len {len}"
             );
@@ -696,6 +773,43 @@ mod tests {
                 assert_eq!(storage.retrieve(&stored).unwrap().0, data, "len {len}");
             }
         }
+    }
+
+    #[test]
+    fn writes_lz4_flex_bytes_from_threshold_to_1_mib() {
+        // Both edges of the table-reuse range, lz4_flex's 16-bit/32-bit table
+        // switch at 65535 B, and 1 MiB. Sizes run up and then back down on
+        // this one thread, so every reuse-range input also follows a 32-bit
+        // class input: the shared table must not have been upgraded by it.
+        let sizes = [
+            LITERAL_BLOCK_THRESHOLD,
+            100,
+            1024,
+            2048,
+            TABLE_REUSE_LIMIT - 1,
+            TABLE_REUSE_LIMIT,
+            16 * 1024,
+            u16::MAX as usize - 1,
+            u16::MAX as usize,
+            64 * 1024,
+            1 << 20,
+        ];
+        for len in sizes.iter().chain(sizes.iter().rev()).copied() {
+            let inputs = [
+                vec![b'z'; len],
+                (0..len).map(|i| (i % 251) as u8).collect::<Vec<u8>>(),
+                xorshift_bytes(len),
+            ];
+            for data in inputs {
+                let block = compress_block(&data).unwrap();
+                assert_eq!(block, lz4_flex::compress(&data), "len {len}");
+                // No spare capacity in a block an envelope may keep
+                assert_eq!(block.capacity(), block.len(), "len {len}");
+            }
+        }
+        // Growing inputs never grow the scratch past its fixed length
+        COMPRESS_STATE.with(|cell| assert_eq!(cell.borrow().1.capacity(), SCRATCH_LEN));
+        assert_eq!(SCRATCH_LEN, 4524);
     }
 
     #[test]

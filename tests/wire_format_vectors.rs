@@ -267,7 +267,22 @@ fn vectors_decode_to_expected_payload() {
 /// `compressed_data`).
 #[test]
 fn vectors_reencode_byte_identical() {
+    assert_vectors_reencode(&ByteStorage::new(None));
+}
+
+/// The same check on a thread that has just stored a value above 64 KiB.
+/// The writer reuses a per-thread LZ4 hash table for small inputs, and
+/// lz4_flex's table entry point would switch a table to its 32-bit class for
+/// such an input and keep it there, changing every small block after it.
+#[test]
+fn vectors_reencode_byte_identical_after_a_large_store() {
     let storage = ByteStorage::new(None);
+    let large: Vec<u8> = (0..1u32 << 20).map(|i| (i % 251) as u8).collect();
+    storage.store(&large, None).expect("large store");
+    assert_vectors_reencode(&storage);
+}
+
+fn assert_vectors_reencode(storage: &ByteStorage) {
     for vector in load_fixture()
         .vectors
         .into_iter()
