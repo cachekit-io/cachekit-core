@@ -1,6 +1,7 @@
 //! Structural pre-scan for untrusted MessagePack.
 //!
-//! `ByteStorage::retrieve` runs it before the envelope decode; it is exported
+//! `ByteStorage`'s shared read path (`decode_envelope`, under `retrieve`,
+//! `retrieve_data` and `validate`) runs it before the envelope decode; it is exported
 //! for SDK bindings that decode untrusted MessagePack themselves. The bounds are
 //! `spec/interop-mode.md` → Decode bounds, pinned by
 //! `tests/vectors/decode-bounds.json`.
