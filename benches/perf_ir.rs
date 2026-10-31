@@ -75,7 +75,8 @@ const BASELINES: &str = concat!(
 const MIB: usize = 1024 * 1024;
 /// A small value, a typical value, a large object (as `hot_path`).
 const SIZES: &[usize] = &[64, 1024, 64 * 1024];
-/// ByteStorage picks its strategy by size, so store and retrieve also measure
+/// ByteStorage picks its strategy by size, so store and retrieve (and
+/// retrieve_data, which decodes the same envelope) also measure
 /// 40 B, under the literals-only block threshold (64 B), and 1 MiB. Its
 /// large-payload switch compares the envelope (store) or the compressed
 /// payload (retrieve) with 64 KiB: the 64 KiB payload stores as a
@@ -85,9 +86,10 @@ const STORAGE_SIZES: &[usize] = &[40, 64, 1024, 64 * 1024, MIB];
 
 /// Operations and their payload sizes. HKDF derives from the master key and
 /// tenant id alone, so it has one case with no size.
-const OPS: [(&str, &[usize]); 8] = [
+const OPS: [(&str, &[usize]); 9] = [
     ("store", STORAGE_SIZES),
     ("retrieve", STORAGE_SIZES),
+    ("retrieve_data", STORAGE_SIZES),
     ("prescan", SIZES),
     ("encrypt", SIZES),
     ("decrypt", SIZES),
@@ -152,6 +154,12 @@ fn operation(case: &str) -> Box<dyn FnMut() -> usize> {
     match op {
         "store" => Box::new(move || storage.store(black_box(&payload), None).unwrap().len()),
         "retrieve" => Box::new(move || storage.retrieve(black_box(&envelope)).unwrap().0.len()),
+        // What the bindings call: retrieve without the format String. Under
+        // fat LTO this second caller keeps decode_envelope out of line, which
+        // costs retrieve 68 to 77 Ir/op at 40 B to 1 KiB (README).
+        "retrieve_data" => {
+            Box::new(move || storage.retrieve_data(black_box(&envelope)).unwrap().len())
+        }
         "prescan" => Box::new(move || {
             check_msgpack_structure(black_box(&envelope), ENVELOPE_MAX_DEPTH).is_ok() as usize
         }),
