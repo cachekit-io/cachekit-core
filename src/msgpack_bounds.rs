@@ -27,7 +27,10 @@ fn reject(reason: impl Into<String>) -> MsgpackStructureError {
 /// A header-only walk: str/bin/ext payloads are skipped by offset, never read,
 /// and nothing is decoded. It keeps one `u64` per open non-empty collection, so
 /// at most `min(max_depth, bytes.len())` of them (8 KiB at a depth of 1024), and
-/// allocates nothing proportional to any declared length.
+/// allocates nothing proportional to any declared length. The first 8 live on
+/// the call stack, so a document that nests no deeper than that (an envelope
+/// `ByteStorage::store` writes nests 2 deep) is walked with no allocation. A
+/// rejection allocates its error message.
 ///
 /// Bytes after the document are neither read nor rejected. To find where the
 /// document ends, call [`msgpack_document_len`], which runs this same walk.
@@ -76,6 +79,57 @@ pub fn check_msgpack_structure(
     msgpack_document_len(bytes, max_depth).map(|_| ())
 }
 
+/// Open collections the walk keeps on the call stack before it spills to the heap.
+const INLINE_LEVELS: usize = 8;
+
+/// Elements still owed per open collection, innermost last; `len` is the
+/// depth. The outermost [`INLINE_LEVELS`] live inline and deeper ones in
+/// `spill`, so a shallow document never allocates. `spill` holds exactly the
+/// levels past the inline ones.
+struct OpenCollections {
+    inline: [u64; INLINE_LEVELS],
+    len: usize,
+    spill: Vec<u64>,
+}
+
+impl OpenCollections {
+    fn new() -> Self {
+        Self {
+            inline: [0; INLINE_LEVELS],
+            len: 0,
+            spill: Vec::new(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn last_mut(&mut self) -> Option<&mut u64> {
+        match self.len {
+            0 => None,
+            n @ 1..=INLINE_LEVELS => Some(&mut self.inline[n - 1]),
+            _ => self.spill.last_mut(),
+        }
+    }
+
+    fn push(&mut self, owed: u64) {
+        if self.len < INLINE_LEVELS {
+            self.inline[self.len] = owed;
+        } else {
+            self.spill.push(owed);
+        }
+        self.len += 1;
+    }
+
+    fn pop(&mut self) {
+        if self.len > INLINE_LEVELS {
+            self.spill.pop();
+        }
+        self.len -= 1;
+    }
+}
+
 /// Runs the walk [`check_msgpack_structure`] describes and returns the length,
 /// in bytes, of the document at the start of `bytes`.
 ///
@@ -119,9 +173,9 @@ pub fn msgpack_document_len(
 
     let mut pos = 0usize;
     let mut pending: u64 = 1; // elements owed across all open collections (the root is one)
-    let mut open: Vec<u64> = Vec::new(); // elements still owed per open collection = depth
+    let mut open = OpenCollections::new();
     while pending > 0 {
-        while open.last() == Some(&0) {
+        while open.last_mut() == Some(&mut 0) {
             open.pop();
         }
         let marker = *bytes
@@ -316,6 +370,52 @@ mod tests {
         for (header, empty) in LEVELS {
             assert_eq!(check(&nested(header, MAX_DEPTH - 1, &[empty])), Ok(()));
             assert_eq!(check(&nested(header, MAX_DEPTH, &[empty])), too_deep);
+        }
+    }
+
+    #[test]
+    fn depth_bound_is_exact_where_the_stack_spills_to_the_heap() {
+        for max_depth in INLINE_LEVELS - 1..=INLINE_LEVELS + 1 {
+            let too_deep = Err(format!("nests deeper than {max_depth} levels"));
+            for (header, empty) in LEVELS {
+                let at = |levels, tail: &[u8]| {
+                    check_msgpack_structure(&nested(header, levels, tail), max_depth)
+                        .map_err(|e| e.to_string())
+                };
+                assert_eq!(at(max_depth, &[0xc0]), Ok(()), "max_depth {max_depth}");
+                assert_eq!(
+                    at(max_depth + 1, &[0xc0]),
+                    too_deep,
+                    "max_depth {max_depth}"
+                );
+                assert_eq!(at(max_depth - 1, &[empty]), Ok(()), "max_depth {max_depth}");
+                assert_eq!(at(max_depth, &[empty]), too_deep, "max_depth {max_depth}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_sibling_after_a_spilled_subtree_is_measured_from_its_own_parent() {
+        // [a levels of [..[nil]..], b levels of the same]: depth is 1 + max(a, b).
+        // An `a` past the inline slots spills the stack to the heap and drains
+        // it again before `b` starts.
+        let max_depth = INLINE_LEVELS + 2;
+        for a in 0..=max_depth {
+            for b in 0..=max_depth {
+                let doc = [
+                    vec![0x92],
+                    nested(&[0x91], a, &[0xc0]),
+                    nested(&[0x91], b, &[0xc0]),
+                ]
+                .concat();
+                let expected = if a.max(b) < max_depth {
+                    Ok(doc.len())
+                } else {
+                    Err(format!("nests deeper than {max_depth} levels"))
+                };
+                let got = msgpack_document_len(&doc, max_depth).map_err(|e| e.to_string());
+                assert_eq!(got, expected, "a {a}, b {b}");
+            }
         }
     }
 
