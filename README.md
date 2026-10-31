@@ -258,13 +258,18 @@ Malicious payloads claiming `original_size: 500GB` with 100 bytes of data are re
 <details>
 <summary><strong>Envelope Decode Bounds</strong></summary>
 
-`retrieve()`, `retrieve_data()` and `validate()` run a header-only structural pre-scan over the
-envelope bytes **before** MessagePack decoding: nesting deeper than 100 levels,
-headers declaring more elements or bytes than the input can back, the reserved
-marker `0xc1` and truncated input are all rejected before decoding, without
-allocating in proportion to any declared length. A rejection is
-`ByteStorageError::DeserializationFailed` with the message prefix
-`decode pre-scan: `. The same walk is public as
+`retrieve()`, `retrieve_data()` and `validate()` read an envelope in any encoding `store()` writes
+in one pass, which checks each declared length against the input before reading
+it and allocates nothing until the whole envelope has been read. Every input
+that read declines gets a header-only structural pre-scan **before** MessagePack
+decoding: nesting
+deeper than 100 levels, headers declaring more elements or bytes than the input
+can back, the reserved marker `0xc1` and truncated input are all rejected
+before decoding, without allocating in proportion to any declared length. A
+pre-scan rejection is `ByteStorageError::DeserializationFailed` with the message prefix
+`decode pre-scan: `. The one-pass read accepts only envelopes the pre-scan and
+the typed decode accept, into the same fields, and leaves every rejection to
+them, so every input within the size cap gets their result and error. The pre-scan's walk is public as
 `check_msgpack_structure(bytes, max_depth)` for callers that decode untrusted
 MessagePack themselves; it returns a `MsgpackStructureError` whose `Display` is
 the bare reason, with no prefix. `msgpack_document_len(bytes, max_depth)` runs
@@ -283,7 +288,7 @@ cachekit-core/
 ├── src/
 │   ├── lib.rs              # Public API exports
 │   ├── byte_storage.rs     # LZ4 + xxHash3 storage envelope
-│   ├── msgpack_bounds.rs   # Structural pre-scan (public check_msgpack_structure, msgpack_document_len), run before the envelope decode
+│   ├── msgpack_bounds.rs   # Structural pre-scan (public check_msgpack_structure, msgpack_document_len), run before the fallback envelope decode
 │   ├── checksum.rs         # Standalone xxHash3 checksum/verify primitive (feature = "checksum")
 │   │
 │   ├── encryption/         # (feature = "encryption")
@@ -360,13 +365,13 @@ The Criterion suite in `benches/hot_path.rs` needs the `encryption` feature (`ma
 |:-----|:-------------------|
 | `store/<size>`, `retrieve/<size>` | `ByteStorage::store` / `retrieve` on the realistic msgpack payload `hot_path` uses |
 | `retrieve_data/<size>` | `ByteStorage::retrieve_data`, the bindings' call, on the same envelope as `retrieve` |
-| `prescan/<size>` | `check_msgpack_structure` on the envelope, the pre-scan `retrieve` runs first |
+| `prescan/<size>` | `check_msgpack_structure` on the envelope, the pre-scan `retrieve` and `retrieve_data` run on every envelope their one-pass read declines |
 | `encrypt/<size>`, `decrypt/<size>` | `ZeroKnowledgeEncryptor` AES-256-GCM |
 | `keyring_decrypt/<size>` | `Keyring::decrypt_indexed`, which re-derives the tenant key (HKDF) on every call |
 | `tenant_keyring_decrypt/<size>` | `TenantKeyring::decrypt_indexed`, key derived once at `for_tenant` |
 | `hkdf` | `derive_domain_key` (takes no payload, so it has no size) |
 
-Sizes are 64 B, 1 KiB and 64 KiB. `store`, `retrieve` and `retrieve_data` also run at 40 B, below the 64-byte literals-only block threshold, and at 1 MiB. `ByteStorage` switches to its copying allocation pattern once the envelope or the compressed payload reaches 64 KiB. The 64 KiB payload compresses to a 24,702-byte envelope and never gets there; the 1 MiB one compresses to 383,893 bytes. One case at a time: `make perf-ir ARGS="--case store/1024"`. The bench binary is built with fat LTO, so its cases shape each other's code. Because both `retrieve` and `retrieve_data` call the envelope decode, it stays out of line, and `retrieve` costs 68 to 77 Ir/op more at 40 B to 1 KiB (2.6% at 40 B) than in a binary that calls `retrieve` alone. A consumer that calls only one of the two gets the decode inlined.
+Sizes are 64 B, 1 KiB and 64 KiB. `store`, `retrieve` and `retrieve_data` also run at 40 B, below the 64-byte literals-only block threshold, and at 1 MiB. `ByteStorage` switches to its copying allocation pattern once the envelope or the compressed payload reaches 64 KiB. The 64 KiB payload compresses to a 24,702-byte envelope and never gets there; the 1 MiB one compresses to 383,893 bytes. One case at a time: `make perf-ir ARGS="--case store/1024"`. The bench binary is built with fat LTO, so its cases shape each other's code. Because both `retrieve` and `retrieve_data` call the envelope decode, it stays out of line, and `retrieve` costs 26 to 27 Ir/op more at 40 B to 1 KiB (2.8% at 40 B, rustc 1.99.1) than in a binary that calls `retrieve` alone. A consumer that calls only one of the two gets the decode inlined.
 
 **Method** (`benches/perf_ir.rs`): each case runs in its own process under `valgrind --tool=cachegrind --cache-sim=no`, once with N calls and once with none, after the same setup and one warm-up call. N is 1,000, or 20 for a 1 MiB case. Ir/op is `(Ir[N] - Ir[0]) / N`, so process start, setup and exit cancel. The counts are exact, so N sets the run time, not the precision. The measured process gets an empty environment, so neither the shell nor a `VALGRIND_OPTS` changes what is counted.
 
