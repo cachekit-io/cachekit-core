@@ -32,7 +32,10 @@
 //!
 //! The same count, [`bytes_requested`], also pins the write side: the
 //! `byte_storage` unit test `store_allocates_only_its_output_and_block` checks
-//! that `ByteStorage::store` requests only its output and its LZ4 block.
+//! that `ByteStorage::store` requests only its output and its LZ4 block, and
+//! `accepted_envelope_prescan_allocates_nothing` below checks that the
+//! structural pre-scan, which the fallback decode and SDK payload walks run,
+//! requests nothing for an envelope a writer emits.
 //!
 //! This lives in the crate's unit tests, compiled only under `cfg(test)`,
 //! because the positive control needs a hook inside `extract_payload`
@@ -228,6 +231,44 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The structural pre-scan keeps its nesting stack on the call stack for
+    /// an envelope, current or legacy, at every payload size, so walking one
+    /// requests nothing from the allocator. `retrieve` runs the walk only in
+    /// its fallback decode (`decode_envelope_full`); SDK bindings run it over
+    /// every payload they unpack.
+    #[test]
+    fn accepted_envelope_prescan_allocates_nothing() {
+        // The envelope decode's bound (`decode_envelope_full`).
+        const MAX_DEPTH: usize = 100;
+        let storage = ByteStorage::new(None);
+        for len in [0, 40, 64, 1024, 64 * 1024] {
+            let data: Vec<u8> = (0..len).map(|i| (i * 31 % 251) as u8).collect();
+            let envelope = storage.store(&data, None).unwrap();
+            let e: crate::StorageEnvelope = rmp_serde::from_slice(&envelope).unwrap();
+            // Legacy writers encoded `compressed_data` as an array of ints.
+            let legacy =
+                rmp_serde::to_vec(&(&e.compressed_data, e.checksum, e.original_size, &e.format))
+                    .unwrap();
+            for (shape, doc) in [("current", envelope), ("legacy", legacy)] {
+                assert!(
+                    storage.retrieve(&doc).is_ok(),
+                    "[{shape} {len}] not accepted"
+                );
+                let (result, requested) =
+                    bytes_requested(|| crate::check_msgpack_structure(&doc, MAX_DEPTH));
+                assert_eq!(result, Ok(()), "[{shape} {len}]");
+                assert_eq!(requested, 0, "[{shape} {len}] pre-scan allocated");
+            }
+        }
+        // Positive control: past the inline levels the stack spills to the
+        // heap, and this probe sees it.
+        let deep = [vec![0x91; 9], vec![0xc0]].concat();
+        let (result, requested) =
+            bytes_requested(|| crate::check_msgpack_structure(&deep, MAX_DEPTH));
+        assert_eq!(result, Ok(()));
+        assert!(requested > 0, "probe missed the spilled nesting stack");
     }
 
     /// On every `msgpack bin` vector, `retrieve_data` allocates what the LZ4

@@ -274,7 +274,10 @@ them, so every input within the size cap gets their result and error. The pre-sc
 MessagePack themselves; it returns a `MsgpackStructureError` whose `Display` is
 the bare reason, with no prefix. `msgpack_document_len(bytes, max_depth)` runs
 the same walk and returns the document's length, so a caller that must reject
-trailing bytes compares it with `bytes.len()` instead of walking twice. See
+trailing bytes compares it with `bytes.len()` instead of walking twice. The walk
+allocates nothing for a document that nests at most 8 levels deep, and for a
+deeper one allocates only for the levels past 8; a rejection allocates its error
+message. See
 [`SECURITY.md`](SECURITY.md#envelope-decode-bounds).
 
 </details>
