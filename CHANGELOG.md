@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.5](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.7.4...cachekit-core-v0.7.5) (2026-10-31)
+
+
+### Performance Improvements
+
+* **bench:** gate perf_ir at 40 B and 1 MiB with page faults, re-ratchet budgets (LAB-12098) ([#149](https://github.com/cachekit-io/cachekit-core/issues/149)) ([c03101f](https://github.com/cachekit-io/cachekit-core/commit/c03101f732c9ed84e45ace93ee70e83a339d5021))
+* **byte-storage:** add retrieve_data so bindings skip the format String (LAB-12101) ([#146](https://github.com/cachekit-io/cachekit-core/issues/146)) ([9f76137](https://github.com/cachekit-io/cachekit-core/commit/9f76137df6045e78ec8e197988b542b2302f18c1))
+* **byte-storage:** write sub-64 B envelopes in one pass and stop cloning the format per store (LAB-12102) ([#148](https://github.com/cachekit-io/cachekit-core/issues/148)) ([39f17c8](https://github.com/cachekit-io/cachekit-core/commit/39f17c80b5ef71e0d0fffb05c7d36f04b68a7cd4))
+
 ## [0.7.4](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.7.3...cachekit-core-v0.7.4) (2026-10-29)
 
 
