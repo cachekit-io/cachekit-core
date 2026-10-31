@@ -16,6 +16,10 @@
 //! and the test takes the thread's total before and after it, so the delta is
 //! this read's alone.
 //!
+//! The same probe pins what an accepted read allocates: `retrieve_data`
+//! requests only what the pre-scan and the LZ4 decoder do, and `retrieve`
+//! adds the format `String` and nothing else.
+//!
 //! This lives in the crate's unit tests, compiled only under `cfg(test)`,
 //! because the positive control needs a hook inside `extract_payload`
 //! ([`reserve_first_control`]), and only `cfg(test)` code can reach it. No
@@ -123,7 +127,7 @@ mod tests {
             let (envelope, original_size) = reject_vector(name);
             let (result, requested) = retrieve_counted(&envelope);
             assert_eq!(result.err(), Some(expected), "[{name}] wrong rejection");
-            // Decoding the envelope allocates (the format string, and these
+            // The read allocates (the pre-scan's nesting stack, and these
             // vectors' legacy int-array payload), so a probe that
             // sees nothing is not counting this thread's allocations.
             assert!(requested > 0, "[{name}] probe saw no allocation at all");
@@ -140,7 +144,7 @@ mod tests {
     /// `retrieve` adds only the format `String`. A legacy int-array payload is
     /// copied out by design, so those vectors are skipped.
     #[test]
-    fn retrieve_data_allocates_only_the_decoded_output() {
+    fn retrieve_data_allocates_only_prescan_and_output() {
         let fixture: serde_json::Value =
             serde_json::from_str(FIXTURE).expect("wire-format.json fixture must parse");
         let storage = ByteStorage::new(None);

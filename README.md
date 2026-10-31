@@ -423,7 +423,8 @@ summed-slot message, `decode pre-scan: declares more elements than the input
 can back`: any decoder, and the pre-scan's end-of-input check, rejects that
 envelope too, so only the exact message proves the slot check ran.
 `src/read_allocation_probe.rs` (unit tests only) bounds what the size-cap and
-ratio reads allocate, with a positive control.
+ratio reads allocate, with a positive control, and pins what an accepted
+`retrieve_data` and `retrieve` allocate.
 `tests/wire_format_constructed.rs` runs the fixture's constructed 32-bit
 ratio-product vector natively and, in CI, on `wasm32-unknown-unknown` under
 `wasm-bindgen-test`; `tests/wire_format_vectors.rs` decodes the constructed

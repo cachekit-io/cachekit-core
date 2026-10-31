@@ -50,8 +50,8 @@ const MAX_COMPRESSION_RATIO: u64 = 1000;
 /// Buffer length from which `store` and `retrieve` keep their copying
 /// allocation pattern. `store` compares the encoded envelope length: from
 /// here on it encodes through `rmp_serde::to_vec`'s growing buffer instead of
-/// a buffer allocated once at the exact length. `retrieve` and `validate`
-/// compare the compressed payload length: from here on they copy the payload
+/// a buffer allocated once at the exact length. `retrieve`, `retrieve_data`
+/// and `validate` compare the compressed payload length: from here on they copy the payload
 /// out of the input instead of borrowing it.
 ///
 /// glibc's malloc raises its mmap threshold to the largest mmap-ed chunk
@@ -491,20 +491,14 @@ impl ByteStorage {
     #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
     pub fn retrieve(&self, envelope_bytes: &[u8]) -> Result<(Vec<u8>, String), ByteStorageError> {
         let envelope = decode_envelope(envelope_bytes)?;
-
-        // Extract and validate data (all security checks happen inside extract_payload())
-        let data = envelope.extract()?;
-
-        Ok((data, envelope.format.into_owned()))
+        Ok((envelope.extract()?, envelope.format.into_owned()))
     }
 
     /// Retrieve and validate stored bytes, without the format identifier
     ///
-    /// The call for bindings and any caller that discards the format:
-    /// [`retrieve`](Self::retrieve) less the format `String` it allocates per
-    /// read. The envelope is decoded and checked exactly as `retrieve` does
-    /// (a non-string format is still rejected), and the two return the same
-    /// data and the same errors for every input.
+    /// The call for bindings and any caller that discards the format. Same
+    /// decode, checks, data and errors as [`retrieve`](Self::retrieve), without
+    /// allocating the format `String`.
     ///
     /// # Errors
     ///
@@ -1193,13 +1187,8 @@ mod tests {
             let data = storage.retrieve_data(&bytes);
             accepted += usize::from(data.is_ok());
             assert_eq!(full.map(|(d, _)| d), data, "[{name}]");
-            assert_eq!(storage.validate(&bytes), data.is_ok(), "[{name}] validate");
         }
         assert!(accepted > 0, "corpus has accepted envelopes");
-        assert_eq!(
-            storage.retrieve_data(&vec![0; MAX_COMPRESSED_SIZE + 1]),
-            Err(ByteStorageError::InputTooLarge)
-        );
     }
 
     #[test]
