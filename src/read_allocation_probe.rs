@@ -22,10 +22,11 @@
 //! allocating), and `retrieve` adds the format `String` and nothing else. A
 //! payload from `LARGE_PAYLOAD` up is copied out of the input by design, but
 //! only once the envelope decode has accepted the envelope:
-//! `rejected_envelope_reads_do_not_copy_a_large_payload` checks that a read
-//! whose decode rejects such an envelope requests less than `LARGE_PAYLOAD`.
-//! An envelope the decode accepts is copied even when `extract_payload` then
-//! rejects it (a size cap, the ratio bound, a checksum mismatch). A legacy
+//! `rejected_envelope_reads_do_not_copy_a_large_payload` checks that reading
+//! five such envelopes, each rejected by the decode in a later field,
+//! requests less than `LARGE_PAYLOAD`. An envelope the decode accepts is
+//! copied even when `extract_payload` then rejects it (a size cap, the ratio
+//! bound, a checksum mismatch). A legacy
 //! int-array payload is decoded into an owned buffer as it is read, so it is
 //! allocated whether or not the envelope is then accepted.
 //!
