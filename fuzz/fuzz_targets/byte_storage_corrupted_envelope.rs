@@ -1,34 +1,62 @@
 #![no_main]
 
+use cachekit_core::byte_storage::{fuzz_envelope_decodes, StorageEnvelope};
+use cachekit_core::ByteStorage;
 use libfuzzer_sys::fuzz_target;
-use cachekit_core::byte_storage::StorageEnvelope;
+
+// Attack: malformed and near-canonical envelopes through the envelope decode.
+// Validates, besides fail-closed rejection without panics, that the one-pass
+// decode `retrieve` tries first agrees with the pre-scan plus serde decode it
+// falls back to: it accepts only what that decode accepts, into the same
+// fields, and `retrieve` returns what that decode would give it, error text
+// included.
 
 fuzz_target!(|data: &[u8]| {
-    // Attack: Attempt to deserialize arbitrary bytes as StorageEnvelope
-    // Validates: Safe rejection of corrupted MessagePack serialization without panics
+    // The input as envelope bytes.
+    check(data);
 
-    // Try to deserialize fuzz input as MessagePack StorageEnvelope
-    match rmp_serde::from_slice::<StorageEnvelope>(data) {
-        Ok(envelope) => {
-            // Successfully deserialized - now test extract() validation
-            // extract() should either succeed (valid envelope) or reject safely (invalid)
-            match envelope.extract() {
-                Ok(_decompressed) => {
-                    // Valid envelope and decompression succeeded - this is acceptable
-                    // (rare but possible if fuzzer generates valid structure)
-                }
-                Err(_) => {
-                    // Envelope validation or decompression failed - expected for most malformed input
-                    // This is the fail-closed behavior we want
-                }
-            }
-        }
-        Err(_) => {
-            // Deserialization failed - expected for invalid MessagePack
-            // This is also safe fail-closed behavior
+    // The input as an envelope `store` writes, then corrupted, which reaches
+    // the one-pass decode's boundaries far more often than raw bytes do. The
+    // first byte picks up to three 3-byte edits (a position and a byte) and
+    // what they do; the rest is the stored value.
+    let Some((&plan, rest)) = data.split_first() else {
+        return;
+    };
+    let edit_bytes = usize::from(plan % 4) * 3;
+    let Some((edits, value)) = rest.split_at_checked(edit_bytes) else {
+        return;
+    };
+    let mut envelope = ByteStorage::new(None).store(value, None).unwrap();
+    for edit in edits.chunks_exact(3) {
+        // Up to one past the end, so an edit can also append.
+        let pos = usize::from(u16::from_be_bytes([edit[0], edit[1]])) % (envelope.len() + 1);
+        match plan >> 2 & 3 {
+            0 if pos < envelope.len() => envelope[pos] = edit[2],
+            1 => envelope.truncate(pos),
+            _ => envelope.insert(pos, edit[2]),
         }
     }
-
-    // Success: No panics occurred, all paths handled safely
-    // Invariant: Malformed MessagePack must be rejected without crashes
+    check(&envelope);
 });
+
+fn check(bytes: &[u8]) {
+    let (one_pass, full, decoded) = fuzz_envelope_decodes(bytes);
+    match (&one_pass, &full) {
+        (Some(one), Ok(full)) => assert_eq!(one, full, "one-pass and full decodes differ"),
+        (Some(_), Err(e)) => panic!("one-pass decode accepted what the full decode rejects: {e}"),
+        _ => {}
+    }
+    assert_eq!(decoded, full, "decode_envelope differs from the full decode");
+
+    // `retrieve` is the full decode's fields, extracted.
+    let expected = full.and_then(|(compressed_data, checksum, original_size, format)| {
+        let envelope = StorageEnvelope {
+            compressed_data,
+            checksum,
+            original_size,
+            format,
+        };
+        envelope.extract().map(|data| (data, envelope.format))
+    });
+    assert_eq!(ByteStorage::new(None).retrieve(bytes), expected);
+}

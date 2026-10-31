@@ -46,8 +46,8 @@ For a coverage report, see [Coverage Reporting](#coverage-reporting).
 
 **byte_storage_corrupted_envelope.rs**
 - Attack: Malformed MessagePack `StorageEnvelope` deserialization
-- Validates: Safe rejection of corrupted serialization without panics
-- Tests: Invalid MessagePack structures, truncated data, type confusion
+- Validates: Safe rejection of corrupted serialization without panics, and that the one-pass envelope decode `retrieve` tries first agrees with the pre-scan plus `rmp_serde` decode on accept, reject and every decoded field
+- Tests: Invalid MessagePack structures, truncated data, type confusion, and envelopes `store` writes with bytes replaced, inserted or cut off
 
 **byte_storage_integer_overflow.rs**
 - Attack: Decompression bomb via oversized `original_size` (u32::MAX, boundary cases)

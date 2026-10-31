@@ -479,12 +479,14 @@ impl ByteStorage {
     ///
     /// # Errors
     ///
-    /// `envelope_bytes` is untrusted. Before it is decoded, a structural
-    /// pre-scan bounds its nesting depth and rejects any header that declares
-    /// more than the input can back (protocol Retrieve Flow, step 2). A
-    /// pre-scan rejection is `DeserializationFailed` whose message starts with
-    /// `decode pre-scan: `, the same variant as any other bytes that do not
-    /// decode as a `StorageEnvelope`.
+    /// `envelope_bytes` is untrusted. An envelope in the shape `store` writes
+    /// is decoded in one pass that checks each declared length against the
+    /// input before reading it. Any other input is decoded only after a
+    /// structural pre-scan bounds its nesting depth and rejects any header
+    /// that declares more than the input can back (protocol Retrieve Flow,
+    /// step 2). A pre-scan rejection is `DeserializationFailed` whose message
+    /// starts with `decode pre-scan: `, the same variant as any other bytes
+    /// that do not decode as a `StorageEnvelope`.
     #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
     pub fn retrieve(&self, envelope_bytes: &[u8]) -> Result<(Vec<u8>, String), ByteStorageError> {
         // Security: Check envelope size before deserializing
@@ -552,11 +554,29 @@ impl Default for ByteStorage {
     }
 }
 
+/// Decode untrusted envelope bytes: the one-pass decode of the shape `store`
+/// writes, and for any input it declines, `decode_envelope_full`.
+///
+/// The one-pass decode accepts only inputs the full decode accepts, into the
+/// same fields, and declines every input the full decode rejects, so this
+/// returns what `decode_envelope_full` returns, error text included
+/// (`one_pass_decode_matches_full_decode`). It walks the envelope once instead
+/// of twice, which at small sizes is most of the cost of a read.
+#[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
+fn decode_envelope(
+    envelope_bytes: &[u8],
+) -> Result<borrowed::StorageEnvelope<'_>, ByteStorageError> {
+    match borrowed::StorageEnvelope::decode_canonical(envelope_bytes) {
+        Some(envelope) => Ok(envelope),
+        None => decode_envelope_full(envelope_bytes),
+    }
+}
+
 /// Decode untrusted envelope bytes: structural pre-scan first, then the typed
 /// decode. Serde's derive skips an unknown map key with `IgnoredAny`, which
 /// recurses, so the depth bound has to hold before `rmp_serde` sees the bytes.
 #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
-fn decode_envelope(
+fn decode_envelope_full(
     envelope_bytes: &[u8],
 ) -> Result<borrowed::StorageEnvelope<'_>, ByteStorageError> {
     // Nesting bound for the envelope decode. The protocol requires 32..=1024;
@@ -567,6 +587,42 @@ fn decode_envelope(
     })?;
     rmp_serde::from_slice(envelope_bytes)
         .map_err(|e| ByteStorageError::DeserializationFailed(e.to_string()))
+}
+
+/// A decoded envelope's `(compressed_data, checksum, original_size, format)`.
+#[cfg(all(
+    any(test, fuzzing),
+    feature = "compression",
+    feature = "checksum",
+    feature = "messagepack"
+))]
+#[doc(hidden)]
+pub type EnvelopeFields = (Vec<u8>, [u8; 8], u32, String);
+
+/// The same bytes through the one-pass decode, `decode_envelope_full` and
+/// `decode_envelope`, for the `byte_storage_corrupted_envelope` fuzz target's
+/// differential. Built only under `cfg(fuzzing)`, which cargo-fuzz sets.
+#[cfg(all(
+    fuzzing,
+    feature = "compression",
+    feature = "checksum",
+    feature = "messagepack"
+))]
+#[doc(hidden)]
+#[allow(clippy::type_complexity)]
+pub fn fuzz_envelope_decodes(
+    envelope_bytes: &[u8],
+) -> (
+    Option<EnvelopeFields>,
+    Result<EnvelopeFields, ByteStorageError>,
+    Result<EnvelopeFields, ByteStorageError>,
+) {
+    (
+        borrowed::StorageEnvelope::decode_canonical(envelope_bytes)
+            .map(borrowed::StorageEnvelope::into_fields),
+        decode_envelope_full(envelope_bytes).map(borrowed::StorageEnvelope::into_fields),
+        decode_envelope(envelope_bytes).map(borrowed::StorageEnvelope::into_fields),
+    )
 }
 
 /// What `retrieve` and `validate` decode: `StorageEnvelope` with
@@ -597,11 +653,109 @@ mod borrowed {
         pub(super) format: String,
     }
 
-    impl StorageEnvelope<'_> {
+    impl<'a> StorageEnvelope<'a> {
         /// `StorageEnvelope::extract`, on the borrowed payload.
         pub(super) fn extract(&self) -> Result<Vec<u8>, ByteStorageError> {
             extract_payload(&self.compressed_data, &self.checksum, self.original_size)
         }
+
+        /// The fields, owned, for the differential tests and fuzz target.
+        #[cfg(any(test, fuzzing))]
+        pub(super) fn into_fields(self) -> super::EnvelopeFields {
+            let Self {
+                compressed_data,
+                checksum,
+                original_size,
+                format,
+            } = self;
+            (
+                compressed_data.into_owned(),
+                checksum,
+                original_size,
+                format,
+            )
+        }
+
+        /// One pass over the shape `rmp_serde` writes for every envelope: a
+        /// fixarray of 4 holding `compressed_data` as bin8, bin16 or bin32;
+        /// `checksum` as a fixarray of 8, each byte a positive fixint or a
+        /// uint8; `original_size` as a positive fixint or a uint8, uint16 or
+        /// uint32; and `format` as a fixstr or str8 of valid UTF-8. Like the
+        /// full decode, it ignores bytes after the envelope.
+        ///
+        /// `None` for any other input, whether the full decode accepts it (a
+        /// legacy int-array payload, a bin8 checksum, a wider integer or
+        /// string, the map form) or rejects it: the caller's fallback decides
+        /// it, with the error it reports today.
+        ///
+        /// It holds the decode bounds the pre-scan enforces. The shape nests
+        /// two deep; every declared length is checked against the bytes after
+        /// it before they are read; and a complete envelope declares fewer
+        /// slots than it has bytes, since each slot is at least one byte and
+        /// the root header is not a slot. Nothing is allocated until the whole
+        /// envelope has been read.
+        pub(super) fn decode_canonical(bytes: &'a [u8]) -> Option<Self> {
+            let mut rest = bytes;
+            if take_byte(&mut rest)? != 0x94 {
+                return None;
+            }
+            let payload_len = match take_byte(&mut rest)? {
+                0xc4 => take_uint(&mut rest, 1)?,
+                0xc5 => take_uint(&mut rest, 2)?,
+                0xc6 => take_uint(&mut rest, 4)?,
+                _ => return None,
+            };
+            let payload = take(&mut rest, payload_len)?;
+            if take_byte(&mut rest)? != 0x98 {
+                return None;
+            }
+            let mut checksum = [0u8; 8];
+            for byte in &mut checksum {
+                *byte = match take_byte(&mut rest)? {
+                    fixint @ 0x00..=0x7f => fixint,
+                    0xcc => take_byte(&mut rest)?,
+                    _ => return None,
+                };
+            }
+            let original_size = match take_byte(&mut rest)? {
+                fixint @ 0x00..=0x7f => u32::from(fixint),
+                0xcc => take_uint(&mut rest, 1)?,
+                0xcd => take_uint(&mut rest, 2)?,
+                0xce => take_uint(&mut rest, 4)?,
+                _ => return None,
+            };
+            let format_len = match take_byte(&mut rest)? {
+                fixstr @ 0xa0..=0xbf => u32::from(fixstr & 0x1f),
+                0xd9 => take_uint(&mut rest, 1)?,
+                _ => return None,
+            };
+            let format = std::str::from_utf8(take(&mut rest, format_len)?).ok()?;
+            Some(StorageEnvelope {
+                compressed_data: borrow_below_large(payload),
+                checksum,
+                original_size,
+                format: format.to_owned(),
+            })
+        }
+    }
+
+    fn take_byte(rest: &mut &[u8]) -> Option<u8> {
+        let (&byte, tail) = rest.split_first()?;
+        *rest = tail;
+        Some(byte)
+    }
+
+    /// The next `len` bytes, or `None` when fewer remain.
+    fn take<'a>(rest: &mut &'a [u8], len: u32) -> Option<&'a [u8]> {
+        let (head, tail) = rest.split_at_checked(usize::try_from(len).ok()?)?;
+        *rest = tail;
+        Some(head)
+    }
+
+    /// A big-endian unsigned integer `width` bytes wide, at most 4.
+    fn take_uint(rest: &mut &[u8], width: u32) -> Option<u32> {
+        let bytes = take(rest, width)?;
+        Some(bytes.iter().fold(0, |acc, &b| (acc << 8) | u32::from(b)))
     }
 
     /// serde_bytes' `ByteBuf` decode, which `StorageEnvelope::compressed_data`
@@ -1149,6 +1303,148 @@ mod tests {
                 (o, b) => panic!("[{name}] owned {:?} vs borrowed {:?}", o.err(), b.err()),
             }
         }
+    }
+
+    /// What `store` writes, at each field's encoding width boundaries: bin8,
+    /// bin16 and bin32 payloads (the last two either side of LARGE_PAYLOAD),
+    /// fixint and uint8 checksum bytes, every width of `original_size`, and
+    /// fixstr and str8 formats.
+    fn canonical_envelopes() -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        for (payload_len, size, format_len) in [
+            (0, 0, 0),
+            (1, 0x7f, 7),
+            (40, 0x80, 31),
+            (255, 0xff, 32),
+            (256, 0x100, 255),
+            (300, 0xffff, 1),
+            (0x1_0000, 0x1_0000, 7),
+            (0x1_0001, u32::MAX, 7),
+        ] {
+            for checksum in [[0; 8], [0x7f, 0x80, 0xff, 0, 1, 0x7e, 0x81, 0xfe]] {
+                let envelope = envelope_with(payload_len, checksum, size, format_len);
+                out.push(rmp_serde::to_vec(&envelope).unwrap());
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn one_pass_decode_takes_every_canonical_envelope() {
+        // The read path's speed rests on this: an envelope `store` writes
+        // never falls back to the pre-scan and serde.
+        for bytes in canonical_envelopes() {
+            assert!(
+                borrowed::StorageEnvelope::decode_canonical(&bytes).is_some(),
+                "declined {:02x?}",
+                &bytes[..bytes.len().min(16)]
+            );
+        }
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/vectors/wire-format.json")).unwrap();
+        for v in fixture["vectors"].as_array().unwrap() {
+            let name = v["name"].as_str().unwrap();
+            let bytes = hex::decode(v["envelope_hex"].as_str().unwrap()).unwrap();
+            let one_pass = borrowed::StorageEnvelope::decode_canonical(&bytes);
+            // Legacy int-array payloads are the full decode's to read.
+            assert_eq!(one_pass.is_some(), name.ends_with("_bin"), "[{name}]");
+        }
+    }
+
+    #[test]
+    fn one_pass_decode_matches_full_decode() {
+        // `decode_envelope` returns exactly what `decode_envelope_full` does,
+        // fields or error text, and the one-pass decode accepts only what the
+        // full decode accepts, into the same fields. Inputs: the decode corpus,
+        // the decode-bounds vectors, and the canonical envelopes truncated at
+        // every length, with a byte inserted or replaced (by values that change
+        // its MessagePack meaning) at every header position, and with bytes
+        // appended.
+        let (mut one_pass_accepted, mut full_only_accepted) = (0, 0);
+        let mut check = |bytes: &[u8]| {
+            let shown = &bytes[..bytes.len().min(48)];
+            let one_pass = borrowed::StorageEnvelope::decode_canonical(bytes)
+                .map(borrowed::StorageEnvelope::into_fields);
+            let full = decode_envelope_full(bytes).map(borrowed::StorageEnvelope::into_fields);
+            match (&one_pass, &full) {
+                (Some(one), Ok(full)) => {
+                    assert_eq!(
+                        one,
+                        full,
+                        "fields differ, len {}: {shown:02x?}",
+                        bytes.len()
+                    );
+                    one_pass_accepted += 1;
+                }
+                (Some(_), Err(e)) => panic!(
+                    "one-pass accepted what the full decode rejects ({e}), len {}: {shown:02x?}",
+                    bytes.len()
+                ),
+                (None, Ok(_)) => full_only_accepted += 1,
+                (None, Err(_)) => {}
+            }
+            let decoded = decode_envelope(bytes).map(borrowed::StorageEnvelope::into_fields);
+            assert_eq!(decoded, full, "len {}: {shown:02x?}", bytes.len());
+        };
+
+        for (_, bytes) in decode_corpus() {
+            check(&bytes);
+        }
+        let bounds: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/vectors/decode-bounds.json")).unwrap();
+        for group in ["reject_vectors", "accept_vectors"] {
+            for v in bounds[group].as_array().unwrap() {
+                check(&hex::decode(v["input_hex"].as_str().unwrap()).unwrap());
+            }
+        }
+        // A format of str16 and a bin8 checksum: both full-decode only.
+        check(&rmp_serde::to_vec(&envelope_with(3, [1; 8], 3, 256)).unwrap());
+        let mut bin8_checksum = rmp_serde::to_vec(&envelope_with(3, [1; 8], 3, 1)).unwrap();
+        bin8_checksum.splice(6..15, [0xc4, 8, 1, 1, 1, 1, 1, 1, 1, 1]);
+        check(&bin8_checksum);
+
+        let markers = [
+            0x00, 0x01, 0x07, 0x7f, 0x80, 0x84, 0x90, 0x93, 0x94, 0x95, 0x97, 0x98, 0x99, 0xa0,
+            0xa1, 0xbf, 0xc0, 0xc1, 0xc2, 0xc4, 0xc5, 0xc6, 0xca, 0xcc, 0xcd, 0xce, 0xcf, 0xd0,
+            0xd9, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xe0, 0xff,
+        ];
+        for env in canonical_envelopes() {
+            // Every position of a small envelope. Of a large one, the headers
+            // and the fields after the payload (at most 30 bytes).
+            let positions =
+                (0..env.len()).filter(|&i| env.len() <= 1024 || i < 8 || i + 40 >= env.len());
+            for i in positions {
+                check(&env[..i]);
+                for &m in markers.iter().chain(&[env[i] ^ 1, env[i].wrapping_add(1)]) {
+                    let mut replaced = env.clone();
+                    replaced[i] = m;
+                    check(&replaced);
+                    let mut inserted = env.clone();
+                    inserted.insert(i, m);
+                    check(&inserted);
+                }
+            }
+            for tail in [
+                &[0x00][..],
+                &[0xc1],
+                &[0x91],
+                &[0xdd, 0xff, 0xff, 0xff, 0xff],
+            ] {
+                check(&[&env[..], tail].concat());
+            }
+            check(&env);
+        }
+
+        // Both sides of the fallback ran: accepted by the one-pass decode, and
+        // accepted only by the full decode (legacy, bin8 checksum, str16, map).
+        assert!(
+            one_pass_accepted > 1000,
+            "one-pass accepted {one_pass_accepted}"
+        );
+        assert!(
+            full_only_accepted > 100,
+            "full-only accepted {full_only_accepted}"
+        );
     }
 
     #[test]

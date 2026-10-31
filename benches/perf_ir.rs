@@ -76,7 +76,7 @@ const TENANT: &str = "tenant-123";
 /// Shaped like an SDK's AAD: version byte, then length-prefixed tenant id and
 /// cache key. GHASH cost depends on its length, not its bytes.
 const AAD: &[u8] = b"\x03\x00\x00\x00\x0atenant-123\x00\x00\x00\x10ns:bench:func:x";
-/// ByteStorage's envelope nesting bound (`decode_envelope`).
+/// ByteStorage's envelope nesting bound (`decode_envelope_full`).
 const ENVELOPE_MAX_DEPTH: usize = 100;
 
 fn case_ids() -> Vec<String> {

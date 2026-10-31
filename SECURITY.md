@@ -176,7 +176,21 @@ cover only those two proofs.
 come from a backend the caller may not control. Before `rmp_serde` materialises
 a `StorageEnvelope`, both run a header-only structural pre-scan over those bytes
 (protocol `spec/wire-format.md` → Retrieve Flow, step 2; the bounds themselves
-are `spec/interop-mode.md` → Decode bounds). The pre-scan rejects:
+are `spec/interop-mode.md` → Decode bounds).
+
+An envelope in the shape `store` writes skips the pre-scan and `rmp_serde`: a
+one-pass decode reads its four fields in their exact encodings (a 4-element
+fixarray; bin8/16/32; a fixarray of 8 checksum bytes; a uint of at most 32
+bits; a fixstr or str8 of valid UTF-8). It holds the same bounds. It reads two
+levels deep, checks every declared length against the bytes after it before
+reading them, and allocates nothing until it has read the whole envelope; a
+complete envelope always declares fewer slots than its length. It hands any
+other input, and every input it would reject, to the pre-scan and `rmp_serde`,
+so it accepts only what they accept, into the same fields, and every rejection
+still carries the error below. `one_pass_decode_matches_full_decode` and the
+`byte_storage_corrupted_envelope` fuzz target compare the two decodes.
+
+The pre-scan rejects:
 
 | Rule | Bound |
 |:-----|:------|
