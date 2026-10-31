@@ -1,7 +1,8 @@
 //! Decode-bounds vectors through `ByteStorage::retrieve`.
 //!
-//! `retrieve` is the untrusted envelope decode that cachekit-py and cachekit-ts
-//! (NAPI and wasm) reach, so the protocol requires it to hold the decode bounds
+//! `retrieve` shares the untrusted envelope decode (`decode_envelope`) with
+//! `retrieve_data` and `validate`, the reads cachekit-py and cachekit-ts (NAPI
+//! and wasm) reach, so the protocol requires it to hold the decode bounds
 //! before materialising a `StorageEnvelope` (`protocol/spec/wire-format.md`
 //! → Retrieve Flow, step 2; the bounds are `spec/interop-mode.md` → Decode
 //! bounds). Its one-pass decode hands every input it would reject to the

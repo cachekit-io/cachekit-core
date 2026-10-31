@@ -72,6 +72,10 @@ let envelope = storage.store(data, None)?;
 // Retrieve data (decompresses + verifies checksum)
 let (retrieved, format) = storage.retrieve(&envelope)?;
 assert_eq!(data.as_slice(), retrieved.as_slice());
+
+// Or, when the format identifier is not needed (bindings, most callers):
+// the same checks and errors, without allocating the format String
+let retrieved = storage.retrieve_data(&envelope)?;
 ```
 
 ### With Encryption (Zero-Knowledge)
@@ -254,7 +258,7 @@ Malicious payloads claiming `original_size: 500GB` with 100 bytes of data are re
 <details>
 <summary><strong>Envelope Decode Bounds</strong></summary>
 
-`retrieve()` and `validate()` read an envelope in any encoding `store()` writes
+`retrieve()`, `retrieve_data()` and `validate()` read an envelope in any encoding `store()` writes
 in one pass, which checks each declared length against the input before reading
 it and allocates nothing until the whole envelope has been read. Every input
 that read declines gets a header-only structural pre-scan **before** MessagePack
@@ -426,7 +430,8 @@ summed-slot message, `decode pre-scan: declares more elements than the input
 can back`: any decoder, and the pre-scan's end-of-input check, rejects that
 envelope too, so only the exact message proves the slot check ran.
 `src/read_allocation_probe.rs` (unit tests only) bounds what the size-cap and
-ratio reads allocate, with a positive control.
+ratio reads allocate, with a positive control, and pins what an accepted
+msgpack-`bin` `retrieve_data` and `retrieve` below 64 KiB allocate.
 `tests/wire_format_constructed.rs` runs the fixture's constructed 32-bit
 ratio-product vector natively and, in CI, on `wasm32-unknown-unknown` under
 `wasm-bindgen-test`; `tests/wire_format_vectors.rs` decodes the constructed

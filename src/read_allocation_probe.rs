@@ -16,6 +16,13 @@
 //! and the test takes the thread's total before and after it, so the delta is
 //! this read's alone.
 //!
+//! The same probe pins what an accepted msgpack-`bin` read below
+//! `LARGE_PAYLOAD` allocates: `retrieve_data` requests only what the LZ4
+//! decoder does (the one-pass decode reads these envelopes without
+//! allocating), and `retrieve` adds the format `String` and nothing else. A
+//! legacy int-array payload, and a payload from `LARGE_PAYLOAD` up,
+//! are copied out of the input by design.
+//!
 //! The same count, [`bytes_requested`], also pins the write side: the
 //! `byte_storage` unit test `store_allocates_only_its_output_and_block` checks
 //! that `ByteStorage::store` requests only its output and its LZ4 block.
@@ -91,7 +98,7 @@ pub(crate) fn bytes_requested<R>(f: impl FnOnce() -> R) -> (R, usize) {
 #[cfg(feature = "messagepack")]
 mod tests {
     use super::*;
-    use crate::byte_storage::{ByteStorage, ByteStorageError};
+    use crate::byte_storage::{ByteStorage, ByteStorageError, StorageEnvelope};
 
     const FIXTURE: &str = include_str!("../tests/vectors/wire-format.json");
 
@@ -128,16 +135,53 @@ mod tests {
             let (envelope, original_size) = reject_vector(name);
             let (result, requested) = retrieve_counted(&envelope);
             assert_eq!(result.err(), Some(expected), "[{name}] wrong rejection");
-            // Decoding the envelope allocates (the format string, and these
-            // vectors' legacy int-array payload), so a probe that
-            // sees nothing is not counting this thread's allocations.
-            assert!(requested > 0, "[{name}] probe saw no allocation at all");
+            // The read allocates nothing here: the one-pass decode borrows
+            // these vectors' bin payload and their format. So check on its
+            // own that the probe counts this thread's allocations; one that
+            // does not would pass the bound below vacuously.
+            let ((), live) = bytes_requested(|| drop(std::hint::black_box(vec![0u8; 1])));
+            assert!(live > 0, "[{name}] probe saw no allocation at all");
             assert!(
                 requested < original_size,
                 "[{name}] the read requested {requested} B from the allocator, \
                  reaching original_size {original_size} B"
             );
         }
+    }
+
+    /// On every `msgpack bin` vector, `retrieve_data` allocates what the LZ4
+    /// decoder does on its own and nothing else, since the one-pass decode
+    /// takes every such vector without allocating, and `retrieve` adds only
+    /// the format `String`. A legacy int-array payload is copied out by
+    /// design, so those vectors are skipped.
+    #[test]
+    fn retrieve_data_allocates_only_output() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(FIXTURE).expect("wire-format.json fixture must parse");
+        let storage = ByteStorage::new(None);
+        let mut seen = 0;
+        for vector in fixture["vectors"].as_array().expect("vectors group") {
+            let name = vector["name"].as_str().expect("name");
+            if !name.ends_with("_bin") {
+                continue;
+            }
+            seen += 1;
+            let envelope = hex::decode(vector["envelope_hex"].as_str().expect("envelope_hex"))
+                .expect("envelope_hex must decode");
+            let decoded: StorageEnvelope =
+                rmp_serde::from_slice(&envelope).expect("vector must decode");
+            let (_, output) = bytes_requested(|| {
+                lz4_flex::decompress(&decoded.compressed_data, decoded.original_size as usize)
+            });
+            let (data, requested) = bytes_requested(|| storage.retrieve_data(&envelope));
+            data.unwrap_or_else(|e| panic!("[{name}] {e}"));
+            assert_eq!(requested, output, "[{name}] retrieve_data");
+            let (full, requested) = bytes_requested(|| storage.retrieve(&envelope));
+            full.unwrap_or_else(|e| panic!("[{name}] {e}"));
+            let format = decoded.format.len();
+            assert_eq!(requested, output + format, "[{name}] retrieve");
+        }
+        assert!(seen > 0, "fixture has msgpack bin vectors");
     }
 
     /// The same probe catches an `original_size` buffer allocated and freed
