@@ -158,15 +158,34 @@ fn compress_block(data: &[u8]) -> Result<Vec<u8>, ByteStorageError> {
     if len >= LITERAL_BLOCK_THRESHOLD {
         return compress_with_thread_table(data);
     }
-    let mut block = Vec::with_capacity(len + 2);
-    if len < 15 {
-        block.push((len as u8) << 4);
-    } else {
-        block.push(0xF0);
-        block.push((len - 15) as u8);
-    }
-    block.extend_from_slice(data);
+    let mut block = Vec::with_capacity(literal_block_len(len));
+    push_literal_block(&mut block, data);
     Ok(block)
+}
+
+/// Length of the literals-only block for an input of `len` bytes, below
+/// [`LITERAL_BLOCK_THRESHOLD`].
+#[cfg(feature = "compression")]
+fn literal_block_len(len: usize) -> usize {
+    if len < 15 {
+        len + 1
+    } else {
+        len + 2
+    }
+}
+
+/// Append the literals-only block for `data`, shorter than
+/// [`LITERAL_BLOCK_THRESHOLD`], to `out`.
+#[cfg(feature = "compression")]
+fn push_literal_block(out: &mut Vec<u8>, data: &[u8]) {
+    let len = data.len();
+    if len < 15 {
+        out.push((len as u8) << 4);
+    } else {
+        out.push(0xF0);
+        out.push((len - 15) as u8);
+    }
+    out.extend_from_slice(data);
 }
 
 /// `lz4_flex::compress(data)`'s bytes, written with this thread's table.
@@ -189,7 +208,8 @@ fn compress_with_thread_table(data: &[u8]) -> Result<Vec<u8>, ByteStorageError> 
 /// Storage envelope for raw byte storage
 /// Contains compressed data with integrity checking
 // `retrieve` and `validate` decode into its private borrowing twin,
-// `borrowed::StorageEnvelope`: change the two together.
+// `borrowed::StorageEnvelope`, and `store` encodes from another,
+// `EnvelopeRef`: change the three together.
 #[derive(Serialize, Deserialize)]
 pub struct StorageEnvelope {
     /// Compressed payload data
@@ -215,28 +235,11 @@ impl StorageEnvelope {
     /// full-payload copy (up to `MAX_UNCOMPRESSED_SIZE`) on the write path.
     #[cfg(all(feature = "compression", feature = "checksum"))]
     pub fn new(data: &[u8], format: String) -> Result<Self, ByteStorageError> {
-        // Security: Check input size before compression
-        if data.len() > MAX_UNCOMPRESSED_SIZE {
-            return Err(ByteStorageError::InputTooLarge);
-        }
-
-        let original_size = data.len() as u32;
-
-        // Compress with LZ4 (a literals-only block below LITERAL_BLOCK_THRESHOLD)
-        let compressed_data = compress_block(data)?;
-
-        // Security: Check compressed size
-        if compressed_data.len() > MAX_COMPRESSED_SIZE {
-            return Err(ByteStorageError::InputTooLarge);
-        }
-
-        // Single canonical xxHash3-64 definition (see crate::checksum)
-        let checksum = crate::checksum::checksum(data);
-
+        let (compressed_data, checksum) = seal(data)?;
         Ok(StorageEnvelope {
             compressed_data,
             checksum,
-            original_size,
+            original_size: data.len() as u32,
             format,
         })
     }
@@ -255,45 +258,7 @@ impl StorageEnvelope {
     /// so a caller can allocate the output once, at its final size.
     #[cfg(feature = "messagepack")]
     pub fn encoded_len(&self) -> usize {
-        // rmp_serde writes the struct as a 4-element array, `compressed_data`
-        // as bin, `checksum` as an array of 8 uints and every uint in its
-        // shortest form; `encoded_len_matches_rmp_serde` pins each width.
-        fn uint_len(v: u32) -> usize {
-            match v {
-                0..=0x7F => 1,
-                0x80..=0xFF => 2,
-                0x100..=0xFFFF => 3,
-                _ => 5,
-            }
-        }
-        fn bin_header_len(len: usize) -> usize {
-            match len {
-                0..=0xFF => 2,
-                0x100..=0xFFFF => 3,
-                _ => 5,
-            }
-        }
-        fn str_header_len(len: usize) -> usize {
-            match len {
-                0..=31 => 1,
-                32..=0xFF => 2,
-                0x100..=0xFFFF => 3,
-                _ => 5,
-            }
-        }
-        let checksum_len = 1 + self
-            .checksum
-            .iter()
-            .map(|&b| uint_len(b.into()))
-            .sum::<usize>();
-        let fixed = 1 // fixarray(4)
-            + bin_header_len(self.compressed_data.len())
-            + checksum_len
-            + uint_len(self.original_size)
-            + str_header_len(self.format.len());
-        fixed
-            .saturating_add(self.compressed_data.len())
-            .saturating_add(self.format.len())
+        self.as_ref().encoded_len()
     }
 
     /// Write this envelope's MessagePack encoding, the bytes
@@ -314,7 +279,8 @@ impl StorageEnvelope {
     /// `encoded_len` bytes; nothing written into it is then meaningful.
     #[cfg(feature = "messagepack")]
     pub fn encode_into(&self, out: &mut [u8]) -> Result<(), ByteStorageError> {
-        let len = self.capped_encoded_len()?;
+        let envelope = self.as_ref();
+        let len = envelope.capped_encoded_len()?;
         if out.len() != len {
             return Err(ByteStorageError::SerializationFailed(format!(
                 "output buffer is {} bytes, the envelope encodes to {len}",
@@ -322,7 +288,7 @@ impl StorageEnvelope {
             )));
         }
         let mut rest = &mut out[..];
-        rmp_serde::encode::write(&mut rest, self)
+        rmp_serde::encode::write(&mut rest, &envelope)
             .map_err(|e| ByteStorageError::SerializationFailed(e.to_string()))?;
         // encoded_len was exact if the write filled the buffer
         if !rest.is_empty() {
@@ -334,9 +300,67 @@ impl StorageEnvelope {
         Ok(())
     }
 
+    #[cfg(feature = "messagepack")]
+    fn as_ref(&self) -> EnvelopeRef<'_> {
+        EnvelopeRef {
+            compressed_data: &self.compressed_data,
+            checksum: self.checksum,
+            original_size: self.original_size,
+            format: &self.format,
+        }
+    }
+}
+
+/// `data`'s LZ4 block and checksum, with the size checks every envelope's
+/// payload passes.
+#[cfg(all(feature = "compression", feature = "checksum"))]
+fn seal(data: &[u8]) -> Result<(Vec<u8>, [u8; 8]), ByteStorageError> {
+    // Security: Check input size before compression
+    if data.len() > MAX_UNCOMPRESSED_SIZE {
+        return Err(ByteStorageError::InputTooLarge);
+    }
+
+    // Compress with LZ4 (a literals-only block below LITERAL_BLOCK_THRESHOLD)
+    let compressed_data = compress_block(data)?;
+
+    // Security: Check compressed size
+    if compressed_data.len() > MAX_COMPRESSED_SIZE {
+        return Err(ByteStorageError::InputTooLarge);
+    }
+
+    // Single canonical xxHash3-64 definition (see crate::checksum)
+    let checksum = crate::checksum::checksum(data);
+
+    Ok((compressed_data, checksum))
+}
+
+/// `StorageEnvelope` with borrowed fields, for encoding: `store` writes its
+/// envelope from the caller's or its own format string without cloning it.
+/// Field order, names and serde attributes are `StorageEnvelope`'s, so the
+/// two serialize to the same bytes.
+#[cfg(feature = "messagepack")]
+#[derive(Serialize)]
+struct EnvelopeRef<'a> {
+    #[serde(with = "serde_bytes")]
+    compressed_data: &'a [u8],
+    checksum: [u8; 8],
+    original_size: u32,
+    format: &'a str,
+}
+
+#[cfg(feature = "messagepack")]
+impl EnvelopeRef<'_> {
+    fn encoded_len(&self) -> usize {
+        encoded_len(
+            self.compressed_data.len(),
+            &self.checksum,
+            self.original_size,
+            self.format.len(),
+        )
+    }
+
     /// `encoded_len`, or `InputTooLarge` past the envelope size cap: the final
     /// check `store` makes, before anything is encoded.
-    #[cfg(feature = "messagepack")]
     fn capped_encoded_len(&self) -> Result<usize, ByteStorageError> {
         let len = self.encoded_len();
         if len > MAX_COMPRESSED_SIZE {
@@ -351,7 +375,7 @@ impl StorageEnvelope {
     ///
     /// `rmp_serde::to_vec` grows its `Vec` from empty, reallocating several
     /// times for a small envelope and to twice the payload for a large one.
-    #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
+    #[cfg(all(feature = "compression", feature = "checksum"))]
     fn encode(&self) -> Result<Vec<u8>, ByteStorageError> {
         let len = self.capped_encoded_len()?;
         if len >= LARGE_PAYLOAD {
@@ -365,6 +389,104 @@ impl StorageEnvelope {
         Ok(out)
     }
 }
+
+/// Exact length of an envelope's MessagePack encoding, from its block length,
+/// checksum, original size and format length.
+#[cfg(feature = "messagepack")]
+fn encoded_len(
+    block_len: usize,
+    checksum: &[u8; 8],
+    original_size: u32,
+    format_len: usize,
+) -> usize {
+    // rmp_serde writes the struct as a 4-element array, `compressed_data`
+    // as bin, `checksum` as an array of 8 uints and every uint in its
+    // shortest form; `encoded_len_matches_rmp_serde` pins each width.
+    fn uint_len(v: u32) -> usize {
+        match v {
+            0..=0x7F => 1,
+            0x80..=0xFF => 2,
+            0x100..=0xFFFF => 3,
+            _ => 5,
+        }
+    }
+    fn bin_header_len(len: usize) -> usize {
+        match len {
+            0..=0xFF => 2,
+            0x100..=0xFFFF => 3,
+            _ => 5,
+        }
+    }
+    fn str_header_len(len: usize) -> usize {
+        match len {
+            0..=31 => 1,
+            32..=0xFF => 2,
+            0x100..=0xFFFF => 3,
+            _ => 5,
+        }
+    }
+    let checksum_len = 1 + checksum.iter().map(|&b| uint_len(b.into())).sum::<usize>();
+    let fixed = 1 // fixarray(4)
+        + bin_header_len(block_len)
+        + checksum_len
+        + uint_len(original_size)
+        + str_header_len(format_len);
+    fixed.saturating_add(block_len).saturating_add(format_len)
+}
+
+/// `store`'s envelope for an input shorter than [`LITERAL_BLOCK_THRESHOLD`],
+/// written in one pass into a `Vec` allocated once at its final length: the
+/// literals-only block goes straight into the `bin` field, so no block is
+/// allocated and copied. The bytes are `rmp_serde`'s for the same envelope
+/// (`literal_envelope_matches_rmp_serde`).
+///
+/// `None` when the envelope would reach [`LARGE_PAYLOAD`], which only a format
+/// string of about 64 KiB can do: `store` then takes its general path, which
+/// keeps `rmp_serde::to_vec`'s growing buffer there.
+#[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
+fn encode_literal_envelope(data: &[u8], format: &str) -> Option<Vec<u8>> {
+    let size = data.len();
+    let block_len = literal_block_len(size);
+    let checksum = crate::checksum::checksum(data);
+    let len = encoded_len(block_len, &checksum, size as u32, format.len());
+    if len >= LARGE_PAYLOAD {
+        return None;
+    }
+    let mut out = Vec::with_capacity(len);
+    // fixarray(4), then `compressed_data` as bin8 and the block
+    out.extend_from_slice(&[0x94, 0xC4, block_len as u8]);
+    push_literal_block(&mut out, data);
+    // `checksum`: array(8) of uints, each a positive fixint or a uint8
+    out.push(0x98);
+    for byte in checksum {
+        if byte > 0x7F {
+            out.push(0xCC);
+        }
+        out.push(byte);
+    }
+    // `original_size`: a positive fixint
+    out.push(size as u8);
+    // `format`: fixstr, str8 or str16 (the LARGE_PAYLOAD check bounds it)
+    match format.len() {
+        n @ 0..=31 => out.push(0xA0 | n as u8),
+        n @ 32..=0xFF => out.extend_from_slice(&[0xD9, n as u8]),
+        n => {
+            out.push(0xDA);
+            out.extend_from_slice(&(n as u16).to_be_bytes());
+        }
+    }
+    out.extend_from_slice(format.as_bytes());
+    debug_assert_eq!(out.len(), len, "encoded_len must be exact");
+    Some(out)
+}
+
+// `encode_literal_envelope`'s fixed widths: the original size fits a positive
+// fixint (so the block, 2 bytes longer, fits bin8), and any format under
+// LARGE_PAYLOAD str16.
+#[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
+const _: () = assert!(LITERAL_BLOCK_THRESHOLD <= 0x80);
+#[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
+const _: () = assert!(LARGE_PAYLOAD <= 0x1_0000);
 
 /// Decompress and verify one envelope's payload. `StorageEnvelope::extract`
 /// forwards to it, and `retrieve` and `validate` call it on the borrowed
@@ -464,9 +586,21 @@ impl ByteStorage {
             return Err(ByteStorageError::InputTooLarge);
         }
 
-        let format = format.unwrap_or_else(|| self.default_format.clone());
+        let format = format.as_deref().unwrap_or(&self.default_format);
 
-        let envelope = StorageEnvelope::new(data, format)?;
+        if data.len() < LITERAL_BLOCK_THRESHOLD {
+            if let Some(envelope) = encode_literal_envelope(data, format) {
+                return Ok(envelope);
+            }
+        }
+
+        let (compressed_data, checksum) = seal(data)?;
+        let envelope = EnvelopeRef {
+            compressed_data: &compressed_data,
+            checksum,
+            original_size: data.len() as u32,
+            format,
+        };
 
         // Serialize envelope with MessagePack. Security: the final envelope
         // size check runs inside, before the output is allocated.
@@ -1317,6 +1451,74 @@ mod tests {
     }
 
     #[test]
+    fn literal_envelope_matches_rmp_serde() {
+        // Every input length below the threshold, against formats either side
+        // of each str width (fixstr/str8/str16) and the default; the input
+        // bytes vary so checksum bytes land on both sides of 0x80
+        let data = xorshift_bytes(LITERAL_BLOCK_THRESHOLD);
+        let formats = [0, 1, 7, 31, 32, 255, 256, 60_000].map(|n| "f".repeat(n));
+        for len in 0..LITERAL_BLOCK_THRESHOLD {
+            for (seed, input) in [&data[..len], &vec![b'a'; len][..]].into_iter().enumerate() {
+                let default = ByteStorage::new(None).store(input, None).unwrap();
+                let expected =
+                    rmp_serde::to_vec(&StorageEnvelope::new(input, "msgpack".to_string()).unwrap())
+                        .unwrap();
+                assert_eq!(default, expected, "len {len}, input {seed}, default format");
+                for format in &formats {
+                    let envelope = StorageEnvelope::new(input, format.clone()).unwrap();
+                    let expected = rmp_serde::to_vec(&envelope).unwrap();
+                    let stored = ByteStorage::new(None)
+                        .store(input, Some(format.clone()))
+                        .unwrap();
+                    assert_eq!(
+                        stored,
+                        expected,
+                        "len {len}, input {seed}, format {}",
+                        format.len()
+                    );
+                    assert_eq!(stored.capacity(), stored.len(), "len {len}, capacity");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn literal_envelope_at_large_payload_takes_the_general_path() {
+        // A format long enough to push a tiny envelope to LARGE_PAYLOAD
+        let format = "f".repeat(LARGE_PAYLOAD);
+        assert!(encode_literal_envelope(b"abc", &format).is_none());
+        let stored = ByteStorage::new(None)
+            .store(b"abc", Some(format.clone()))
+            .unwrap();
+        let envelope = StorageEnvelope::new(b"abc", format).unwrap();
+        assert_eq!(stored, rmp_serde::to_vec(&envelope).unwrap());
+        assert!(stored.len() >= LARGE_PAYLOAD);
+    }
+
+    #[test]
+    fn store_allocates_only_its_output_and_block() {
+        use crate::read_allocation_probe::bytes_requested;
+
+        let storage = ByteStorage::new(None);
+        // Warm this thread's LZ4 table and scratch, allocated on first use
+        storage.store(&xorshift_bytes(1024), None).unwrap();
+        for len in [0, 14, 15, 40, 63, 64, 1024] {
+            let data = xorshift_bytes(len);
+            for format in [None, Some("msgpack".to_string())] {
+                let (stored, requested) = bytes_requested(|| storage.store(&data, format).unwrap());
+                // Below the threshold only the envelope; from it on the
+                // envelope and the LZ4 block it copies. Never a format clone.
+                let block = if len < LITERAL_BLOCK_THRESHOLD {
+                    0
+                } else {
+                    compress_block(&data).unwrap().len()
+                };
+                assert_eq!(requested, stored.len() + block, "len {len}");
+            }
+        }
+    }
+
+    #[test]
     fn encode_into_rejects_a_wrong_sized_buffer() {
         let envelope = StorageEnvelope::new(b"payload", "msgpack".to_string()).unwrap();
         let len = envelope.encoded_len();
@@ -1343,7 +1545,7 @@ mod tests {
             Err(ByteStorageError::InputTooLarge)
         );
         assert_eq!(
-            envelope.encode().err(),
+            envelope.as_ref().encode().err(),
             Some(ByteStorageError::InputTooLarge)
         );
     }

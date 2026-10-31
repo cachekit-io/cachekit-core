@@ -76,19 +76,21 @@ pub(crate) fn reserve_first_control(compressed_data: &[u8], original_size: u32) 
     }
 }
 
+/// Bytes requested on this thread while `f` runs, with its result. The
+/// `byte_storage` unit tests also use it to pin what `store` allocates.
+#[cfg(feature = "messagepack")]
+pub(crate) fn bytes_requested<R>(f: impl FnOnce() -> R) -> (R, usize) {
+    let before = REQUESTED.with(Cell::get);
+    let result = f();
+    (result, REQUESTED.with(Cell::get) - before)
+}
+
 #[cfg(feature = "messagepack")]
 mod tests {
     use super::*;
     use crate::byte_storage::{ByteStorage, ByteStorageError};
 
     const FIXTURE: &str = include_str!("../tests/vectors/wire-format.json");
-
-    /// Bytes requested on this thread while `f` runs, with its result.
-    fn bytes_requested<R>(f: impl FnOnce() -> R) -> (R, usize) {
-        let before = REQUESTED.with(Cell::get);
-        let result = f();
-        (result, REQUESTED.with(Cell::get) - before)
-    }
 
     /// `(envelope bytes, original_size)` of a reject vector, by name.
     fn reject_vector(name: &str) -> (Vec<u8>, usize) {
