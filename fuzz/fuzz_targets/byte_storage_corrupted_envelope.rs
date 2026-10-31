@@ -1,34 +1,39 @@
 #![no_main]
 
+use cachekit_core::byte_storage::{assert_one_pass_matches_full_decode, StorageEnvelope};
+use cachekit_core::ByteStorage;
 use libfuzzer_sys::fuzz_target;
-use cachekit_core::byte_storage::StorageEnvelope;
+
+// Attack: malformed and corrupted envelopes through the envelope decodes.
+// Validates: fail-closed rejection without panics, and that the one-pass decode agrees with the full decode.
 
 fuzz_target!(|data: &[u8]| {
-    // Attack: Attempt to deserialize arbitrary bytes as StorageEnvelope
-    // Validates: Safe rejection of corrupted MessagePack serialization without panics
-
-    // Try to deserialize fuzz input as MessagePack StorageEnvelope
-    match rmp_serde::from_slice::<StorageEnvelope>(data) {
-        Ok(envelope) => {
-            // Successfully deserialized - now test extract() validation
-            // extract() should either succeed (valid envelope) or reject safely (invalid)
-            match envelope.extract() {
-                Ok(_decompressed) => {
-                    // Valid envelope and decompression succeeded - this is acceptable
-                    // (rare but possible if fuzzer generates valid structure)
-                }
-                Err(_) => {
-                    // Envelope validation or decompression failed - expected for most malformed input
-                    // This is the fail-closed behavior we want
-                }
-            }
-        }
-        Err(_) => {
-            // Deserialization failed - expected for invalid MessagePack
-            // This is also safe fail-closed behavior
-        }
+    // The input as envelope bytes, through `retrieve`'s decodes and through
+    // the public owned `StorageEnvelope`, which has no pre-scan of its own.
+    assert_one_pass_matches_full_decode(data);
+    if let Ok(envelope) = rmp_serde::from_slice::<StorageEnvelope>(data) {
+        let _ = envelope.extract();
     }
 
-    // Success: No panics occurred, all paths handled safely
-    // Invariant: Malformed MessagePack must be rejected without crashes
+    // The input as an envelope `store` writes, then corrupted, which reaches
+    // the one-pass decode's boundaries far more often than raw bytes do. The
+    // first byte picks up to three 3-byte edits (a position and a byte) and
+    // what they do; the rest is the stored value.
+    let Some((&plan, rest)) = data.split_first() else {
+        return;
+    };
+    let Some((edits, value)) = rest.split_at_checked(usize::from(plan % 4) * 3) else {
+        return;
+    };
+    let mut envelope = ByteStorage::new(None).store(value, None).unwrap();
+    for edit in edits.chunks_exact(3) {
+        // Up to one past the end, so an edit can also append.
+        let pos = usize::from(u16::from_be_bytes([edit[0], edit[1]])) % (envelope.len() + 1);
+        match plan >> 2 & 3 {
+            0 if pos < envelope.len() => envelope[pos] = edit[2],
+            1 => envelope.truncate(pos),
+            _ => envelope.insert(pos, edit[2]),
+        }
+    }
+    assert_one_pass_matches_full_decode(&envelope);
 });

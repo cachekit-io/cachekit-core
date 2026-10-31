@@ -149,8 +149,9 @@ stubbing = false
 
 # Lint configuration
 [lints.rust]
-# Suppress benign warnings about cfg(kani) which is set by Kani verifier
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+# Suppress benign warnings about cfg(kani), set by the Kani verifier, and
+# cfg(fuzzing), set by cargo-fuzz
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(fuzzing)'] }
 
 # Release profile for cachekit-core's own release builds.
 #

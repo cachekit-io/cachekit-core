@@ -173,11 +173,28 @@ cover only those two proofs.
 ### Envelope decode bounds
 
 `ByteStorage::retrieve`, `ByteStorage::retrieve_data` and `ByteStorage::validate`
-decode envelope bytes that come from a backend the caller may not control. Before
-`rmp_serde` materialises a `StorageEnvelope`, all three run one decode path,
-`decode_envelope`, which runs a header-only structural pre-scan over those bytes
+decode envelope bytes that come from a backend the caller may not control. All
+three run one decode path, `decode_envelope`. Before `rmp_serde` materialises a
+`StorageEnvelope`, it runs a header-only structural pre-scan over those bytes
 (protocol `spec/wire-format.md` → Retrieve Flow, step 2; the bounds themselves
-are `spec/interop-mode.md` → Decode bounds). The pre-scan rejects:
+are `spec/interop-mode.md` → Decode bounds).
+
+An envelope whose four fields use these encodings skips the pre-scan and
+`rmp_serde`, and they cover every envelope `store` writes: a 4-element
+fixarray; bin8/16/32; a fixarray of 8 checksum bytes, each a positive fixint or
+uint8; a uint of at most 32 bits; a str of valid UTF-8, any width. A one-pass
+decode reads them. It holds the same
+bounds. It reads two levels deep, checks every declared length against the
+bytes after it before reading them, and allocates nothing until it has read
+the whole envelope; a complete envelope always declares fewer slots than its
+length. It accepts only envelopes the pre-scan and `rmp_serde` accept, into the
+same fields, which `one_pass_decode_matches_full_decode` and the
+`byte_storage_corrupted_envelope` fuzz target check. It hands every other
+input, including every input it would reject, to the pre-scan and `rmp_serde`,
+so a rejection is theirs: a pre-scan rejection carries the error below, and an
+`rmp_serde` rejection is `DeserializationFailed` with `rmp_serde`'s message.
+
+The pre-scan rejects:
 
 | Rule | Bound |
 |:-----|:------|
@@ -192,8 +209,8 @@ crate, would set how deep the decode recurses. All counts are `u64`, and the
 walk skips str/bin/ext payloads by offset: it allocates one `u64` per open
 collection and nothing proportional to a declared length.
 
-A rejection is `ByteStorageError::DeserializationFailed` with a message that
-starts with `decode pre-scan: `, the same variant as any other bytes that do
+A pre-scan rejection is `ByteStorageError::DeserializationFailed` with a message
+that starts with `decode pre-scan: `, the same variant as any other bytes that do
 not decode as an envelope, so bindings that map on the variant see no change.
 Trailing bytes after the envelope are still ignored, as before.
 
