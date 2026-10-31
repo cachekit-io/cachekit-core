@@ -20,6 +20,10 @@
 //! requests only what the pre-scan and the LZ4 decoder do, and `retrieve`
 //! adds the format `String` and nothing else.
 //!
+//! The same count, [`bytes_requested`], also pins the write side: the
+//! `byte_storage` unit test `store_allocates_only_its_output_and_block` checks
+//! that `ByteStorage::store` requests only its output and its LZ4 block.
+//!
 //! This lives in the crate's unit tests, compiled only under `cfg(test)`,
 //! because the positive control needs a hook inside `extract_payload`
 //! ([`reserve_first_control`]), and only `cfg(test)` code can reach it. No
@@ -80,19 +84,20 @@ pub(crate) fn reserve_first_control(compressed_data: &[u8], original_size: u32) 
     }
 }
 
+/// Bytes requested on this thread while `f` runs, with its result.
+#[cfg(feature = "messagepack")]
+pub(crate) fn bytes_requested<R>(f: impl FnOnce() -> R) -> (R, usize) {
+    let before = REQUESTED.with(Cell::get);
+    let result = f();
+    (result, REQUESTED.with(Cell::get) - before)
+}
+
 #[cfg(feature = "messagepack")]
 mod tests {
     use super::*;
     use crate::byte_storage::{ByteStorage, ByteStorageError, StorageEnvelope};
 
     const FIXTURE: &str = include_str!("../tests/vectors/wire-format.json");
-
-    /// Bytes requested on this thread while `f` runs, with its result.
-    fn bytes_requested<R>(f: impl FnOnce() -> R) -> (R, usize) {
-        let before = REQUESTED.with(Cell::get);
-        let result = f();
-        (result, REQUESTED.with(Cell::get) - before)
-    }
 
     /// `(envelope bytes, original_size)` of a reject vector, by name.
     fn reject_vector(name: &str) -> (Vec<u8>, usize) {
