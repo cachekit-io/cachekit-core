@@ -72,6 +72,10 @@ let envelope = storage.store(data, None)?;
 // Retrieve data (decompresses + verifies checksum)
 let (retrieved, format) = storage.retrieve(&envelope)?;
 assert_eq!(data.as_slice(), retrieved.as_slice());
+
+// Or, when the format identifier is not needed (bindings, most callers):
+// the same checks and errors, without allocating the format String
+let retrieved = storage.retrieve_data(&envelope)?;
 ```
 
 ### With Encryption (Zero-Knowledge)
@@ -254,7 +258,7 @@ Malicious payloads claiming `original_size: 500GB` with 100 bytes of data are re
 <details>
 <summary><strong>Envelope Decode Bounds</strong></summary>
 
-`retrieve()` and `validate()` run a header-only structural pre-scan over the
+`retrieve()`, `retrieve_data()` and `validate()` run a header-only structural pre-scan over the
 envelope bytes **before** MessagePack decoding: nesting deeper than 100 levels,
 headers declaring more elements or bytes than the input can back, the reserved
 marker `0xc1` and truncated input are all rejected before decoding, without

@@ -31,8 +31,9 @@
 //! // Store: compress + checksum
 //! let envelope = storage.store(data, None).unwrap();
 //!
-//! // Retrieve: decompress + verify
-//! let (retrieved, _format) = storage.retrieve(&envelope).unwrap();
+//! // Retrieve: decompress + verify. `retrieve` also returns the format
+//! // identifier; `retrieve_data` skips allocating it.
+//! let retrieved = storage.retrieve_data(&envelope).unwrap();
 //! assert_eq!(data.as_slice(), retrieved.as_slice());
 //! ```
 //!

@@ -485,19 +485,33 @@ impl ByteStorage {
     /// pre-scan rejection is `DeserializationFailed` whose message starts with
     /// `decode pre-scan: `, the same variant as any other bytes that do not
     /// decode as a `StorageEnvelope`.
+    ///
+    /// A caller that does not use the format identifier should call
+    /// [`retrieve_data`](Self::retrieve_data), which skips allocating it.
     #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
     pub fn retrieve(&self, envelope_bytes: &[u8]) -> Result<(Vec<u8>, String), ByteStorageError> {
-        // Security: Check envelope size before deserializing
-        if envelope_bytes.len() > MAX_COMPRESSED_SIZE {
-            return Err(ByteStorageError::InputTooLarge);
-        }
-
         let envelope = decode_envelope(envelope_bytes)?;
 
         // Extract and validate data (all security checks happen inside extract_payload())
         let data = envelope.extract()?;
 
-        Ok((data, envelope.format))
+        Ok((data, envelope.format.into_owned()))
+    }
+
+    /// Retrieve and validate stored bytes, without the format identifier
+    ///
+    /// The call for bindings and any caller that discards the format:
+    /// [`retrieve`](Self::retrieve) less the format `String` it allocates per
+    /// read. The envelope is decoded and checked exactly as `retrieve` does
+    /// (a non-string format is still rejected), and the two return the same
+    /// data and the same errors for every input.
+    ///
+    /// # Errors
+    ///
+    /// As [`retrieve`](Self::retrieve).
+    #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
+    pub fn retrieve_data(&self, envelope_bytes: &[u8]) -> Result<Vec<u8>, ByteStorageError> {
+        decode_envelope(envelope_bytes)?.extract()
     }
 
     /// Get compression ratio for given data: input length over the length of
@@ -521,15 +535,7 @@ impl ByteStorage {
     /// pre-screen for untrusted envelopes.
     #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
     pub fn validate(&self, envelope_bytes: &[u8]) -> bool {
-        // Security: Check size before validating
-        if envelope_bytes.len() > MAX_COMPRESSED_SIZE {
-            return false; // Invalid due to size limit
-        }
-
-        match decode_envelope(envelope_bytes) {
-            Ok(envelope) => envelope.extract().is_ok(),
-            Err(_) => false,
-        }
+        self.retrieve_data(envelope_bytes).is_ok()
     }
 
     /// Get security limits
@@ -552,13 +558,18 @@ impl Default for ByteStorage {
     }
 }
 
-/// Decode untrusted envelope bytes: structural pre-scan first, then the typed
-/// decode. Serde's derive skips an unknown map key with `IgnoredAny`, which
-/// recurses, so the depth bound has to hold before `rmp_serde` sees the bytes.
+/// Decode untrusted envelope bytes: size cap, structural pre-scan, then the
+/// typed decode. Serde's derive skips an unknown map key with `IgnoredAny`,
+/// which recurses, so the depth bound has to hold before `rmp_serde` sees the
+/// bytes.
 #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
 fn decode_envelope(
     envelope_bytes: &[u8],
 ) -> Result<borrowed::StorageEnvelope<'_>, ByteStorageError> {
+    // Security: Check envelope size before deserializing
+    if envelope_bytes.len() > MAX_COMPRESSED_SIZE {
+        return Err(ByteStorageError::InputTooLarge);
+    }
     // Nesting bound for the envelope decode. The protocol requires 32..=1024;
     // 100 matches cachekit-rs and cachekit-ts. A legitimate envelope nests 2 deep.
     const MAX_DEPTH: usize = 100;
@@ -569,9 +580,10 @@ fn decode_envelope(
         .map_err(|e| ByteStorageError::DeserializationFailed(e.to_string()))
 }
 
-/// What `retrieve` and `validate` decode: `StorageEnvelope` with
-/// `compressed_data` borrowed from the input instead of copied out of it,
-/// below `LARGE_PAYLOAD`.
+/// What `retrieve`, `retrieve_data` and `validate` decode: `StorageEnvelope`
+/// with `compressed_data` borrowed from the input instead of copied out of it,
+/// below `LARGE_PAYLOAD`, and `format` borrowed, so only `retrieve`, which
+/// returns it, allocates it.
 ///
 /// A module of its own so the struct can share `StorageEnvelope`'s Rust name:
 /// serde's derive puts that name in its "expected struct ..." errors, which
@@ -594,7 +606,10 @@ mod borrowed {
         pub(super) compressed_data: Cow<'a, [u8]>,
         pub(super) checksum: [u8; 8],
         pub(super) original_size: u32,
-        pub(super) format: String,
+        // serde's borrowing `Cow<str>` decode accepts and rejects what its
+        // `String` decode does, with the same messages.
+        #[serde(borrow)]
+        pub(super) format: Cow<'a, str>,
     }
 
     impl StorageEnvelope<'_> {
@@ -1119,6 +1134,23 @@ mod tests {
             env.extend_from_slice(&[0x03, 0xA4, b't', b'e', b's', b't']);
             corpus.push((name.to_string(), env));
         }
+        // A valid payload with every format shape: the `Cow<str>` decode has
+        // to take and refuse what the `String` decode does.
+        let valid = rmp_serde::to_vec(&StorageEnvelope::new(b"fmt", "f".into()).unwrap()).unwrap();
+        let prefix = &valid[..valid.len() - 2]; // drop the trailing fixstr "f"
+        for (name, format) in [
+            ("format_str8", &[0xD9, 0x01, b'f'][..]),
+            ("format_empty", &[0xA0][..]),
+            ("format_bin_utf8", &[0xC4, 0x01, b'f'][..]),
+            ("format_bin_not_utf8", &[0xC4, 0x01, 0xFF][..]),
+            ("format_str_not_utf8", &[0xA1, 0xFF][..]),
+            ("format_int", &[0x07][..]),
+            ("format_nil", &[0xC0][..]),
+            ("format_array", &[0x91, 0xA1, b'f'][..]),
+            ("format_truncated", &[0xA4, b'f'][..]),
+        ] {
+            corpus.push((name.to_string(), [prefix, format].concat()));
+        }
         // Map form with the field names, map form missing one, not an array.
         let mut named =
             rmp_serde::to_vec_named(&StorageEnvelope::new(b"named", "f".into()).unwrap()).unwrap();
@@ -1152,6 +1184,25 @@ mod tests {
     }
 
     #[test]
+    fn retrieve_data_matches_retrieve() {
+        // Same data and same error for every input; only the format is dropped.
+        let storage = ByteStorage::new(None);
+        let mut accepted = 0;
+        for (name, bytes) in decode_corpus() {
+            let full = storage.retrieve(&bytes);
+            let data = storage.retrieve_data(&bytes);
+            accepted += usize::from(data.is_ok());
+            assert_eq!(full.map(|(d, _)| d), data, "[{name}]");
+            assert_eq!(storage.validate(&bytes), data.is_ok(), "[{name}] validate");
+        }
+        assert!(accepted > 0, "corpus has accepted envelopes");
+        assert_eq!(
+            storage.retrieve_data(&vec![0; MAX_COMPRESSED_SIZE + 1]),
+            Err(ByteStorageError::InputTooLarge)
+        );
+    }
+
+    #[test]
     fn bin_payload_is_borrowed_and_legacy_payload_is_owned() {
         let fixture: serde_json::Value =
             serde_json::from_str(include_str!("../tests/vectors/wire-format.json")).unwrap();
@@ -1161,6 +1212,10 @@ mod tests {
             let bytes = hex::decode(v["envelope_hex"].as_str().unwrap()).unwrap();
             let envelope = decode_envelope(&bytes).unwrap();
             let name = v["name"].as_str().unwrap();
+            assert!(
+                matches!(envelope.format, Cow::Borrowed(_)),
+                "[{name}] format copied"
+            );
             if name.ends_with("_bin") {
                 seen.0 += 1;
                 assert!(
