@@ -10,11 +10,17 @@
 //!   case's inputs, runs the operation once to warm it (lazy statics, CPU
 //!   feature detection, the allocator's free lists), then runs it `n` times.
 //! - The gate runs each case under `valgrind --tool=cachegrind --cache-sim=no`
-//!   at `n = N_OPS` and `n = 0`. Ir/op is `(Ir[N_OPS] - Ir[0]) / N_OPS`, so
-//!   process start, setup, the warm-up and exit cancel.
+//!   at `n = N` and `n = 0`, where `N` is `N_OPS`, or `N_OPS_MIB` for a 1 MiB
+//!   case. Ir/op is `(Ir[N] - Ir[0]) / N`, so process start, setup, the
+//!   warm-up and exit cancel.
+//! - Instruction counts miss the kernel's work, so for cases from `FAULTS_FROM`
+//!   up the gate also runs `perf_ir faults <case> N` natively and records the
+//!   minor page faults per op (`getrusage`), the cost of an allocator that
+//!   hands a call fresh pages instead of reused ones.
 //! - Budgets are keyed by architecture, OS and compiled-in CPU features in
 //!   `perf_ir_baselines.json`. A case fails at `FAIL_PCT` over its budget and
-//!   warns from `WARN_PCT`. `--update` ratchets budgets down to the measured
+//!   warns from `WARN_PCT`; a fault count fails at `FAIL_PCT` and at least one
+//!   page per op over. `--update` ratchets budgets down to the measured
 //!   figures, never up unless `--allow-increase` says the increase is
 //!   deliberate.
 //!
@@ -48,6 +54,15 @@ use serde::{Deserialize, Serialize};
 /// Iterations in the measured run. Counts are exact, so this sets run time,
 /// not precision.
 const N_OPS: u64 = 1000;
+/// Iterations for a 1 MiB case. One call costs about 16 times a 64 KiB one,
+/// and the CI job measures every case twice (base and head) inside a
+/// 30-minute limit.
+const N_OPS_MIB: u64 = 20;
+/// Cases from this size up also count minor page faults per call, natively.
+/// Their buffers are large enough for glibc's mmap and trim thresholds to
+/// decide whether a call reuses memory or faults in fresh pages, and that
+/// work is the kernel's, which instruction counts do not see.
+const FAULTS_FROM: usize = 64 * 1024;
 const FAIL_PCT: f64 = 1.0;
 const WARN_PCT: f64 = 0.2;
 const BASELINES: &str = concat!(
@@ -55,20 +70,27 @@ const BASELINES: &str = concat!(
     "/benches/perf_ir_baselines.json"
 );
 
+const MIB: usize = 1024 * 1024;
 /// A small value, a typical value, a large object (as `hot_path`).
-const SIZES: [usize; 3] = [64, 1024, 64 * 1024];
+const SIZES: &[usize] = &[64, 1024, 64 * 1024];
+/// ByteStorage picks its strategy by size, so store and retrieve also measure
+/// 40 B, under the literals-only block threshold (64 B), and 1 MiB. Its
+/// large-payload switch compares the compressed length with 64 KiB: the
+/// 64 KiB payload stores as a 24,702-byte envelope and never reaches it, the
+/// 1 MiB one as 383,893 bytes, past glibc's default mmap threshold too.
+const STORAGE_SIZES: &[usize] = &[40, 64, 1024, 64 * 1024, MIB];
 
-/// Operations and whether they take a payload. HKDF derives from the master
-/// key and tenant id alone, so it has one case with no size.
-const OPS: [(&str, bool); 8] = [
-    ("store", true),
-    ("retrieve", true),
-    ("prescan", true),
-    ("encrypt", true),
-    ("decrypt", true),
-    ("keyring_decrypt", true),
-    ("tenant_keyring_decrypt", true),
-    ("hkdf", false),
+/// Operations and their payload sizes. HKDF derives from the master key and
+/// tenant id alone, so it has one case with no size.
+const OPS: [(&str, &[usize]); 8] = [
+    ("store", STORAGE_SIZES),
+    ("retrieve", STORAGE_SIZES),
+    ("prescan", SIZES),
+    ("encrypt", SIZES),
+    ("decrypt", SIZES),
+    ("keyring_decrypt", SIZES),
+    ("tenant_keyring_decrypt", SIZES),
+    ("hkdf", &[]),
 ];
 
 const MASTER_KEY: [u8; 32] = [0x42; 32];
@@ -81,25 +103,43 @@ const ENVELOPE_MAX_DEPTH: usize = 100;
 
 fn case_ids() -> Vec<String> {
     OPS.iter()
-        .flat_map(|&(op, sized)| {
-            if sized {
-                SIZES.iter().map(|size| format!("{op}/{size}")).collect()
-            } else {
+        .flat_map(|&(op, sizes)| {
+            if sizes.is_empty() {
                 vec![op.to_string()]
+            } else {
+                sizes.iter().map(|size| format!("{op}/{size}")).collect()
             }
         })
         .collect()
 }
 
+/// A case id's operation and payload size (0 for a case with no size).
+fn parse_case(case: &str) -> (&str, usize) {
+    match case.split_once('/') {
+        Some((op, size)) => (op, size.parse().expect("case size is a number")),
+        None => (case, 0),
+    }
+}
+
+/// Calls in a case's measured run.
+fn n_ops(case: &str) -> u64 {
+    if parse_case(case).1 >= MIB {
+        N_OPS_MIB
+    } else {
+        N_OPS
+    }
+}
+
+fn counts_faults(case: &str) -> bool {
+    parse_case(case).1 >= FAULTS_FROM
+}
+
 // ── measured process ────────────────────────────────────────────────────────
 
 /// Build the fixtures and return the operation `case` measures. Setup runs in
-/// both the `N_OPS` and the 0 run, so only what the closure does is counted.
+/// both the `N` and the 0 run, so only what the closure does is counted.
 fn operation(case: &str) -> Box<dyn FnMut() -> usize> {
-    let (op, size) = match case.split_once('/') {
-        Some((op, size)) => (op, size.parse().expect("case size is a number")),
-        None => (case, 0),
-    };
+    let (op, size) = parse_case(case);
     let payload = msgpack_payload(size);
     let storage = ByteStorage::new(None);
     let envelope = storage.store(&payload, None).unwrap();
@@ -165,6 +205,47 @@ fn run(case: &str, n: u64) {
     }
 }
 
+/// Minor page faults over `n` calls, counted after setup, the warm-up call and
+/// `n` uncounted calls. The first calls after the warm-up can still grow the
+/// heap once, which is not a per-call cost: on glibc 2.39 the 1 MiB `store`
+/// takes 98 faults on its second call and none after. `None` where
+/// `getrusage` is not available.
+fn faults(case: &str, n: u64) -> Option<u64> {
+    let mut op = operation(case);
+    for _ in 0..=n {
+        black_box(op());
+    }
+    let before = minor_faults()?;
+    for _ in 0..n {
+        black_box(op());
+    }
+    Some(minor_faults()? - before)
+}
+
+/// This process's minor page faults so far: `getrusage(RUSAGE_SELF)`'s
+/// `ru_minflt`.
+#[cfg(all(unix, target_pointer_width = "64"))]
+fn minor_faults() -> Option<u64> {
+    use std::ffi::{c_int, c_long};
+    extern "C" {
+        fn getrusage(who: c_int, usage: *mut c_long) -> c_int;
+    }
+    const RUSAGE_SELF: c_int = 0;
+    // On 64-bit Linux and macOS, struct rusage is two struct timevals of two
+    // words each, then 14 longs: ru_maxrss, ru_ixrss, ru_idrss, ru_isrss,
+    // ru_minflt, ... So ru_minflt is word 8 of its 18.
+    const RU_MINFLT: usize = 8;
+    let mut usage: [c_long; 32] = [0; 32];
+    // SAFETY: getrusage writes one 18-word struct rusage, and the buffer holds 32.
+    let status = unsafe { getrusage(RUSAGE_SELF, usage.as_mut_ptr()) };
+    (status == 0).then(|| usage[RU_MINFLT] as u64)
+}
+
+#[cfg(not(all(unix, target_pointer_width = "64")))]
+fn minor_faults() -> Option<u64> {
+    None
+}
+
 // ── gate ────────────────────────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Default)]
@@ -178,6 +259,20 @@ struct Platform {
     rustc: String,
     valgrind: String,
     budgets: BTreeMap<String, u64>,
+    /// Minor page faults per call, for cases from `FAULTS_FROM` up.
+    #[serde(default)]
+    faults: BTreeMap<String, u64>,
+}
+
+/// One case's figures from one gate run.
+struct Measured {
+    case: String,
+    ir: u64,
+    /// Minor page faults per call, rounded to whole pages, for cases from
+    /// `FAULTS_FROM` up. On a busy shared host a run has taken up to 4 faults
+    /// in 1,000 calls that every quiet run took none of; rounding keeps that
+    /// out of the verdict.
+    faults: Option<u64>,
 }
 
 /// CPU features this binary was compiled for, beyond the target's baseline.
@@ -272,13 +367,49 @@ fn total_ir(valgrind: &Path, exe: &Path, case: &str, n: u64) -> Result<u64, Stri
         .ok_or_else(|| format!("{case} n={n}: no 'I refs' line in valgrind output\n{stderr}"))
 }
 
-/// Ir/op for each case, in case order. Runs are independent processes, so they
-/// parallelise.
-fn measure(valgrind: &Path, cases: &[String], jobs: usize) -> Result<Vec<(String, u64)>, String> {
+/// Minor page faults over `n` calls of one `perf_ir faults` process, run
+/// natively: under valgrind the count would include valgrind's own memory.
+/// The environment is empty for the same reasons as in `total_ir`, and because
+/// `MALLOC_*` variables and `GLIBC_TUNABLES` change the allocator's thresholds.
+fn total_faults(exe: &Path, case: &str, n: u64) -> Result<u64, String> {
+    let out = Command::new(exe)
+        .args(["faults", case, &n.to_string()])
+        .env_clear()
+        .output()
+        .map_err(|e| format!("{case} faults n={n}: cannot start: {e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("{case} faults n={n}: {}\n{stderr}", out.status));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    stdout
+        .trim()
+        .parse()
+        .map_err(|e| format!("{case} faults n={n}: cannot read {stdout:?}: {e}"))
+}
+
+/// A process the gate runs: a case under cachegrind at `n` calls, or a case
+/// run natively to count its page faults over `n` calls.
+#[derive(Clone, Copy)]
+enum Run<'a> {
+    Ir(&'a str, u64),
+    Faults(&'a str, u64),
+}
+
+/// Each case's figures, in case order. Runs are independent processes, so
+/// they parallelise.
+fn measure(valgrind: &Path, cases: &[String], jobs: usize) -> Result<Vec<Measured>, String> {
     let exe = env::current_exe().map_err(|e| format!("cannot locate this binary: {e}"))?;
-    let runs: Vec<(&str, u64)> = cases
+    let runs: Vec<Run> = cases
         .iter()
-        .flat_map(|case| [(case.as_str(), N_OPS), (case.as_str(), 0)])
+        .flat_map(|case| {
+            let n = n_ops(case);
+            let mut runs = vec![Run::Ir(case, n), Run::Ir(case, 0)];
+            if counts_faults(case) {
+                runs.push(Run::Faults(case, n));
+            }
+            runs
+        })
         .collect();
     let next = AtomicUsize::new(0);
     let counts: Vec<OnceLock<Result<u64, String>>> = runs.iter().map(|_| OnceLock::new()).collect();
@@ -286,8 +417,11 @@ fn measure(valgrind: &Path, cases: &[String], jobs: usize) -> Result<Vec<(String
         for _ in 0..jobs.clamp(1, runs.len()) {
             scope.spawn(|| loop {
                 let i = next.fetch_add(1, Ordering::Relaxed);
-                let Some(&(case, n)) = runs.get(i) else { break };
-                let _ = counts[i].set(total_ir(valgrind, &exe, case, n));
+                let Some(&run) = runs.get(i) else { break };
+                let _ = counts[i].set(match run {
+                    Run::Ir(case, n) => total_ir(valgrind, &exe, case, n),
+                    Run::Faults(case, n) => total_faults(&exe, case, n),
+                });
             });
         }
     });
@@ -295,17 +429,24 @@ fn measure(valgrind: &Path, cases: &[String], jobs: usize) -> Result<Vec<(String
         .into_iter()
         .map(|count| count.into_inner().expect("every run was measured"))
         .collect::<Result<Vec<u64>, String>>()?;
+    // Read the counts back in the order `runs` was built in.
+    let mut counts = counts.into_iter();
+    let mut next_count = || counts.next().expect("one count per run");
     cases
         .iter()
-        .zip(counts.chunks(2))
-        .map(|(case, pair)| {
-            let (full, setup) = (pair[0], pair[1]);
-            match full.checked_sub(setup) {
-                Some(delta) if delta > 0 => Ok((case.clone(), (delta + N_OPS / 2) / N_OPS)),
-                _ => Err(format!(
-                    "{case}: Ir[{N_OPS}] {full} is not above Ir[0] {setup}"
-                )),
-            }
+        .map(|case| {
+            let n = n_ops(case);
+            let (full, setup) = (next_count(), next_count());
+            let ir = match full.checked_sub(setup) {
+                Some(delta) if delta > 0 => (delta + n / 2) / n,
+                _ => return Err(format!("{case}: Ir[{n}] {full} is not above Ir[0] {setup}")),
+            };
+            let faults = counts_faults(case).then(|| (next_count() + n / 2) / n);
+            Ok(Measured {
+                case: case.clone(),
+                ir,
+                faults,
+            })
         })
         .collect()
 }
@@ -324,46 +465,87 @@ fn thousands(n: u64) -> String {
 
 /// Report lines and whether the gate passes. A case with no budget fails:
 /// record it first.
-fn compare(budgets: &BTreeMap<String, u64>, measured: &[(String, u64)]) -> (Vec<String>, bool) {
+fn compare(platform: &Platform, measured: &[Measured]) -> (Vec<String>, bool) {
     let mut ok = true;
-    let lines = measured
-        .iter()
-        .map(|(case, ir)| {
-            let ir = *ir;
-            let Some(&budget) = budgets.get(case) else {
+    let mut lines = Vec::new();
+    for Measured { case, ir, faults } in measured {
+        let ir = *ir;
+        lines.push(match platform.budgets.get(case) {
+            None => {
                 ok = false;
-                return format!(
+                format!(
                     "FAIL  {case:28} {:>10} Ir/op  no budget (run make perf-ir-update)",
                     thousands(ir)
-                );
-            };
-            let pct = (ir as f64 - budget as f64) / budget as f64 * 100.0;
-            let verdict = if pct >= FAIL_PCT {
+                )
+            }
+            Some(&budget) => {
+                let pct = (ir as f64 - budget as f64) / budget as f64 * 100.0;
+                let verdict = if pct >= FAIL_PCT {
+                    ok = false;
+                    "FAIL"
+                } else if pct >= WARN_PCT {
+                    "WARN"
+                } else if pct <= -FAIL_PCT {
+                    "LOWER" // cheaper: ratchet it down with --update if the change touched this path
+                } else {
+                    "ok"
+                };
+                format!(
+                    "{verdict:5} {case:28} {:>10} Ir/op  budget {:>10}  {pct:+.2}%",
+                    thousands(ir),
+                    thousands(budget)
+                )
+            }
+        });
+        let Some(faults) = *faults else { continue };
+        lines.push(match platform.faults.get(case) {
+            None => {
                 ok = false;
-                "FAIL"
-            } else if pct >= WARN_PCT {
-                "WARN"
-            } else if pct <= -FAIL_PCT {
-                "LOWER" // cheaper: ratchet it down with --update if the change touched this path
-            } else {
-                "ok"
-            };
-            format!(
-                "{verdict:5} {case:28} {:>10} Ir/op  budget {:>10}  {pct:+.2}%",
-                thousands(ir),
-                thousands(budget)
-            )
-        })
-        .collect();
+                format!(
+                    "FAIL  {case:28} {:>10} faults/op  no budget (run make perf-ir-update)",
+                    thousands(faults)
+                )
+            }
+            Some(&budget) => {
+                // Whole pages per call, so any rise is at least one page more
+                // on every call: a buffer the allocator no longer reuses, paid
+                // in a trap and a zeroed page that Ir does not count. A budget
+                // of 0 has no percentage to clear, so FAIL_PCT applies only
+                // from 100 pages per call up.
+                let over = faults.saturating_sub(budget) as f64;
+                let verdict = if over > 0.0 && over >= budget as f64 * FAIL_PCT / 100.0 {
+                    ok = false;
+                    "FAIL"
+                } else if faults > budget {
+                    "WARN"
+                } else if faults < budget {
+                    "LOWER"
+                } else {
+                    "ok"
+                };
+                format!(
+                    "{verdict:5} {case:28} {:>10} faults/op  budget {:>10}",
+                    thousands(faults),
+                    thousands(budget)
+                )
+            }
+        });
+    }
     (lines, ok)
 }
 
 /// New budgets: only ever lower, unless the increase is deliberate.
-fn ratchet(budgets: &mut BTreeMap<String, u64>, measured: &[(String, u64)], allow_increase: bool) {
-    for (case, ir) in measured {
-        let budget = budgets.entry(case.clone()).or_insert(*ir);
-        if allow_increase || *ir < *budget {
-            *budget = *ir;
+fn ratchet(platform: &mut Platform, measured: &[Measured], allow_increase: bool) {
+    let lower = |budgets: &mut BTreeMap<String, u64>, case: &String, value: u64| {
+        let budget = budgets.entry(case.clone()).or_insert(value);
+        if allow_increase || value < *budget {
+            *budget = value;
+        }
+    };
+    for Measured { case, ir, faults } in measured {
+        lower(&mut platform.budgets, case, *ir);
+        if let Some(faults) = *faults {
+            lower(&mut platform.faults, case, faults);
         }
     }
 }
@@ -372,17 +554,20 @@ const USAGE: &str = "\
 usage: cargo bench --features encryption --bench perf_ir -- [options]
        (or make perf-ir / make perf-ir-update)
 
-Measures Ir/op for each case under cachegrind and compares it with the budget
-in benches/perf_ir_baselines.json. Exit 0 pass, 1 regression, 2 error.
+Measures Ir/op for each case under cachegrind, and minor page faults per op
+natively for cases from 64 KiB up, and compares them with the budgets in
+benches/perf_ir_baselines.json. Exit 0 pass, 1 regression, 2 error.
 
 options:
   --case <id>        measure only this case (repeatable)
   --update           write lower measured figures back as budgets
   --allow-increase   with --update, also raise budgets
-  --jobs <n>         cachegrind runs at a time (default: min(8, cores))
+  --jobs <n>         processes at a time (default: min(8, cores))
   --baselines <path> read and write budgets here instead of the committed file
 
-perf_ir run <case> <n>   the measured process: setup, one warm-up op, n ops";
+perf_ir run <case> <n>     the measured process: setup, one warm-up op, n ops
+perf_ir faults <case> <n>  setup, n + 1 settling ops, then prints the minor
+                           page faults n more ops take";
 
 fn gate(args: &[String]) -> Result<bool, String> {
     let (mut update, mut allow_increase, mut cases) = (false, false, Vec::new());
@@ -449,21 +634,24 @@ fn gate(args: &[String]) -> Result<bool, String> {
 
     let measured = measure(&valgrind_bin, &cases, jobs)?;
     println!(
-        "cachekit-core Ir/op on {key} (rustc {rustc}, {valgrind}): (Ir[{N_OPS}] - Ir[0]) / {N_OPS}"
+        "cachekit-core Ir/op on {key} (rustc {rustc}, {valgrind}): (Ir[N] - Ir[0]) / N, \
+         N = {N_OPS} ({N_OPS_MIB} at 1 MiB); faults/op natively over N ops from 64 KiB"
     );
     // With --update, report against the budgets as written, so the only FAIL
     // left is a regression that --allow-increase did not accept.
     if update {
-        ratchet(&mut platform.budgets, &measured, allow_increase);
+        ratchet(platform, &measured, allow_increase);
         platform.rustc = rustc;
         platform.valgrind = valgrind;
     }
-    let (lines, ok) = compare(&platform.budgets, &measured);
+    let (lines, ok) = compare(platform, &measured);
     println!("{}", lines.join("\n"));
     if update {
         baselines.method = format!(
-            "cachegrind Ir per op, (Ir[{N_OPS}] - Ir[0]) / {N_OPS}, one process per case, \
-             empty environment; written by benches/perf_ir.rs --update"
+            "cachegrind Ir per op, (Ir[N] - Ir[0]) / N with N = {N_OPS} ({N_OPS_MIB} at 1 MiB), \
+             one process per case, empty environment; faults: minor page faults per op \
+             (getrusage), rounded, native, over N ops after N + 1 settling ops, cases from \
+             64 KiB; written by benches/perf_ir.rs --update"
         );
         let json = serde_json::to_string_pretty(&baselines).map_err(|e| e.to_string())?;
         fs::write(&path, json + "\n").map_err(|e| format!("{shown}: {e}"))?;
@@ -473,7 +661,8 @@ fn gate(args: &[String]) -> Result<bool, String> {
         "{}",
         match (ok, update) {
             (true, _) => "PASS",
-            (false, false) => "FAIL: a case regressed by 1% or more, or has no budget",
+            (false, false) =>
+                "FAIL: a case regressed by 1% or more (faults: and by a page per op), or has no budget",
             (false, true) =>
                 "FAIL: a regression stays over budget; raise it only with --allow-increase",
         }
@@ -485,9 +674,20 @@ fn main() -> ExitCode {
     // `cargo bench` appends --bench to the arguments it passes through.
     let args: Vec<String> = env::args().skip(1).filter(|arg| arg != "--bench").collect();
     if let [mode, case, n] = args.as_slice() {
-        if mode == "run" {
-            run(case, n.parse().expect("n is a number"));
-            return ExitCode::SUCCESS;
+        match mode.as_str() {
+            "run" => {
+                run(case, n.parse().expect("n is a number"));
+                return ExitCode::SUCCESS;
+            }
+            "faults" => {
+                let Some(count) = faults(case, n.parse().expect("n is a number")) else {
+                    eprintln!("perf_ir: getrusage is not available on this target");
+                    return ExitCode::from(2);
+                };
+                println!("{count}");
+                return ExitCode::SUCCESS;
+            }
+            _ => {}
         }
     }
     match gate(&args) {
