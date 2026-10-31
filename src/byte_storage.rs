@@ -839,7 +839,7 @@ mod borrowed {
         /// as `decode_one_pass` does once it has read the whole envelope. The
         /// serde decode borrows every `bin` and `str` payload, and
         /// `decode_envelope_full` calls this only after `rmp_serde` has
-        /// accepted the envelope, so a rejected envelope copies nothing.
+        /// accepted the envelope, so an envelope it rejects copies nothing.
         pub(super) fn copy_large_payload(mut self) -> Self {
             if let Cow::Borrowed(payload) = self.compressed_data {
                 self.compressed_data = borrow_below_large(payload);

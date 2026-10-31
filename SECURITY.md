@@ -195,12 +195,15 @@ so a rejection is theirs: a pre-scan rejection carries the error below, and an
 `rmp_serde` rejection is `DeserializationFailed` with `rmp_serde`'s message.
 
 Both decodes borrow a `bin` payload under 64 KiB from the input, and copy a
-longer one out of it only once the envelope is accepted, so a rejected envelope
-costs no payload-sized allocation. `rejected_envelope_reads_do_not_copy_a_large_payload`
-in `src/read_allocation_probe.rs` counts what `retrieve` and `retrieve_data`
+longer one out of it only once the decode has accepted the envelope, so an
+envelope the decode rejects costs no payload-sized allocation.
+`rejected_envelope_reads_do_not_copy_a_large_payload` in
+`src/read_allocation_probe.rs` counts what `retrieve` and `retrieve_data`
 request from the allocator on five envelopes that pass the pre-scan, carry a
-payload of 64 KiB or more, and fail the typed decode in a later field; each read
-must request less than 64 KiB. A legacy int-array payload has no bytes to
+`bin32` or `str32` payload of 64 KiB or more, and fail the typed decode in a
+later field; each read must request less than 64 KiB. An envelope the decode
+accepts has its long payload copied even when the size, ratio or checksum
+check that follows rejects it. A legacy int-array payload has no bytes to
 borrow, so it is decoded into an owned buffer as it is read, rejected or not:
 one byte per element, and each element takes at least one byte of input.
 

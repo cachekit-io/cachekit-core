@@ -21,9 +21,11 @@
 //! decoder does (the one-pass decode reads these envelopes without
 //! allocating), and `retrieve` adds the format `String` and nothing else. A
 //! payload from `LARGE_PAYLOAD` up is copied out of the input by design, but
-//! only once the envelope is accepted:
+//! only once the envelope decode has accepted the envelope:
 //! `rejected_envelope_reads_do_not_copy_a_large_payload` checks that a read
-//! rejecting such an envelope requests less than `LARGE_PAYLOAD`. A legacy
+//! whose decode rejects such an envelope requests less than `LARGE_PAYLOAD`.
+//! An envelope the decode accepts is copied even when `extract_payload` then
+//! rejects it (a size cap, the ratio bound, a checksum mismatch). A legacy
 //! int-array payload is decoded into an owned buffer as it is read, so it is
 //! allocated whether or not the envelope is then accepted.
 //!
@@ -155,18 +157,23 @@ mod tests {
         }
     }
 
-    /// The fallback decode copies a `bin` payload from `LARGE_PAYLOAD` up out
-    /// of the input only once it has accepted the envelope, as the one-pass
-    /// decode does. Each envelope here is a complete document, so it passes
-    /// the pre-scan and reaches `rmp_serde`, which reads the payload before it
-    /// finds the fault in a later field.
+    /// The fallback decode copies a `bin` or `str` payload from
+    /// `LARGE_PAYLOAD` up out of the input only once it has accepted the
+    /// envelope, as the one-pass decode does. Each envelope here is a complete
+    /// document, so it passes the pre-scan and reaches `rmp_serde`, which
+    /// reads the payload before it finds the fault in a later field.
     #[test]
     fn rejected_envelope_reads_do_not_copy_a_large_payload() {
         use crate::byte_storage::LARGE_PAYLOAD;
 
-        // At the copy threshold, and past it.
-        for payload_len in [LARGE_PAYLOAD, 2 * LARGE_PAYLOAD] {
-            let mut payload = vec![0xc6];
+        // bin32 at the copy threshold and past it, and str32 (zero bytes are
+        // valid UTF-8), which reaches the visitor's other borrowing method.
+        for (kind, marker, payload_len) in [
+            ("bin32", 0xc6, LARGE_PAYLOAD),
+            ("bin32", 0xc6, 2 * LARGE_PAYLOAD),
+            ("str32", 0xdb, LARGE_PAYLOAD),
+        ] {
+            let mut payload = vec![marker];
             payload.extend_from_slice(&(payload_len as u32).to_be_bytes());
             payload.resize(payload.len() + payload_len, 0);
             let checksum = [0x98, 1, 2, 3, 4, 5, 6, 7, 8];
@@ -202,7 +209,7 @@ mod tests {
                     ("retrieve", full.err(), full_requested),
                     ("retrieve_data", data.err(), data_requested),
                 ] {
-                    let label = format!("[{name}, {payload_len} B payload] {call}");
+                    let label = format!("[{name}, {payload_len} B {kind} payload] {call}");
                     let Some(ByteStorageError::DeserializationFailed(msg)) = err else {
                         panic!("{label}: expected DeserializationFailed, got {err:?}");
                     };
