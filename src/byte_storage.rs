@@ -498,7 +498,11 @@ const _: () = assert!(LITERAL_BLOCK_THRESHOLD <= 0x80);
 /// Decompress and verify one envelope's payload. `StorageEnvelope::extract`
 /// forwards to it, and `retrieve` and `validate` call it on the borrowed
 /// decode, so every read path runs the same checks in the same order.
+// Out of line, so the decompress and checksum loops compile once, the same
+// whichever decode feeds them. Inlined into `retrieve` beside the one-pass
+// decode, rustc 1.99.1 built them about 1% longer at 1 MiB (`perf_ir`).
 #[cfg(all(feature = "compression", feature = "checksum"))]
+#[inline(never)]
 fn extract_payload(
     compressed_data: &[u8],
     checksum: &[u8; 8],
@@ -714,7 +718,11 @@ fn decode_envelope(
 /// Decode untrusted envelope bytes: structural pre-scan first, then the typed
 /// decode. Serde's derive skips an unknown map key with `IgnoredAny`, which
 /// recurses, so the depth bound has to hold before `rmp_serde` sees the bytes.
+// Cold: no envelope `store` writes reaches it (the one-pass decode takes them
+// all), and out of line it keeps the pre-scan and serde off `retrieve`'s path.
 #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
+#[cold]
+#[inline(never)]
 fn decode_envelope_full(
     envelope_bytes: &[u8],
 ) -> Result<borrowed::StorageEnvelope<'_>, ByteStorageError> {
