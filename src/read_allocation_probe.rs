@@ -24,7 +24,9 @@
 //!
 //! The same count, [`bytes_requested`], also pins the write side: the
 //! `byte_storage` unit test `store_allocates_only_its_output_and_block` checks
-//! that `ByteStorage::store` requests only its output and its LZ4 block.
+//! that `ByteStorage::store` requests only its output and its LZ4 block, and
+//! `accepted_envelope_prescan_allocates_nothing` below checks that the read's
+//! structural pre-scan requests nothing for an envelope a writer emits.
 //!
 //! This lives in the crate's unit tests, compiled only under `cfg(test)`,
 //! because the positive control needs a hook inside `extract_payload`
@@ -134,16 +136,52 @@ mod tests {
             let (envelope, original_size) = reject_vector(name);
             let (result, requested) = retrieve_counted(&envelope);
             assert_eq!(result.err(), Some(expected), "[{name}] wrong rejection");
-            // The read allocates (the pre-scan's nesting stack; these
-            // vectors' bin payload is borrowed), so a probe that sees
-            // nothing is not counting this thread's allocations.
-            assert!(requested > 0, "[{name}] probe saw no allocation at all");
+            // The read can request nothing at all (the pre-scan keeps these
+            // vectors' nesting on the call stack and their bin payload is
+            // borrowed), so `probe_catches_a_reserve_first_reader` is what
+            // shows this probe counts this thread's allocations.
             assert!(
                 requested < original_size,
                 "[{name}] the read requested {requested} B from the allocator, \
                  reaching original_size {original_size} B"
             );
         }
+    }
+
+    /// The pre-scan `retrieve` runs keeps its nesting stack on the call stack
+    /// for an envelope, current or legacy, at every payload size, so it
+    /// requests nothing from the allocator.
+    #[test]
+    fn accepted_envelope_prescan_allocates_nothing() {
+        // `retrieve`'s bound (`extract_payload`).
+        const MAX_DEPTH: usize = 100;
+        let storage = ByteStorage::new(None);
+        for len in [0, 40, 64, 1024, 64 * 1024] {
+            let data: Vec<u8> = (0..len).map(|i| (i * 31 % 251) as u8).collect();
+            let envelope = storage.store(&data, None).unwrap();
+            let e: crate::StorageEnvelope = rmp_serde::from_slice(&envelope).unwrap();
+            // Legacy writers encoded `compressed_data` as an array of ints.
+            let legacy =
+                rmp_serde::to_vec(&(&e.compressed_data, e.checksum, e.original_size, &e.format))
+                    .unwrap();
+            for (shape, doc) in [("current", envelope), ("legacy", legacy)] {
+                assert!(
+                    storage.retrieve(&doc).is_ok(),
+                    "[{shape} {len}] not accepted"
+                );
+                let (result, requested) =
+                    bytes_requested(|| crate::check_msgpack_structure(&doc, MAX_DEPTH));
+                assert_eq!(result, Ok(()), "[{shape} {len}]");
+                assert_eq!(requested, 0, "[{shape} {len}] pre-scan allocated");
+            }
+        }
+        // Positive control: past the inline levels the stack spills to the
+        // heap, and this probe sees it.
+        let deep = [vec![0x91; 9], vec![0xc0]].concat();
+        let (result, requested) =
+            bytes_requested(|| crate::check_msgpack_structure(&deep, MAX_DEPTH));
+        assert_eq!(result, Ok(()));
+        assert!(requested > 0, "probe missed the spilled nesting stack");
     }
 
     /// On every `msgpack bin` vector, `retrieve_data` allocates what the
