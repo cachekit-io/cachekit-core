@@ -254,18 +254,18 @@ Malicious payloads claiming `original_size: 500GB` with 100 bytes of data are re
 <details>
 <summary><strong>Envelope Decode Bounds</strong></summary>
 
-`retrieve()` and `validate()` read an envelope laid out as `store()` writes one,
-whatever width its lengths and size are encoded in, in one pass, which checks
-each declared length against the input before reading it and allocates nothing
-until the whole envelope has been read. Every other input
-gets a header-only structural pre-scan **before** MessagePack decoding: nesting
+`retrieve()` and `validate()` read an envelope in any encoding `store()` writes
+in one pass, which checks each declared length against the input before reading
+it and allocates nothing until the whole envelope has been read. Every input
+that read declines gets a header-only structural pre-scan **before** MessagePack
+decoding: nesting
 deeper than 100 levels, headers declaring more elements or bytes than the input
 can back, the reserved marker `0xc1` and truncated input are all rejected
 before decoding, without allocating in proportion to any declared length. A
 rejection is `ByteStorageError::DeserializationFailed` with the message prefix
 `decode pre-scan: `. The one-pass read accepts only envelopes the pre-scan and
 the typed decode accept, into the same fields, and leaves every rejection to
-them, so every input gets their result and error. The same walk is public as
+them, so every input gets their result and error. The pre-scan's walk is public as
 `check_msgpack_structure(bytes, max_depth)` for callers that decode untrusted
 MessagePack themselves; it returns a `MsgpackStructureError` whose `Display` is
 the bare reason, with no prefix. `msgpack_document_len(bytes, max_depth)` runs
@@ -360,7 +360,7 @@ The Criterion suite in `benches/hot_path.rs` needs the `encryption` feature (`ma
 | Case | What one call does |
 |:-----|:-------------------|
 | `store/<size>`, `retrieve/<size>` | `ByteStorage::store` / `retrieve` on the realistic msgpack payload `hot_path` uses |
-| `prescan/<size>` | `check_msgpack_structure` on the envelope, the pre-scan `retrieve` runs on any envelope not laid out as `store` writes one |
+| `prescan/<size>` | `check_msgpack_structure` on the envelope, the pre-scan `retrieve` runs on every envelope its one-pass read declines |
 | `encrypt/<size>`, `decrypt/<size>` | `ZeroKnowledgeEncryptor` AES-256-GCM |
 | `keyring_decrypt/<size>` | `Keyring::decrypt_indexed`, which re-derives the tenant key (HKDF) on every call |
 | `tenant_keyring_decrypt/<size>` | `TenantKeyring::decrypt_indexed`, key derived once at `for_tenant` |

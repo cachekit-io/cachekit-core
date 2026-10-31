@@ -618,12 +618,13 @@ impl ByteStorage {
     ///
     /// # Errors
     ///
-    /// `envelope_bytes` is untrusted. An envelope laid out as `store` writes
-    /// one (a 4-element array of a bin payload, 8 uint8 checksum bytes, a
-    /// uint32 size and a str format), whatever width its lengths and size are
-    /// encoded in, is decoded in one pass that checks each declared length
-    /// against the input before reading it. Any other input is decoded only
-    /// after a
+    /// `envelope_bytes` is untrusted. An envelope in the encodings
+    /// `decode_one_pass` takes (a fixarray of 4 holding a bin8, bin16 or bin32
+    /// payload, a fixarray of 8 checksum bytes each a positive fixint or
+    /// uint8, a size as a uint of at most 32 bits, and a str format of valid
+    /// UTF-8), which cover every envelope `store` writes, is decoded in one
+    /// pass that checks each declared length against the input before reading
+    /// it. Every input that decode declines is decoded only after a
     /// structural pre-scan bounds its nesting depth and rejects any header
     /// that declares more than the input can back (protocol Retrieve Flow,
     /// step 2). A pre-scan rejection is `DeserializationFailed` whose message
@@ -788,7 +789,7 @@ mod borrowed {
     use super::{extract_payload, ByteStorageError, LARGE_PAYLOAD};
 
     #[derive(Deserialize)]
-    #[cfg_attr(any(test, fuzzing), derive(Debug, PartialEq))]
+    #[cfg_attr(any(test, fuzzing), derive(PartialEq))]
     pub(super) struct StorageEnvelope<'a> {
         #[serde(borrow, deserialize_with = "borrow_payload")]
         pub(super) compressed_data: Cow<'a, [u8]>,
