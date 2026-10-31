@@ -80,8 +80,7 @@ pub(crate) fn reserve_first_control(compressed_data: &[u8], original_size: u32) 
     }
 }
 
-/// Bytes requested on this thread while `f` runs, with its result. The
-/// `byte_storage` unit tests also use it to pin what `store` allocates.
+/// Bytes requested on this thread while `f` runs, with its result.
 #[cfg(feature = "messagepack")]
 pub(crate) fn bytes_requested<R>(f: impl FnOnce() -> R) -> (R, usize) {
     let before = REQUESTED.with(Cell::get);

@@ -209,8 +209,9 @@ fn compress_with_thread_table(data: &[u8]) -> Result<Vec<u8>, ByteStorageError> 
 /// Contains compressed data with integrity checking
 // `retrieve` and `validate` decode into its private borrowing twin,
 // `borrowed::StorageEnvelope`. `store` encodes from another, `EnvelopeRef`,
-// and below 64 bytes writes the same bytes by hand (`encode_literal_envelope`,
-// sized by `envelope_encoded_len`). Change all of them together;
+// and writes the same bytes by hand for an input under 64 bytes with a format
+// of at most 255 bytes (`encode_literal_envelope`, sized by
+// `envelope_encoded_len`). Change all of them together;
 // `literal_envelope_matches_rmp_serde` and `encoded_len_matches_rmp_serde`
 // fail on a mismatch.
 #[derive(Serialize, Deserialize)]
@@ -365,8 +366,9 @@ impl EnvelopeRef<'_> {
     }
 
     /// `encoded_len`, or `InputTooLarge` past the envelope size cap: the final
-    /// check `store` makes on its general path (every input of 64 bytes and
-    /// up), before anything is encoded.
+    /// check `encode_into` makes, and `store` on its general path (every input
+    /// that `encode_literal_envelope` does not write), before anything is
+    /// encoded.
     fn capped_encoded_len(&self) -> Result<usize, ByteStorageError> {
         let len = self.encoded_len();
         if len > MAX_COMPRESSED_SIZE {
@@ -446,13 +448,15 @@ fn envelope_encoded_len(
 /// literals-only block goes straight into the `bin` field, so no block is
 /// allocated and copied. The bytes are `rmp_serde`'s for the same envelope
 /// (`literal_envelope_matches_rmp_serde`). The envelope is at most 343 bytes,
-/// far below every size cap, so it needs none of `seal`'s checks.
+/// far below every size cap, so it needs none of `compress_and_checksum`'s
+/// checks.
 ///
-/// `None` for a format string longer than 255 bytes: `store` then takes its
-/// general path, which writes the same bytes.
+/// `None` for an input of 64 bytes or more, or a format string longer than
+/// 255 bytes: `store` then takes its general path, which writes the same
+/// bytes.
 #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
 fn encode_literal_envelope(data: &[u8], format: &str) -> Option<Vec<u8>> {
-    if format.len() > 0xFF {
+    if data.len() >= LITERAL_BLOCK_THRESHOLD || format.len() > 0xFF {
         return None;
     }
     let size = data.len();
@@ -590,10 +594,8 @@ impl ByteStorage {
 
         let format = format.as_deref().unwrap_or(&self.default_format);
 
-        if data.len() < LITERAL_BLOCK_THRESHOLD {
-            if let Some(envelope) = encode_literal_envelope(data, format) {
-                return Ok(envelope);
-            }
+        if let Some(envelope) = encode_literal_envelope(data, format) {
+            return Ok(envelope);
         }
 
         let (compressed_data, checksum) = compress_and_checksum(data)?;
@@ -1459,6 +1461,8 @@ mod tests {
         // general path's str16); the input bytes vary so checksum bytes land
         // on both sides of 0x80
         let data = xorshift_bytes(LITERAL_BLOCK_THRESHOLD);
+        // An input at the threshold is not the writer's to encode
+        assert!(encode_literal_envelope(&data, "msgpack").is_none());
         let formats = [0, 1, 7, 31, 32, 255, 256, 60_000].map(|n| "f".repeat(n));
         for len in 0..LITERAL_BLOCK_THRESHOLD {
             for (seed, input) in [&data[..len], &vec![b'a'; len][..]].into_iter().enumerate() {
