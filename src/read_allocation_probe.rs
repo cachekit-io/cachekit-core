@@ -16,9 +16,11 @@
 //! and the test takes the thread's total before and after it, so the delta is
 //! this read's alone.
 //!
-//! The same probe pins what an accepted read allocates: `retrieve_data`
-//! requests only what the pre-scan and the LZ4 decoder do, and `retrieve`
-//! adds the format `String` and nothing else.
+//! The same probe pins what an accepted msgpack-`bin` read below
+//! `LARGE_PAYLOAD` allocates: `retrieve_data` requests only what the pre-scan
+//! and the LZ4 decoder do, and `retrieve` adds the format `String` and nothing
+//! else. A legacy int-array payload, and a payload from `LARGE_PAYLOAD` up,
+//! are copied out of the input by design.
 //!
 //! The same count, [`bytes_requested`], also pins the write side: the
 //! `byte_storage` unit test `store_allocates_only_its_output_and_block` checks

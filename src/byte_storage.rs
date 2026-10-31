@@ -47,12 +47,13 @@ const MAX_COMPRESSED_SIZE: usize = 512 * 1024 * 1024; // 512MB limit
 /// Uses u64 for integer-only arithmetic to prevent floating-point precision bypass attacks
 const MAX_COMPRESSION_RATIO: u64 = 1000;
 
-/// Buffer length from which `store` and `retrieve` keep their copying
+/// Buffer length from which `store` and the read path keep their copying
 /// allocation pattern. `store` compares the encoded envelope length: from
 /// here on it encodes through `rmp_serde::to_vec`'s growing buffer instead of
-/// a buffer allocated once at the exact length. `retrieve`, `retrieve_data`
-/// and `validate` compare the compressed payload length: from here on they copy the payload
-/// out of the input instead of borrowing it.
+/// a buffer allocated once at the exact length. `decode_envelope`, which
+/// `retrieve`, `retrieve_data` and `validate` share, compares the compressed
+/// payload length: from here on it copies the payload out of the input
+/// instead of borrowing it.
 ///
 /// glibc's malloc raises its mmap threshold to the largest mmap-ed chunk
 /// freed so far, and its trim threshold to twice that, and trims the top of the heap once it holds more free
@@ -207,7 +208,7 @@ fn compress_with_thread_table(data: &[u8]) -> Result<Vec<u8>, ByteStorageError> 
 
 /// Storage envelope for raw byte storage
 /// Contains compressed data with integrity checking
-// `retrieve` and `validate` decode into its private borrowing twin,
+// `retrieve`, `retrieve_data` and `validate` decode into its private borrowing twin,
 // `borrowed::StorageEnvelope`. `store` encodes from another, `EnvelopeRef`,
 // and writes the same bytes by hand for an input under 64 bytes with a format
 // of at most 255 bytes (`encode_literal_envelope`, sized by
@@ -495,8 +496,9 @@ fn encode_literal_envelope(data: &[u8], format: &str) -> Option<Vec<u8>> {
 const _: () = assert!(LITERAL_BLOCK_THRESHOLD <= 0x80);
 
 /// Decompress and verify one envelope's payload. `StorageEnvelope::extract`
-/// forwards to it, and `retrieve` and `validate` call it on the borrowed
-/// decode, so every read path runs the same checks in the same order.
+/// forwards to it, and `retrieve` and `retrieve_data` (and through it
+/// `validate`) call it on the borrowed decode, so every read path runs the
+/// same checks in the same order.
 #[cfg(all(feature = "compression", feature = "checksum"))]
 fn extract_payload(
     compressed_data: &[u8],
@@ -720,8 +722,9 @@ fn decode_envelope(
 ///
 /// A module of its own so the struct can share `StorageEnvelope`'s Rust name:
 /// serde's derive puts that name in its "expected struct ..." errors, which
-/// bindings surface (cachekit-py pins one). Same fields, order and field
-/// decoders, so it accepts exactly the inputs `StorageEnvelope` does, with
+/// bindings surface (cachekit-py pins one). Same fields and order, and field
+/// decoders that accept and reject what the owned ones do with the same
+/// messages, so it accepts exactly the inputs `StorageEnvelope` does, with
 /// the same error messages (`borrowed_decode_matches_owned_decode`). A legacy
 /// int-array payload still decodes, into an owned buffer.
 #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
