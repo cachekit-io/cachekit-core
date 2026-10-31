@@ -491,7 +491,8 @@ impl ByteStorage {
     #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
     pub fn retrieve(&self, envelope_bytes: &[u8]) -> Result<(Vec<u8>, String), ByteStorageError> {
         let envelope = decode_envelope(envelope_bytes)?;
-        Ok((envelope.extract()?, envelope.format.into_owned()))
+        let data = envelope.extract()?;
+        Ok((data, envelope.format.into_owned()))
     }
 
     /// Retrieve and validate stored bytes, without the format identifier
