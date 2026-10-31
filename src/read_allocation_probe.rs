@@ -20,8 +20,12 @@
 //! `LARGE_PAYLOAD` allocates: `retrieve_data` requests only what the LZ4
 //! decoder does (the one-pass decode reads these envelopes without
 //! allocating), and `retrieve` adds the format `String` and nothing else. A
-//! legacy int-array payload, and a payload from `LARGE_PAYLOAD` up,
-//! are copied out of the input by design.
+//! payload from `LARGE_PAYLOAD` up is copied out of the input by design, but
+//! only once the envelope is accepted:
+//! `rejected_envelope_reads_do_not_copy_a_large_payload` checks that a read
+//! rejecting such an envelope requests less than `LARGE_PAYLOAD`. A legacy
+//! int-array payload is decoded into an owned buffer as it is read, so it is
+//! allocated whether or not the envelope is then accepted.
 //!
 //! The same count, [`bytes_requested`], also pins the write side: the
 //! `byte_storage` unit test `store_allocates_only_its_output_and_block` checks
@@ -160,7 +164,7 @@ mod tests {
     fn rejected_envelope_reads_do_not_copy_a_large_payload() {
         use crate::byte_storage::LARGE_PAYLOAD;
 
-        // Both sides of the copy threshold.
+        // At the copy threshold, and past it.
         for payload_len in [LARGE_PAYLOAD, 2 * LARGE_PAYLOAD] {
             let mut payload = vec![0xc6];
             payload.extend_from_slice(&(payload_len as u32).to_be_bytes());

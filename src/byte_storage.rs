@@ -746,6 +746,7 @@ fn decode_envelope_full(
         ByteStorageError::DeserializationFailed(format!("decode pre-scan: {what}"))
     })?;
     rmp_serde::from_slice(envelope_bytes)
+        .map(borrowed::StorageEnvelope::copy_large_payload)
         .map_err(|e| ByteStorageError::DeserializationFailed(e.to_string()))
 }
 
@@ -834,6 +835,18 @@ mod borrowed {
             extract_payload(&self.compressed_data, &self.checksum, self.original_size)
         }
 
+        /// Copy a borrowed payload from `LARGE_PAYLOAD` up out of the input,
+        /// as `decode_one_pass` does once it has read the whole envelope. The
+        /// serde decode borrows every `bin` and `str` payload, and
+        /// `decode_envelope_full` calls this only after `rmp_serde` has
+        /// accepted the envelope, so a rejected envelope copies nothing.
+        pub(super) fn copy_large_payload(mut self) -> Self {
+            if let Cow::Borrowed(payload) = self.compressed_data {
+                self.compressed_data = borrow_below_large(payload);
+            }
+            self
+        }
+
         /// One pass over the shape `rmp_serde` writes for every envelope: a
         /// fixarray of 4 holding `compressed_data` as bin8, bin16 or bin32;
         /// `checksum` as a fixarray of 8, each byte a positive fixint or a
@@ -920,10 +933,12 @@ mod borrowed {
     }
 
     /// serde_bytes' `ByteBuf` decode, which `StorageEnvelope::compressed_data`
-    /// uses, except that a `bin` or `str` payload under `LARGE_PAYLOAD` is
-    /// borrowed. Owned bytes and strings reach `visit_bytes` and `visit_str`
-    /// through serde's default methods. serde_bytes' own `Cow` decode borrows
-    /// too, but words its type error differently.
+    /// uses, except that a `bin` or `str` payload is borrowed, whatever its
+    /// length: the envelope may still be rejected, and `copy_large_payload`
+    /// copies one from `LARGE_PAYLOAD` up only once it is accepted. Owned
+    /// bytes and strings reach `visit_bytes` and `visit_str` through serde's
+    /// default methods. serde_bytes' own `Cow` decode borrows too, but words
+    /// its type error differently.
     fn borrow_payload<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Cow<'de, [u8]>, D::Error> {
@@ -937,11 +952,11 @@ mod borrowed {
             }
 
             fn visit_borrowed_bytes<E: Error>(self, v: &'de [u8]) -> Result<Self::Value, E> {
-                Ok(borrow_below_large(v))
+                Ok(Cow::Borrowed(v))
             }
 
             fn visit_borrowed_str<E: Error>(self, v: &'de str) -> Result<Self::Value, E> {
-                Ok(borrow_below_large(v.as_bytes()))
+                Ok(Cow::Borrowed(v.as_bytes()))
             }
 
             fn visit_bytes<E: Error>(self, v: &[u8]) -> Result<Self::Value, E> {
