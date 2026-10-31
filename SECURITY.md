@@ -73,7 +73,7 @@ This crate does **not** protect against:
 
 The same `MAX_COMPRESSED_SIZE` constant also bounds the *serialized* envelope
 before MessagePack deserialization — but that check lives in
-`ByteStorage::retrieve` and `ByteStorage::validate`, not on `StorageEnvelope`.
+`ByteStorage`'s read path (`retrieve`, `retrieve_data`, `validate`), not on `StorageEnvelope`.
 `StorageEnvelope` is public with public fields, so a caller who deserializes it
 directly gets no such bound and must impose one.
 
@@ -172,9 +172,10 @@ cover only those two proofs.
 
 ### Envelope decode bounds
 
-`ByteStorage::retrieve` and `ByteStorage::validate` decode envelope bytes that
-come from a backend the caller may not control. Before `rmp_serde` materialises
-a `StorageEnvelope`, both run a header-only structural pre-scan over those bytes
+`ByteStorage::retrieve`, `ByteStorage::retrieve_data` and `ByteStorage::validate`
+decode envelope bytes that come from a backend the caller may not control. Before
+`rmp_serde` materialises a `StorageEnvelope`, all three run one decode path,
+`decode_envelope`, which runs a header-only structural pre-scan over those bytes
 (protocol `spec/wire-format.md` → Retrieve Flow, step 2; the bounds themselves
 are `spec/interop-mode.md` → Decode bounds). The pre-scan rejects:
 

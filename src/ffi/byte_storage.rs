@@ -161,7 +161,7 @@ pub unsafe extern "C" fn cachekit_decompress(
 
         // Create ByteStorage instance and decompress
         let storage = ByteStorage::new(None);
-        let (decompressed, _format) = match storage.retrieve(input_slice) {
+        let decompressed = match storage.retrieve_data(input_slice) {
             Ok(data) => data,
             Err(e) => {
                 // Map ByteStorageError to CachekitError (using specific error codes per design.md)
