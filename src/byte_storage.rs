@@ -69,7 +69,7 @@ const MAX_COMPRESSION_RATIO: u64 = 1000;
 /// (128 KiB), even doubled, so it is never mmap-ed, and removing it cannot
 /// move either threshold.
 #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
-const LARGE_PAYLOAD: usize = 64 * 1024;
+pub(crate) const LARGE_PAYLOAD: usize = 64 * 1024;
 
 /// Inputs shorter than this are written as one literals-only LZ4 block instead
 /// of going through `lz4_flex::compress`.
