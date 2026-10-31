@@ -14,9 +14,9 @@
 //!   case. Ir/op is `(Ir[N] - Ir[0]) / N`, so process start, setup, the
 //!   warm-up and exit cancel.
 //! - Instruction counts miss the kernel's work, so for cases from `FAULTS_FROM`
-//!   up the gate also runs `perf_ir faults <case> N` natively and records the
-//!   minor page faults per op (`getrusage`), the cost of an allocator that
-//!   hands a call fresh pages instead of reused ones.
+//!   up the gate also runs `perf_ir faults <case> N_OPS` natively and records
+//!   the minor page faults (`getrusage`) over those `N_OPS` calls, the cost of
+//!   an allocator that hands a call fresh pages instead of reused ones.
 //! - Budgets are keyed by architecture, OS and compiled-in CPU features in
 //!   `perf_ir_baselines.json`. A case fails at `FAIL_PCT` over its budget and
 //!   warns from `WARN_PCT`; a fault count fails at `FAIL_PCT` and at least one
@@ -58,10 +58,12 @@ const N_OPS: u64 = 1000;
 /// and the CI job measures every case twice (base and head) inside a
 /// 30-minute limit.
 const N_OPS_MIB: u64 = 20;
-/// Cases from this size up also count minor page faults per call, natively.
-/// Their buffers are large enough for glibc's mmap and trim thresholds to
-/// decide whether a call reuses memory or faults in fresh pages, and that
-/// work is the kernel's, which instruction counts do not see.
+/// Cases from this size up also count minor page faults, natively, over
+/// `N_OPS` calls whatever their size: a native call is cheap, and a long
+/// window keeps a few stray faults far from a page per call. Their buffers
+/// are large enough for glibc's mmap and trim thresholds to decide whether a
+/// call reuses memory or faults in fresh pages, and that work is the
+/// kernel's, which instruction counts do not see.
 const FAULTS_FROM: usize = 64 * 1024;
 const FAIL_PCT: f64 = 1.0;
 const WARN_PCT: f64 = 0.2;
@@ -75,9 +77,10 @@ const MIB: usize = 1024 * 1024;
 const SIZES: &[usize] = &[64, 1024, 64 * 1024];
 /// ByteStorage picks its strategy by size, so store and retrieve also measure
 /// 40 B, under the literals-only block threshold (64 B), and 1 MiB. Its
-/// large-payload switch compares the compressed length with 64 KiB: the
-/// 64 KiB payload stores as a 24,702-byte envelope and never reaches it, the
-/// 1 MiB one as 383,893 bytes, past glibc's default mmap threshold too.
+/// large-payload switch compares the envelope (store) or the compressed
+/// payload (retrieve) with 64 KiB: the 64 KiB payload stores as a
+/// 24,702-byte envelope and never reaches it, the 1 MiB one as 383,893 bytes,
+/// past glibc's default mmap threshold too.
 const STORAGE_SIZES: &[usize] = &[40, 64, 1024, 64 * 1024, MIB];
 
 /// Operations and their payload sizes. HKDF derives from the master key and
@@ -259,19 +262,17 @@ struct Platform {
     rustc: String,
     valgrind: String,
     budgets: BTreeMap<String, u64>,
-    /// Minor page faults per call, for cases from `FAULTS_FROM` up.
+    /// Minor page faults over `N_OPS` (1,000) calls, for cases from
+    /// `FAULTS_FROM` up.
     #[serde(default)]
-    faults: BTreeMap<String, u64>,
+    faults_per_1000_ops: BTreeMap<String, u64>,
 }
 
 /// One case's figures from one gate run.
 struct Measured {
     case: String,
     ir: u64,
-    /// Minor page faults per call, rounded to whole pages, for cases from
-    /// `FAULTS_FROM` up. On a busy shared host a run has taken up to 4 faults
-    /// in 1,000 calls that every quiet run took none of; rounding keeps that
-    /// out of the verdict.
+    /// Minor page faults over `N_OPS` calls, for cases from `FAULTS_FROM` up.
     faults: Option<u64>,
 }
 
@@ -406,7 +407,7 @@ fn measure(valgrind: &Path, cases: &[String], jobs: usize) -> Result<Vec<Measure
             let n = n_ops(case);
             let mut runs = vec![Run::Ir(case, n), Run::Ir(case, 0)];
             if counts_faults(case) {
-                runs.push(Run::Faults(case, n));
+                runs.push(Run::Faults(case, N_OPS));
             }
             runs
         })
@@ -441,7 +442,7 @@ fn measure(valgrind: &Path, cases: &[String], jobs: usize) -> Result<Vec<Measure
                 Some(delta) if delta > 0 => (delta + n / 2) / n,
                 _ => return Err(format!("{case}: Ir[{n}] {full} is not above Ir[0] {setup}")),
             };
-            let faults = counts_faults(case).then(|| (next_count() + n / 2) / n);
+            let faults = counts_faults(case).then(&mut next_count);
             Ok(Measured {
                 case: case.clone(),
                 ir,
@@ -498,35 +499,35 @@ fn compare(platform: &Platform, measured: &[Measured]) -> (Vec<String>, bool) {
             }
         });
         let Some(faults) = *faults else { continue };
-        lines.push(match platform.faults.get(case) {
+        let per_op = |count: u64| count as f64 / N_OPS as f64;
+        lines.push(match platform.faults_per_1000_ops.get(case) {
             None => {
                 ok = false;
                 format!(
-                    "FAIL  {case:28} {:>10} faults/op  no budget (run make perf-ir-update)",
-                    thousands(faults)
+                    "FAIL  {case:28} {:>10.3} faults/op  no budget (run make perf-ir-update)",
+                    per_op(faults)
                 )
             }
             Some(&budget) => {
-                // Whole pages per call, so any rise is at least one page more
-                // on every call: a buffer the allocator no longer reuses, paid
-                // in a trap and a zeroed page that Ir does not count. A budget
-                // of 0 has no percentage to clear, so FAIL_PCT applies only
-                // from 100 pages per call up.
-                let over = faults.saturating_sub(budget) as f64;
-                let verdict = if over > 0.0 && over >= budget as f64 * FAIL_PCT / 100.0 {
+                // The regression this catches is a buffer the allocator no
+                // longer reuses: whole pages on every call, each a trap and a
+                // zeroed page that Ir does not count. So a count fails from
+                // one page per call over (N_OPS faults) and FAIL_PCT, and
+                // moves the verdict no other way: a busy host has added up
+                // to 4 stray faults in 1,000 calls that quiet runs never take.
+                let over_pct = |over: u64| over as f64 >= budget as f64 * FAIL_PCT / 100.0;
+                let verdict = if faults >= budget + N_OPS && over_pct(faults - budget) {
                     ok = false;
                     "FAIL"
-                } else if faults > budget {
-                    "WARN"
-                } else if faults < budget {
+                } else if budget >= faults + N_OPS {
                     "LOWER"
                 } else {
                     "ok"
                 };
                 format!(
-                    "{verdict:5} {case:28} {:>10} faults/op  budget {:>10}",
-                    thousands(faults),
-                    thousands(budget)
+                    "{verdict:5} {case:28} {:>10.3} faults/op  budget {:>10.3}",
+                    per_op(faults),
+                    per_op(budget)
                 )
             }
         });
@@ -545,7 +546,7 @@ fn ratchet(platform: &mut Platform, measured: &[Measured], allow_increase: bool)
     for Measured { case, ir, faults } in measured {
         lower(&mut platform.budgets, case, *ir);
         if let Some(faults) = *faults {
-            lower(&mut platform.faults, case, faults);
+            lower(&mut platform.faults_per_1000_ops, case, faults);
         }
     }
 }
@@ -635,7 +636,7 @@ fn gate(args: &[String]) -> Result<bool, String> {
     let measured = measure(&valgrind_bin, &cases, jobs)?;
     println!(
         "cachekit-core Ir/op on {key} (rustc {rustc}, {valgrind}): (Ir[N] - Ir[0]) / N, \
-         N = {N_OPS} ({N_OPS_MIB} at 1 MiB); faults/op natively over N ops from 64 KiB"
+         N = {N_OPS} ({N_OPS_MIB} at 1 MiB); faults/op natively over {N_OPS} ops from 64 KiB"
     );
     // With --update, report against the budgets as written, so the only FAIL
     // left is a regression that --allow-increase did not accept.
@@ -649,9 +650,9 @@ fn gate(args: &[String]) -> Result<bool, String> {
     if update {
         baselines.method = format!(
             "cachegrind Ir per op, (Ir[N] - Ir[0]) / N with N = {N_OPS} ({N_OPS_MIB} at 1 MiB), \
-             one process per case, empty environment; faults: minor page faults per op \
-             (getrusage), rounded, native, over N ops after N + 1 settling ops, cases from \
-             64 KiB; written by benches/perf_ir.rs --update"
+             one process per case, empty environment; faults_per_1000_ops: minor page \
+             faults (getrusage) over {N_OPS} ops, native, after {N_OPS} + 1 settling ops, \
+             cases from 64 KiB; written by benches/perf_ir.rs --update"
         );
         let json = serde_json::to_string_pretty(&baselines).map_err(|e| e.to_string())?;
         fs::write(&path, json + "\n").map_err(|e| format!("{shown}: {e}"))?;

@@ -1,5 +1,5 @@
 {
-  "method": "cachegrind Ir per op, (Ir[N] - Ir[0]) / N with N = 1000 (20 at 1 MiB), one process per case, empty environment; faults: minor page faults per op (getrusage), rounded, native, over N ops after N + 1 settling ops, cases from 64 KiB; written by benches/perf_ir.rs --update",
+  "method": "cachegrind Ir per op, (Ir[N] - Ir[0]) / N with N = 1000 (20 at 1 MiB), one process per case, empty environment; faults_per_1000_ops: minor page faults (getrusage) over 1000 ops, native, after 1000 + 1 settling ops, cases from 64 KiB; written by benches/perf_ir.rs --update",
   "platforms": {
     "x86_64-linux": {
       "rustc": "1.98.1",
@@ -32,7 +32,7 @@
         "tenant_keyring_decrypt/64": 2623,
         "tenant_keyring_decrypt/65536": 235224
       },
-      "faults": {
+      "faults_per_1000_ops": {
         "decrypt/65536": 0,
         "encrypt/65536": 0,
         "keyring_decrypt/65536": 0,
