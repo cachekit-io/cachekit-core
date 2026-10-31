@@ -446,6 +446,97 @@ User-facing docs in this repository follow CacheKit's shared rule on what belong
 `prek install` (or `pre-commit install`) sets up hooks that reject internal references in README
 files, `docs/` and commit messages.
 
+### Performance practices
+
+The SDKs call this crate on their store, retrieve and encryption paths, so a per-call cost here
+reaches all of them. Each practice names the pull request, in this crate or an SDK, that measured
+it. Measure as [Instruction counts](#instruction-counts) describes, and put the figures in the
+pull request.
+
+**Give small values their own path.** Most cached values are small, and a fixed per-call cost
+dominates them. Below 64 B, `store` writes one literals-only LZ4 block instead of running the
+compressor, which zeroes its hash table on every call: −80.8% instructions on a 63 B store
+([#128]). The trade: compressible inputs under 64 B are stored uncompressed and grow. From 64 B
+to under 4 KiB, the compressor reuses one hash table and one output scratch per thread: −27.5% on
+a 64 B store ([#144]). `make perf-ir` has no case below 64 B or above 64 KiB, so a change that
+branches on size also measures each side of its threshold and 1 MiB, as [#128] and [#144] did.
+Per-thread reuse has its own traps, all from [#144]:
+
+- Reuse stopped paying at about 6 KiB, because the copy out grows with the block while the saving
+  stays fixed. The 4 KiB bound also keeps the table in lz4_flex's 16-bit class: lz4_flex upgrades
+  a 16-bit table to the 32-bit class for a longer input and never downgrades it, which would change
+  every later small block on that thread.
+- macOS aligns thread locals to at most 16 B, so lz4_flex's `#[repr(align(64))]` table is boxed.
+- The scratch keeps the tail of earlier blocks for the life of the thread. Memory that is reused
+  and can hold payload bytes is listed in [`SECURITY.md`](SECURITY.md#threat-model).
+
+**Allocate once, and borrow instead of copying.** Size a buffer once, write in place, and borrow
+from the input. Sealing native encrypt in one buffer (one allocation and one plaintext copy, down
+from three allocations and up to three copies) took encrypt at 64 KiB from 33.80 µs to 10.93 µs
+([#127]). `StorageEnvelope::encoded_len` and `encode_into` ([#131]) let a binding write the
+envelope into memory it owns, without a `Vec` in between. A borrowed twin of a public type keeps
+its Rust name: serde's derive puts the struct name into its error text and an SDK pins that text,
+so the private borrowed `StorageEnvelope` in [#132] has the public one's name, fields and decoders.
+
+**Know glibc's thresholds before removing a large allocation.** glibc raises its mmap and trim
+thresholds to the largest mmap-ed chunk freed so far, so the allocation you remove may be the one
+that kept the other buffers off fresh pages. At 1 MB, an exact-size envelope made incompressible
+stores about 30% slower (702 → 945 page faults per store, [#131]), and borrowing the payload made
+each retrieve about 7× slower (0 → 947 page faults per read, [#132]). Both changes stop at 64 KiB,
+because below it no buffer, doubled or not, reaches glibc's minimum mmap threshold of 128 KiB.
+Measure page faults at 64 KiB and up, under default malloc and with `MALLOC_MMAP_THRESHOLD_` and
+`MALLOC_TRIM_THRESHOLD_` pinned.
+
+**Do per-call work once.** Work that depends only on the key, the tenant or the configuration
+belongs where the handle is built. `Keyring::decrypt_indexed` re-derives the tenant key with HKDF
+on every call; a `TenantKeyring` from `Keyring::for_tenant` derives it once. Moving its encrypted
+reads to `TenantKeyring` took a 64 B encrypted L1 hit in cachekit-rs from 34,178 to 5,124
+instructions (−85%, [cachekit-rs#185]). Return what a pass already found: `msgpack_document_len`
+([#120]) hands a reader the length the structural walk computed, so rejecting trailing bytes takes
+one walk instead of two.
+
+**Keep 64-bit-only code 64-bit only.** On 64-bit targets the LZ4 encoder is lz4_flex's unsafe one:
+`store` −17.36% at 1 KiB and −28.43% at 64 KiB ([#128]). Targets narrower than 64 bits, wasm32
+included, keep `safe-encode`: in lz4_flex 0.12, `input_len * 110 / 100` wrapped `usize` above about
+37 MiB on 32-bit targets, inside this crate's 512 MiB input cap. `fuzz/Cargo.toml` declares
+lz4_flex with the crate's native features, because default features would unify `safe-encode` back
+in and the fuzzers would exercise the wrong encoder. An `unsafe` change ships with Miri, fuzzing and
+a byte-identity diff against `main`, as [#128] did.
+
+**Measure it, or it didn't happen.**
+
+- Build each arm of an A/B in its own target directory. With a shared one, cargo's mtime check
+  reused the base binary for the head, and the gate compared base with base ([#118]).
+- Run an A/A arm. With the code unchanged, code layout alone moved `retrieve` at 64 KB to 1 MB by
+  −4% to +5% across four build pairs ([#144]). Time wall clock with paired, interleaved runs.
+- Instruction counts undercount memory wins. At 1 MiB the reallocation [#127] removed was a kernel
+  page remap, so Ir read only −3.2%. Count page faults too.
+- Pass inputs and results through `black_box`. Without it, a benchmark reported 230 to 290 GB/s,
+  faster than memory ([#117]).
+
+**Title an additive API `perf` or `fix`, not `feat`.** Adding a public item to a 0.y crate is a
+patch-level change under Cargo's SemVer rules, so the SDKs' caret requirements already accept it.
+Under this repository's release-please settings a `feat` title cuts a new minor version instead,
+and every SDK must move its requirement for a change that breaks nothing ([#120]). Only a crate
+that calls the new item raises its minimum version.
+
+**List the sibling paths.** A fix to one path tends to leave its siblings slow. A perf pull
+request lists the sibling paths in its description and says which it changed and which it did not
+measure: `store` and `retrieve`, encrypt and decrypt, native and wasm32, 64-bit and 32-bit targets.
+[#127] sealed native encrypt in one buffer and left wasm32 as it was; [#129] gave wasm32 the same
+change. [#131] changed `store` and [#132] `retrieve`. [#144] says wasm32 was not measured.
+
+[#117]: https://github.com/cachekit-io/cachekit-core/pull/117
+[#118]: https://github.com/cachekit-io/cachekit-core/pull/118
+[#120]: https://github.com/cachekit-io/cachekit-core/pull/120
+[#127]: https://github.com/cachekit-io/cachekit-core/pull/127
+[#128]: https://github.com/cachekit-io/cachekit-core/pull/128
+[#129]: https://github.com/cachekit-io/cachekit-core/pull/129
+[#131]: https://github.com/cachekit-io/cachekit-core/pull/131
+[#132]: https://github.com/cachekit-io/cachekit-core/pull/132
+[#144]: https://github.com/cachekit-io/cachekit-core/pull/144
+[cachekit-rs#185]: https://github.com/cachekit-io/cachekit-rs/pull/185
+
 ## License
 
 MIT License — see [LICENSE](LICENSE) for details.
