@@ -258,7 +258,9 @@ Malicious payloads claiming `original_size: 500GB` with 100 bytes of data are re
 envelope bytes **before** MessagePack decoding: nesting deeper than 100 levels,
 headers declaring more elements or bytes than the input can back, the reserved
 marker `0xc1` and truncated input are all rejected before decoding, without
-allocating in proportion to any declared length. A rejection is
+allocating in proportion to any declared length. A document nesting at most 8
+levels deep, which includes every envelope, is walked with no allocation at
+all. A rejection is
 `ByteStorageError::DeserializationFailed` with the message prefix
 `decode pre-scan: `. The same walk is public as
 `check_msgpack_structure(bytes, max_depth)` for callers that decode untrusted
