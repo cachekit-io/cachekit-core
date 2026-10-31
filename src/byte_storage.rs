@@ -189,7 +189,8 @@ fn compress_with_thread_table(data: &[u8]) -> Result<Vec<u8>, ByteStorageError> 
 /// Storage envelope for raw byte storage
 /// Contains compressed data with integrity checking
 // `retrieve` and `validate` decode into its private borrowing twin,
-// `borrowed::StorageEnvelope`: change the two together.
+// `borrowed::StorageEnvelope`, whose `decode_one_pass` hard-codes this field
+// order and these encodings: change the three together.
 #[derive(Serialize, Deserialize)]
 pub struct StorageEnvelope {
     /// Compressed payload data
@@ -554,19 +555,15 @@ impl Default for ByteStorage {
     }
 }
 
-/// Decode untrusted envelope bytes: the one-pass decode of the shape `store`
-/// writes, and for any input it declines, `decode_envelope_full`.
-///
-/// The one-pass decode accepts only inputs the full decode accepts, into the
-/// same fields, and declines every input the full decode rejects, so this
-/// returns what `decode_envelope_full` returns, error text included
-/// (`one_pass_decode_matches_full_decode`). It walks the envelope once instead
-/// of twice, which at small sizes is most of the cost of a read.
+/// Decode untrusted envelope bytes: `decode_one_pass`, or `decode_envelope_full`
+/// for any input it declines. Both give the same result
+/// (`assert_one_pass_matches_full_decode`), and one walk instead of two is most
+/// of a small read's cost.
 #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
 fn decode_envelope(
     envelope_bytes: &[u8],
 ) -> Result<borrowed::StorageEnvelope<'_>, ByteStorageError> {
-    match borrowed::StorageEnvelope::decode_canonical(envelope_bytes) {
+    match borrowed::StorageEnvelope::decode_one_pass(envelope_bytes) {
         Some(envelope) => Ok(envelope),
         None => decode_envelope_full(envelope_bytes),
     }
@@ -589,7 +586,13 @@ fn decode_envelope_full(
         .map_err(|e| ByteStorageError::DeserializationFailed(e.to_string()))
 }
 
-/// A decoded envelope's `(compressed_data, checksum, original_size, format)`.
+/// Panics unless `decode_one_pass` accepts only what `decode_envelope_full`
+/// accepts, into the same fields, and `retrieve` returns that decode's
+/// envelope, extracted. Returns whether each decode accepted.
+///
+/// The differential behind `one_pass_decode_matches_full_decode` and the
+/// `byte_storage_corrupted_envelope` fuzz target. Built only for tests and
+/// under `cfg(fuzzing)`, which cargo-fuzz sets.
 #[cfg(all(
     any(test, fuzzing),
     feature = "compression",
@@ -597,32 +600,31 @@ fn decode_envelope_full(
     feature = "messagepack"
 ))]
 #[doc(hidden)]
-pub type EnvelopeFields = (Vec<u8>, [u8; 8], u32, String);
-
-/// The same bytes through the one-pass decode, `decode_envelope_full` and
-/// `decode_envelope`, for the `byte_storage_corrupted_envelope` fuzz target's
-/// differential. Built only under `cfg(fuzzing)`, which cargo-fuzz sets.
-#[cfg(all(
-    fuzzing,
-    feature = "compression",
-    feature = "checksum",
-    feature = "messagepack"
-))]
-#[doc(hidden)]
-#[allow(clippy::type_complexity)]
-pub fn fuzz_envelope_decodes(
-    envelope_bytes: &[u8],
-) -> (
-    Option<EnvelopeFields>,
-    Result<EnvelopeFields, ByteStorageError>,
-    Result<EnvelopeFields, ByteStorageError>,
-) {
-    (
-        borrowed::StorageEnvelope::decode_canonical(envelope_bytes)
-            .map(borrowed::StorageEnvelope::into_fields),
-        decode_envelope_full(envelope_bytes).map(borrowed::StorageEnvelope::into_fields),
-        decode_envelope(envelope_bytes).map(borrowed::StorageEnvelope::into_fields),
-    )
+pub fn assert_one_pass_matches_full_decode(envelope_bytes: &[u8]) -> (bool, bool) {
+    let input = format!(
+        "{} bytes, starting {:02x?}",
+        envelope_bytes.len(),
+        &envelope_bytes[..envelope_bytes.len().min(48)]
+    );
+    let one_pass = borrowed::StorageEnvelope::decode_one_pass(envelope_bytes);
+    let full = decode_envelope_full(envelope_bytes);
+    match (&one_pass, &full) {
+        (Some(one), Ok(full)) => assert!(one == full, "the decodes read different fields: {input}"),
+        (Some(_), Err(e)) => {
+            panic!("one-pass accepted what the full decode rejects ({e}): {input}")
+        }
+        (None, _) => {}
+    }
+    let expected = full
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|envelope| Ok((envelope.extract()?, envelope.format.clone())));
+    let retrieved = ByteStorage::new(None).retrieve(envelope_bytes);
+    assert!(
+        retrieved == expected,
+        "retrieve differs from the full decode: {input}"
+    );
+    (one_pass.is_some(), full.is_ok())
 }
 
 /// What `retrieve` and `validate` decode: `StorageEnvelope` with
@@ -645,6 +647,7 @@ mod borrowed {
     use super::{extract_payload, ByteStorageError, LARGE_PAYLOAD};
 
     #[derive(Deserialize)]
+    #[cfg_attr(any(test, fuzzing), derive(Debug, PartialEq))]
     pub(super) struct StorageEnvelope<'a> {
         #[serde(borrow, deserialize_with = "borrow_payload")]
         pub(super) compressed_data: Cow<'a, [u8]>,
@@ -659,34 +662,18 @@ mod borrowed {
             extract_payload(&self.compressed_data, &self.checksum, self.original_size)
         }
 
-        /// The fields, owned, for the differential tests and fuzz target.
-        #[cfg(any(test, fuzzing))]
-        pub(super) fn into_fields(self) -> super::EnvelopeFields {
-            let Self {
-                compressed_data,
-                checksum,
-                original_size,
-                format,
-            } = self;
-            (
-                compressed_data.into_owned(),
-                checksum,
-                original_size,
-                format,
-            )
-        }
-
         /// One pass over the shape `rmp_serde` writes for every envelope: a
         /// fixarray of 4 holding `compressed_data` as bin8, bin16 or bin32;
         /// `checksum` as a fixarray of 8, each byte a positive fixint or a
         /// uint8; `original_size` as a positive fixint or a uint8, uint16 or
-        /// uint32; and `format` as a fixstr or str8 of valid UTF-8. Like the
-        /// full decode, it ignores bytes after the envelope.
+        /// uint32; and `format` as a str of valid UTF-8 (fixstr, str8, str16
+        /// or str32). Like the full decode, it ignores bytes after the
+        /// envelope.
         ///
         /// `None` for any other input, whether the full decode accepts it (a
-        /// legacy int-array payload, a bin8 checksum, a wider integer or
-        /// string, the map form) or rejects it: the caller's fallback decides
-        /// it, with the error it reports today.
+        /// legacy int-array payload, a bin8 checksum, a uint64 or signed
+        /// integer, the map form) or rejects it: the caller's fallback decides
+        /// it, and reports the full decode's error.
         ///
         /// It holds the decode bounds the pre-scan enforces. The shape nests
         /// two deep; every declared length is checked against the bytes after
@@ -694,7 +681,7 @@ mod borrowed {
         /// slots than it has bytes, since each slot is at least one byte and
         /// the root header is not a slot. Nothing is allocated until the whole
         /// envelope has been read.
-        pub(super) fn decode_canonical(bytes: &'a [u8]) -> Option<Self> {
+        pub(super) fn decode_one_pass(bytes: &'a [u8]) -> Option<Self> {
             let mut rest = bytes;
             if take_byte(&mut rest)? != 0x94 {
                 return None;
@@ -727,6 +714,8 @@ mod borrowed {
             let format_len = match take_byte(&mut rest)? {
                 fixstr @ 0xa0..=0xbf => u32::from(fixstr & 0x1f),
                 0xd9 => take_uint(&mut rest, 1)?,
+                0xda => take_uint(&mut rest, 2)?,
+                0xdb => take_uint(&mut rest, 4)?,
                 _ => return None,
             };
             let format = std::str::from_utf8(take(&mut rest, format_len)?).ok()?;
@@ -1308,7 +1297,7 @@ mod tests {
     /// What `store` writes, at each field's encoding width boundaries: bin8,
     /// bin16 and bin32 payloads (the last two either side of LARGE_PAYLOAD),
     /// fixint and uint8 checksum bytes, every width of `original_size`, and
-    /// fixstr and str8 formats.
+    /// fixstr, str8, str16 and str32 formats.
     fn canonical_envelopes() -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         for (payload_len, size, format_len) in [
@@ -1317,7 +1306,8 @@ mod tests {
             (40, 0x80, 31),
             (255, 0xff, 32),
             (256, 0x100, 255),
-            (300, 0xffff, 1),
+            (300, 0xffff, 256),
+            (3, 3, 0x1_0000),
             (0x1_0000, 0x1_0000, 7),
             (0x1_0001, u32::MAX, 7),
         ] {
@@ -1335,7 +1325,7 @@ mod tests {
         // never falls back to the pre-scan and serde.
         for bytes in canonical_envelopes() {
             assert!(
-                borrowed::StorageEnvelope::decode_canonical(&bytes).is_some(),
+                borrowed::StorageEnvelope::decode_one_pass(&bytes).is_some(),
                 "declined {:02x?}",
                 &bytes[..bytes.len().min(16)]
             );
@@ -1345,7 +1335,7 @@ mod tests {
         for v in fixture["vectors"].as_array().unwrap() {
             let name = v["name"].as_str().unwrap();
             let bytes = hex::decode(v["envelope_hex"].as_str().unwrap()).unwrap();
-            let one_pass = borrowed::StorageEnvelope::decode_canonical(&bytes);
+            let one_pass = borrowed::StorageEnvelope::decode_one_pass(&bytes);
             // Legacy int-array payloads are the full decode's to read.
             assert_eq!(one_pass.is_some(), name.ends_with("_bin"), "[{name}]");
         }
@@ -1353,38 +1343,15 @@ mod tests {
 
     #[test]
     fn one_pass_decode_matches_full_decode() {
-        // `decode_envelope` returns exactly what `decode_envelope_full` does,
-        // fields or error text, and the one-pass decode accepts only what the
-        // full decode accepts, into the same fields. Inputs: the decode corpus,
-        // the decode-bounds vectors, and the canonical envelopes truncated at
-        // every length, with a byte inserted or replaced (by values that change
-        // its MessagePack meaning) at every header position, and with bytes
-        // appended.
+        // `assert_one_pass_matches_full_decode` on the decode corpus, the
+        // decode-bounds vectors, and the canonical envelopes truncated at every
+        // length, with a byte inserted or replaced (by values that change its
+        // MessagePack meaning) at every header position, and with bytes appended.
         let (mut one_pass_accepted, mut full_only_accepted) = (0, 0);
-        let mut check = |bytes: &[u8]| {
-            let shown = &bytes[..bytes.len().min(48)];
-            let one_pass = borrowed::StorageEnvelope::decode_canonical(bytes)
-                .map(borrowed::StorageEnvelope::into_fields);
-            let full = decode_envelope_full(bytes).map(borrowed::StorageEnvelope::into_fields);
-            match (&one_pass, &full) {
-                (Some(one), Ok(full)) => {
-                    assert_eq!(
-                        one,
-                        full,
-                        "fields differ, len {}: {shown:02x?}",
-                        bytes.len()
-                    );
-                    one_pass_accepted += 1;
-                }
-                (Some(_), Err(e)) => panic!(
-                    "one-pass accepted what the full decode rejects ({e}), len {}: {shown:02x?}",
-                    bytes.len()
-                ),
-                (None, Ok(_)) => full_only_accepted += 1,
-                (None, Err(_)) => {}
-            }
-            let decoded = decode_envelope(bytes).map(borrowed::StorageEnvelope::into_fields);
-            assert_eq!(decoded, full, "len {}: {shown:02x?}", bytes.len());
+        let mut check = |bytes: &[u8]| match assert_one_pass_matches_full_decode(bytes) {
+            (true, _) => one_pass_accepted += 1,
+            (false, true) => full_only_accepted += 1,
+            (false, false) => {}
         };
 
         for (_, bytes) in decode_corpus() {
@@ -1397,8 +1364,10 @@ mod tests {
                 check(&hex::decode(v["input_hex"].as_str().unwrap()).unwrap());
             }
         }
-        // A format of str16 and a bin8 checksum: both full-decode only.
-        check(&rmp_serde::to_vec(&envelope_with(3, [1; 8], 3, 256)).unwrap());
+        // A uint64 `original_size` and a bin8 checksum: both full-decode only.
+        let mut uint64_size = rmp_serde::to_vec(&envelope_with(3, [1; 8], 3, 1)).unwrap();
+        uint64_size.splice(15..16, [0xcf, 0, 0, 0, 0, 0, 0, 0, 3]);
+        check(&uint64_size);
         let mut bin8_checksum = rmp_serde::to_vec(&envelope_with(3, [1; 8], 3, 1)).unwrap();
         bin8_checksum.splice(6..15, [0xc4, 8, 1, 1, 1, 1, 1, 1, 1, 1]);
         check(&bin8_checksum);
@@ -1409,8 +1378,8 @@ mod tests {
             0xd9, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xe0, 0xff,
         ];
         for env in canonical_envelopes() {
-            // Every position of a small envelope. Of a large one, the headers
-            // and the fields after the payload (at most 30 bytes).
+            // Every position of a small envelope. Of a large one, the first 8
+            // bytes and the last 40.
             let positions =
                 (0..env.len()).filter(|&i| env.len() <= 1024 || i < 8 || i + 40 >= env.len());
             for i in positions {
@@ -1436,7 +1405,7 @@ mod tests {
         }
 
         // Both sides of the fallback ran: accepted by the one-pass decode, and
-        // accepted only by the full decode (legacy, bin8 checksum, str16, map).
+        // accepted only by the full decode (legacy, bin8 checksum, uint64, map).
         assert!(
             one_pass_accepted > 1000,
             "one-pass accepted {one_pass_accepted}"
@@ -1452,23 +1421,28 @@ mod tests {
         let fixture: serde_json::Value =
             serde_json::from_str(include_str!("../tests/vectors/wire-format.json")).unwrap();
         use std::borrow::Cow;
+        // Both decodes borrow alike: the one-pass decode, and serde's, which
+        // still reads every envelope the one-pass decode declines.
+        let decoders = [decode_envelope, decode_envelope_full];
         let mut seen = (0, 0);
-        for v in fixture["vectors"].as_array().unwrap() {
-            let bytes = hex::decode(v["envelope_hex"].as_str().unwrap()).unwrap();
-            let envelope = decode_envelope(&bytes).unwrap();
-            let name = v["name"].as_str().unwrap();
-            if name.ends_with("_bin") {
-                seen.0 += 1;
-                assert!(
-                    matches!(envelope.compressed_data, Cow::Borrowed(_)),
-                    "[{name}] bin payload copied"
-                );
-            } else {
-                seen.1 += 1;
-                assert!(
-                    matches!(envelope.compressed_data, Cow::Owned(_)),
-                    "[{name}] legacy payload"
-                );
+        for decode in decoders {
+            for v in fixture["vectors"].as_array().unwrap() {
+                let bytes = hex::decode(v["envelope_hex"].as_str().unwrap()).unwrap();
+                let envelope = decode(&bytes).unwrap();
+                let name = v["name"].as_str().unwrap();
+                if name.ends_with("_bin") {
+                    seen.0 += 1;
+                    assert!(
+                        matches!(envelope.compressed_data, Cow::Borrowed(_)),
+                        "[{name}] bin payload copied"
+                    );
+                } else {
+                    seen.1 += 1;
+                    assert!(
+                        matches!(envelope.compressed_data, Cow::Owned(_)),
+                        "[{name}] legacy payload"
+                    );
+                }
             }
         }
         assert!(
@@ -1481,18 +1455,20 @@ mod tests {
         for (len, borrowed) in [(LARGE_PAYLOAD - 512, true), (LARGE_PAYLOAD + 512, false)] {
             let data = xorshift_bytes(len);
             let stored = storage.store(&data, None).unwrap();
-            let envelope = decode_envelope(&stored).unwrap();
-            let payload = envelope.compressed_data.len();
-            assert_eq!(
-                payload < LARGE_PAYLOAD,
-                borrowed,
-                "len {len}: payload {payload}"
-            );
-            assert_eq!(
-                matches!(envelope.compressed_data, Cow::Borrowed(_)),
-                borrowed,
-                "len {len}: payload {payload}"
-            );
+            for decode in decoders {
+                let envelope = decode(&stored).unwrap();
+                let payload = envelope.compressed_data.len();
+                assert_eq!(
+                    payload < LARGE_PAYLOAD,
+                    borrowed,
+                    "len {len}: payload {payload}"
+                );
+                assert_eq!(
+                    matches!(envelope.compressed_data, Cow::Borrowed(_)),
+                    borrowed,
+                    "len {len}: payload {payload}"
+                );
+            }
             assert_eq!(storage.retrieve(&stored).unwrap().0, data, "len {len}");
         }
     }

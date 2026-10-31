@@ -263,8 +263,8 @@ can back, the reserved marker `0xc1` and truncated input are all rejected
 before decoding, without allocating in proportion to any declared length. A
 rejection is `ByteStorageError::DeserializationFailed` with the message prefix
 `decode pre-scan: `. The one-pass read accepts only envelopes the pre-scan and
-the typed decode accept, into the same fields, so every input gets the result
-and error it got before. The same walk is public as
+the typed decode accept, into the same fields, and leaves every rejection to
+them, so every input gets their result and error. The same walk is public as
 `check_msgpack_structure(bytes, max_depth)` for callers that decode untrusted
 MessagePack themselves; it returns a `MsgpackStructureError` whose `Display` is
 the bare reason, with no prefix. `msgpack_document_len(bytes, max_depth)` runs
@@ -283,7 +283,7 @@ cachekit-core/
 ├── src/
 │   ├── lib.rs              # Public API exports
 │   ├── byte_storage.rs     # LZ4 + xxHash3 storage envelope
-│   ├── msgpack_bounds.rs   # Structural pre-scan (public check_msgpack_structure, msgpack_document_len), run before the envelope decode
+│   ├── msgpack_bounds.rs   # Structural pre-scan (public check_msgpack_structure, msgpack_document_len), run before the fallback envelope decode
 │   ├── checksum.rs         # Standalone xxHash3 checksum/verify primitive (feature = "checksum")
 │   │
 │   ├── encryption/         # (feature = "encryption")

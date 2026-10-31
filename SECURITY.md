@@ -180,15 +180,16 @@ are `spec/interop-mode.md` → Decode bounds).
 
 An envelope in the shape `store` writes skips the pre-scan and `rmp_serde`: a
 one-pass decode reads its four fields in their exact encodings (a 4-element
-fixarray; bin8/16/32; a fixarray of 8 checksum bytes; a uint of at most 32
-bits; a fixstr or str8 of valid UTF-8). It holds the same bounds. It reads two
-levels deep, checks every declared length against the bytes after it before
-reading them, and allocates nothing until it has read the whole envelope; a
-complete envelope always declares fewer slots than its length. It hands any
-other input, and every input it would reject, to the pre-scan and `rmp_serde`,
-so it accepts only what they accept, into the same fields, and every rejection
-still carries the error below. `one_pass_decode_matches_full_decode` and the
-`byte_storage_corrupted_envelope` fuzz target compare the two decodes.
+fixarray; bin8/16/32; a fixarray of 8 checksum bytes, each a positive fixint or
+uint8; a uint of at most 32 bits; a str of valid UTF-8). It holds the same
+bounds. It reads two levels deep, checks every declared length against the
+bytes after it before reading them, and allocates nothing until it has read
+the whole envelope; a complete envelope always declares fewer slots than its
+length. It accepts only envelopes the pre-scan and `rmp_serde` accept, into the
+same fields, which `one_pass_decode_matches_full_decode` and the
+`byte_storage_corrupted_envelope` fuzz target check. It hands every other
+input, including every input it would reject, to the pre-scan and `rmp_serde`,
+so every rejection carries the error below.
 
 The pre-scan rejects:
 
