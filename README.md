@@ -266,7 +266,7 @@ allocating in proportion to any declared length. A document nesting at most 8
 levels deep is walked with no allocation at all. That covers every envelope
 `store()` writes, which nests 2 deep; a hand-built envelope can nest deeper in a
 field the decoder ignores, and its walk then allocates for the levels past 8.
-A rejection is
+A rejection, which allocates its error message, is
 `ByteStorageError::DeserializationFailed` with the message prefix
 `decode pre-scan: `. The same walk is public as
 `check_msgpack_structure(bytes, max_depth)` for callers that decode untrusted

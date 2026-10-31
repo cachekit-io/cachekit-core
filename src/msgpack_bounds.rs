@@ -28,7 +28,8 @@ fn reject(reason: impl Into<String>) -> MsgpackStructureError {
 /// at most `min(max_depth, bytes.len())` of them (8 KiB at a depth of 1024), and
 /// allocates nothing proportional to any declared length. The first 8 live on
 /// the call stack, so a document that nests no deeper than that (an envelope
-/// `ByteStorage::store` writes nests 2 deep) allocates nothing at all.
+/// `ByteStorage::store` writes nests 2 deep) is walked with no allocation. A
+/// rejection allocates its error message.
 ///
 /// Bytes after the document are neither read nor rejected. To find where the
 /// document ends, call [`msgpack_document_len`], which runs this same walk.
