@@ -178,10 +178,11 @@ a `StorageEnvelope`, both run a header-only structural pre-scan over those bytes
 (protocol `spec/wire-format.md` → Retrieve Flow, step 2; the bounds themselves
 are `spec/interop-mode.md` → Decode bounds).
 
-An envelope in the shape `store` writes skips the pre-scan and `rmp_serde`: a
-one-pass decode reads its four fields in their exact encodings (a 4-element
-fixarray; bin8/16/32; a fixarray of 8 checksum bytes, each a positive fixint or
-uint8; a uint of at most 32 bits; a str of valid UTF-8). It holds the same
+An envelope laid out as `store` writes one skips the pre-scan and `rmp_serde`,
+whatever width its lengths and size are encoded in: a one-pass decode reads
+its four fields in these encodings only (a 4-element fixarray; bin8/16/32; a
+fixarray of 8 checksum bytes, each a positive fixint or uint8; a uint of at
+most 32 bits; a str of valid UTF-8, any width). It holds the same
 bounds. It reads two levels deep, checks every declared length against the
 bytes after it before reading them, and allocates nothing until it has read
 the whole envelope; a complete envelope always declares fewer slots than its

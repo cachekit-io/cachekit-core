@@ -1,15 +1,19 @@
 #![no_main]
 
-use cachekit_core::byte_storage::assert_one_pass_matches_full_decode;
+use cachekit_core::byte_storage::{assert_one_pass_matches_full_decode, StorageEnvelope};
 use cachekit_core::ByteStorage;
 use libfuzzer_sys::fuzz_target;
 
-// Attack: malformed and corrupted envelopes through the envelope decode.
+// Attack: malformed and corrupted envelopes through the envelope decodes.
 // Validates: fail-closed rejection without panics, and that the one-pass decode agrees with the full decode.
 
 fuzz_target!(|data: &[u8]| {
-    // The input as envelope bytes.
+    // The input as envelope bytes, through `retrieve`'s decodes and through
+    // the public owned `StorageEnvelope`, which has no pre-scan of its own.
     assert_one_pass_matches_full_decode(data);
+    if let Ok(envelope) = rmp_serde::from_slice::<StorageEnvelope>(data) {
+        let _ = envelope.extract();
+    }
 
     // The input as an envelope `store` writes, then corrupted, which reaches
     // the one-pass decode's boundaries far more often than raw bytes do. The

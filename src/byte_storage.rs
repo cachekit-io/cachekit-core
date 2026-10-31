@@ -480,9 +480,12 @@ impl ByteStorage {
     ///
     /// # Errors
     ///
-    /// `envelope_bytes` is untrusted. An envelope in the shape `store` writes
-    /// is decoded in one pass that checks each declared length against the
-    /// input before reading it. Any other input is decoded only after a
+    /// `envelope_bytes` is untrusted. An envelope laid out as `store` writes
+    /// one (a 4-element array of a bin payload, 8 uint8 checksum bytes, a
+    /// uint32 size and a str format), whatever width its lengths and size are
+    /// encoded in, is decoded in one pass that checks each declared length
+    /// against the input before reading it. Any other input is decoded only
+    /// after a
     /// structural pre-scan bounds its nesting depth and rejects any header
     /// that declares more than the input can back (protocol Retrieve Flow,
     /// step 2). A pre-scan rejection is `DeserializationFailed` whose message

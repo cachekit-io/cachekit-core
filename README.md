@@ -254,9 +254,10 @@ Malicious payloads claiming `original_size: 500GB` with 100 bytes of data are re
 <details>
 <summary><strong>Envelope Decode Bounds</strong></summary>
 
-`retrieve()` and `validate()` read an envelope in the shape `store()` writes in
-one pass, which checks each declared length against the input before reading it
-and allocates nothing until the whole envelope has been read. Every other input
+`retrieve()` and `validate()` read an envelope laid out as `store()` writes one,
+whatever width its lengths and size are encoded in, in one pass, which checks
+each declared length against the input before reading it and allocates nothing
+until the whole envelope has been read. Every other input
 gets a header-only structural pre-scan **before** MessagePack decoding: nesting
 deeper than 100 levels, headers declaring more elements or bytes than the input
 can back, the reserved marker `0xc1` and truncated input are all rejected
@@ -359,7 +360,7 @@ The Criterion suite in `benches/hot_path.rs` needs the `encryption` feature (`ma
 | Case | What one call does |
 |:-----|:-------------------|
 | `store/<size>`, `retrieve/<size>` | `ByteStorage::store` / `retrieve` on the realistic msgpack payload `hot_path` uses |
-| `prescan/<size>` | `check_msgpack_structure` on the envelope, the pre-scan `retrieve` runs on any envelope not in the shape `store` writes |
+| `prescan/<size>` | `check_msgpack_structure` on the envelope, the pre-scan `retrieve` runs on any envelope not laid out as `store` writes one |
 | `encrypt/<size>`, `decrypt/<size>` | `ZeroKnowledgeEncryptor` AES-256-GCM |
 | `keyring_decrypt/<size>` | `Keyring::decrypt_indexed`, which re-derives the tenant key (HKDF) on every call |
 | `tenant_keyring_decrypt/<size>` | `TenantKeyring::decrypt_indexed`, key derived once at `for_tenant` |
