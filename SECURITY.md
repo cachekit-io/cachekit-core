@@ -190,7 +190,8 @@ length. It accepts only envelopes the pre-scan and `rmp_serde` accept, into the
 same fields, which `one_pass_decode_matches_full_decode` and the
 `byte_storage_corrupted_envelope` fuzz target check. It hands every other
 input, including every input it would reject, to the pre-scan and `rmp_serde`,
-so every rejection carries the error below.
+so a rejection is theirs: a pre-scan rejection carries the error below, and an
+`rmp_serde` rejection is `DeserializationFailed` with `rmp_serde`'s message.
 
 The pre-scan rejects:
 
@@ -207,8 +208,8 @@ crate, would set how deep the decode recurses. All counts are `u64`, and the
 walk skips str/bin/ext payloads by offset: it allocates one `u64` per open
 collection and nothing proportional to a declared length.
 
-A rejection is `ByteStorageError::DeserializationFailed` with a message that
-starts with `decode pre-scan: `, the same variant as any other bytes that do
+A pre-scan rejection is `ByteStorageError::DeserializationFailed` with a message
+that starts with `decode pre-scan: `, the same variant as any other bytes that do
 not decode as an envelope, so bindings that map on the variant see no change.
 Trailing bytes after the envelope are still ignored, as before.
 

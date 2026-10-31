@@ -262,7 +262,7 @@ decoding: nesting
 deeper than 100 levels, headers declaring more elements or bytes than the input
 can back, the reserved marker `0xc1` and truncated input are all rejected
 before decoding, without allocating in proportion to any declared length. A
-rejection is `ByteStorageError::DeserializationFailed` with the message prefix
+pre-scan rejection is `ByteStorageError::DeserializationFailed` with the message prefix
 `decode pre-scan: `. The one-pass read accepts only envelopes the pre-scan and
 the typed decode accept, into the same fields, and leaves every rejection to
 them, so every input gets their result and error. The pre-scan's walk is public as

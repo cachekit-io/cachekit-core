@@ -765,10 +765,14 @@ pub fn assert_one_pass_matches_full_decode(envelope_bytes: &[u8]) -> (bool, bool
         }
         (None, _) => {}
     }
-    let expected = full
-        .as_ref()
-        .map_err(Clone::clone)
-        .and_then(|envelope| Ok((envelope.extract()?, envelope.format.clone())));
+    // `retrieve` refuses an input over the size cap before decoding it.
+    let expected = if envelope_bytes.len() > MAX_COMPRESSED_SIZE {
+        Err(ByteStorageError::InputTooLarge)
+    } else {
+        full.as_ref()
+            .map_err(Clone::clone)
+            .and_then(|envelope| Ok((envelope.extract()?, envelope.format.clone())))
+    };
     let retrieved = ByteStorage::new(None).retrieve(envelope_bytes);
     assert!(
         retrieved == expected,
