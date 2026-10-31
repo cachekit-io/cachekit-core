@@ -156,7 +156,7 @@ fn operation(case: &str) -> Box<dyn FnMut() -> usize> {
         "retrieve" => Box::new(move || storage.retrieve(black_box(&envelope)).unwrap().0.len()),
         // What the bindings call: retrieve without the format String. Under
         // fat LTO this second caller keeps decode_envelope out of line, which
-        // costs retrieve 68 to 77 Ir/op at 40 B to 1 KiB (README).
+        // costs retrieve 26 to 27 Ir/op at 40 B to 1 KiB (README).
         "retrieve_data" => {
             Box::new(move || storage.retrieve_data(black_box(&envelope)).unwrap().len())
         }
