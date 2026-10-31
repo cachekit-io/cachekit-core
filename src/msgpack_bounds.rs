@@ -79,13 +79,13 @@ pub fn check_msgpack_structure(
 /// Open collections the walk keeps on the call stack before it spills to the heap.
 const INLINE_LEVELS: usize = 8;
 
-/// Elements still owed per open collection, innermost last; its length is the
+/// Elements still owed per open collection, innermost last; `len` is the
 /// depth. The outermost [`INLINE_LEVELS`] live inline and deeper ones in
-/// `spill`, so a shallow document never allocates. `spill` is non-empty only
-/// while every inline slot is in use.
+/// `spill`, so a shallow document never allocates. `spill` holds exactly the
+/// levels past the inline ones.
 struct OpenCollections {
     inline: [u64; INLINE_LEVELS],
-    inline_len: usize,
+    len: usize,
     spill: Vec<u64>,
 }
 
@@ -93,36 +93,37 @@ impl OpenCollections {
     fn new() -> Self {
         Self {
             inline: [0; INLINE_LEVELS],
-            inline_len: 0,
+            len: 0,
             spill: Vec::new(),
         }
     }
 
     fn len(&self) -> usize {
-        self.inline_len + self.spill.len()
+        self.len
     }
 
     fn last_mut(&mut self) -> Option<&mut u64> {
-        if let Some(last) = self.spill.last_mut() {
-            return Some(last);
+        match self.len {
+            0 => None,
+            n @ 1..=INLINE_LEVELS => Some(&mut self.inline[n - 1]),
+            _ => self.spill.last_mut(),
         }
-        let i = self.inline_len.checked_sub(1)?;
-        Some(&mut self.inline[i])
     }
 
     fn push(&mut self, owed: u64) {
-        if self.inline_len < INLINE_LEVELS {
-            self.inline[self.inline_len] = owed;
-            self.inline_len += 1;
+        if self.len < INLINE_LEVELS {
+            self.inline[self.len] = owed;
         } else {
             self.spill.push(owed);
         }
+        self.len += 1;
     }
 
     fn pop(&mut self) {
-        if self.spill.pop().is_none() {
-            self.inline_len -= 1;
+        if self.len > INLINE_LEVELS {
+            self.spill.pop();
         }
+        self.len -= 1;
     }
 }
 
