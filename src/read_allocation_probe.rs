@@ -127,9 +127,9 @@ mod tests {
             let (envelope, original_size) = reject_vector(name);
             let (result, requested) = retrieve_counted(&envelope);
             assert_eq!(result.err(), Some(expected), "[{name}] wrong rejection");
-            // The read allocates (the pre-scan's nesting stack, and these
-            // vectors' legacy int-array payload), so a probe that
-            // sees nothing is not counting this thread's allocations.
+            // The read allocates (the pre-scan's nesting stack; these
+            // vectors' bin payload is borrowed), so a probe that sees
+            // nothing is not counting this thread's allocations.
             assert!(requested > 0, "[{name}] probe saw no allocation at all");
             assert!(
                 requested < original_size,
