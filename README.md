@@ -269,7 +269,7 @@ before decoding, without allocating in proportion to any declared length. A
 pre-scan rejection is `ByteStorageError::DeserializationFailed` with the message prefix
 `decode pre-scan: `. The one-pass read accepts only envelopes the pre-scan and
 the typed decode accept, into the same fields, and leaves every rejection to
-them, so every input gets their result and error. The pre-scan's walk is public as
+them, so every input within the size cap gets their result and error. The pre-scan's walk is public as
 `check_msgpack_structure(bytes, max_depth)` for callers that decode untrusted
 MessagePack themselves; it returns a `MsgpackStructureError` whose `Display` is
 the bare reason, with no prefix. `msgpack_document_len(bytes, max_depth)` runs

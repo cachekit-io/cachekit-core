@@ -136,11 +136,13 @@ mod tests {
             let (result, requested) = retrieve_counted(&envelope);
             assert_eq!(result.err(), Some(expected), "[{name}] wrong rejection");
             // The read allocates nothing here: the one-pass decode borrows
-            // these vectors' bin payload and their format. So check on its
-            // own that the probe counts this thread's allocations; one that
-            // does not would pass the bound below vacuously.
+            // these vectors' bin payload and their format. A zero count
+            // cannot show the probe was live, so this checks that it counts
+            // this thread's allocations, and `probe_catches_a_reserve_first_reader`
+            // shows that it counts them inside a read.
             let ((), live) = bytes_requested(|| drop(std::hint::black_box(vec![0u8; 1])));
             assert!(live > 0, "[{name}] probe saw no allocation at all");
+            assert_eq!(requested, 0, "[{name}] the read allocated");
             assert!(
                 requested < original_size,
                 "[{name}] the read requested {requested} B from the allocator, \
