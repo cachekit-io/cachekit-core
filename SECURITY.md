@@ -173,9 +173,9 @@ cover only those two proofs.
 ### Envelope decode bounds
 
 `ByteStorage::retrieve`, `ByteStorage::retrieve_data` and `ByteStorage::validate`
-decode envelope bytes that come from a backend the caller may not control. Before
-`rmp_serde` materialises a `StorageEnvelope`, all three run one decode path,
-`decode_envelope`, which runs a header-only structural pre-scan over those bytes
+decode envelope bytes that come from a backend the caller may not control. All
+three run one decode path, `decode_envelope`. Before `rmp_serde` materialises a
+`StorageEnvelope`, it runs a header-only structural pre-scan over those bytes
 (protocol `spec/wire-format.md` → Retrieve Flow, step 2; the bounds themselves
 are `spec/interop-mode.md` → Decode bounds).
 
