@@ -1471,6 +1471,15 @@ mod tests {
                 &bytes[..bytes.len().min(16)]
             );
         }
+        // `store` itself, either side of its hand-written literal envelope.
+        let storage = ByteStorage::new(None);
+        for len in [0, 1, 40, 63, 64, 1024] {
+            let stored = storage.store(&xorshift_bytes(len), None).unwrap();
+            assert!(
+                borrowed::StorageEnvelope::decode_one_pass(&stored).is_some(),
+                "declined store output for {len} B"
+            );
+        }
         let fixture: serde_json::Value =
             serde_json::from_str(include_str!("../tests/vectors/wire-format.json")).unwrap();
         for v in fixture["vectors"].as_array().unwrap() {
