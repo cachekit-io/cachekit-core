@@ -20,8 +20,15 @@
 //! `LARGE_PAYLOAD` allocates: `retrieve_data` requests only what the LZ4
 //! decoder does (the one-pass decode reads these envelopes without
 //! allocating), and `retrieve` adds the format `String` and nothing else. A
-//! legacy int-array payload, and a payload from `LARGE_PAYLOAD` up,
-//! are copied out of the input by design.
+//! payload from `LARGE_PAYLOAD` up is copied out of the input by design, but
+//! only once the envelope decode has accepted the envelope:
+//! `rejected_envelope_reads_do_not_copy_a_large_payload` checks that reading
+//! five such envelopes, each rejected by the decode in a later field,
+//! requests less than `LARGE_PAYLOAD`. An envelope the decode accepts is
+//! copied even when `extract_payload` then rejects it (a size cap, the ratio
+//! bound, a checksum mismatch). A legacy
+//! int-array payload is decoded into an owned buffer as it is read, so it is
+//! allocated whether or not the envelope is then accepted.
 //!
 //! The same count, [`bytes_requested`], also pins the write side: the
 //! `byte_storage` unit test `store_allocates_only_its_output_and_block` checks
@@ -151,6 +158,78 @@ mod tests {
                 "[{name}] the read requested {requested} B from the allocator, \
                  reaching original_size {original_size} B"
             );
+        }
+    }
+
+    /// The fallback decode copies a `bin` or `str` payload from
+    /// `LARGE_PAYLOAD` up out of the input only once it has accepted the
+    /// envelope, as the one-pass decode does. Each envelope here is a complete
+    /// document, so it passes the pre-scan and reaches `rmp_serde`, which
+    /// reads the payload before it finds the fault in a later field.
+    #[test]
+    fn rejected_envelope_reads_do_not_copy_a_large_payload() {
+        use crate::byte_storage::LARGE_PAYLOAD;
+
+        // bin32 at the copy threshold and past it, and str32 (zero bytes are
+        // valid UTF-8), which reaches the visitor's other borrowing method.
+        for (kind, marker, payload_len) in [
+            ("bin32", 0xc6, LARGE_PAYLOAD),
+            ("bin32", 0xc6, 2 * LARGE_PAYLOAD),
+            ("str32", 0xdb, LARGE_PAYLOAD),
+        ] {
+            let mut payload = vec![marker];
+            payload.extend_from_slice(&(payload_len as u32).to_be_bytes());
+            payload.resize(payload.len() + payload_len, 0);
+            let checksum = [0x98, 1, 2, 3, 4, 5, 6, 7, 8];
+            let short_checksum = [0x97, 1, 2, 3, 4, 5, 6, 7];
+            let size = [0x01];
+            let format = [0xa1, b'f'];
+            for (name, envelope) in [
+                (
+                    "ends before format",
+                    [&[0x93][..], &payload, &checksum, &size].concat(),
+                ),
+                (
+                    "trailing fifth element",
+                    [&[0x95][..], &payload, &checksum, &size, &format, &[0xc0]].concat(),
+                ),
+                (
+                    "integer format",
+                    [&[0x94][..], &payload, &checksum, &size, &[0x07]].concat(),
+                ),
+                (
+                    "invalid UTF-8 format",
+                    [&[0x94][..], &payload, &checksum, &size, &[0xa1, 0xff]].concat(),
+                ),
+                (
+                    "7-byte checksum",
+                    [&[0x94][..], &payload, &short_checksum, &size, &format].concat(),
+                ),
+            ] {
+                let storage = ByteStorage::new(None);
+                let (full, full_requested) = bytes_requested(|| storage.retrieve(&envelope));
+                let (data, data_requested) = bytes_requested(|| storage.retrieve_data(&envelope));
+                for (call, err, requested) in [
+                    ("retrieve", full.err(), full_requested),
+                    ("retrieve_data", data.err(), data_requested),
+                ] {
+                    let label = format!("[{name}, {payload_len} B {kind} payload] {call}");
+                    let Some(ByteStorageError::DeserializationFailed(msg)) = err else {
+                        panic!("{label}: expected DeserializationFailed, got {err:?}");
+                    };
+                    // A pre-scan rejection never reaches the payload decode,
+                    // so the count below would pass whatever it does.
+                    assert!(
+                        !msg.starts_with("decode pre-scan: "),
+                        "{label}: rejected by the pre-scan, not rmp_serde: {msg}"
+                    );
+                    assert!(
+                        requested < LARGE_PAYLOAD,
+                        "{label}: requested {requested} B from the allocator, \
+                         reaching LARGE_PAYLOAD ({msg})"
+                    );
+                }
+            }
         }
     }
 
