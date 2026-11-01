@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.5](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.7.4...cachekit-core-v0.7.5) (2026-11-01)
+
+
+### Bug Fixes
+
+* **byte-storage:** copy a large payload only after the fallback decode accepts the envelope (LAB-12208) ([#154](https://github.com/cachekit-io/cachekit-core/issues/154)) ([ed96949](https://github.com/cachekit-io/cachekit-core/commit/ed969493a926cfa9c0f6b4c1759e6a1497e6167c))
+
+
+### Performance Improvements
+
+* **bench:** gate perf_ir at 40 B and 1 MiB with page faults, re-ratchet budgets (LAB-12098) ([#149](https://github.com/cachekit-io/cachekit-core/issues/149)) ([c03101f](https://github.com/cachekit-io/cachekit-core/commit/c03101f732c9ed84e45ace93ee70e83a339d5021))
+* **bench:** gate retrieve_data in perf_ir (LAB-12133) ([619bc00](https://github.com/cachekit-io/cachekit-core/commit/619bc0088c71ac6d1da7403671c1022ba6fa4c5a))
+* **byte-storage:** add retrieve_data so bindings skip the format String (LAB-12101) ([#146](https://github.com/cachekit-io/cachekit-core/issues/146)) ([9f76137](https://github.com/cachekit-io/cachekit-core/commit/9f76137df6045e78ec8e197988b542b2302f18c1))
+* **byte-storage:** decode the envelope in one bounded pass on retrieve (LAB-12100) ([#150](https://github.com/cachekit-io/cachekit-core/issues/150)) ([a55af62](https://github.com/cachekit-io/cachekit-core/commit/a55af6260eda7598ec01b0662751446ff58d37ad))
+* **byte-storage:** write sub-64 B envelopes in one pass and stop cloning the format per store (LAB-12102) ([#148](https://github.com/cachekit-io/cachekit-core/issues/148)) ([39f17c8](https://github.com/cachekit-io/cachekit-core/commit/39f17c80b5ef71e0d0fffb05c7d36f04b68a7cd4))
+* **msgpack-bounds:** walk shallow documents without allocating the nesting stack (LAB-12134) ([#152](https://github.com/cachekit-io/cachekit-core/issues/152)) ([0c872f6](https://github.com/cachekit-io/cachekit-core/commit/0c872f65bb2365b81bae818a611e8160669da84a))
+
 ## [0.7.4](https://github.com/cachekit-io/cachekit-core/compare/cachekit-core-v0.7.3...cachekit-core-v0.7.4) (2026-10-29)
 
 
