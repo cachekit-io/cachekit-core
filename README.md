@@ -39,18 +39,15 @@
 | `encryption` | AES-256-GCM ([`ring`](https://crates.io/crates/ring) on native, [`aes-gcm`](https://crates.io/crates/aes-gcm) on wasm32) + HKDF-SHA256 ([`hkdf`](https://crates.io/crates/hkdf)) | ❌ |
 | `ffi` | C header generation | ❌ |
 
-```toml
-# Cargo.toml - defaults only
-[dependencies]
-cachekit-core = "0.1"
+```bash
+# Defaults only
+cargo add cachekit-core
 
 # With encryption
-[dependencies]
-cachekit-core = { version = "0.1", features = ["encryption"] }
+cargo add cachekit-core --features encryption
 
 # For C FFI development
-[dependencies]
-cachekit-core = { version = "0.1", features = ["ffi", "encryption"] }
+cargo add cachekit-core --features ffi,encryption
 ```
 
 ---
