@@ -87,10 +87,12 @@ pub(crate) const LARGE_PAYLOAD: usize = 64 * 1024;
 /// path's wall time, and a compressible value pays for it in size. Measured
 /// against the encoder, small structured values grew 16% to 84% (a JSON
 /// record, feature flags, a MessagePack list of maps, a repeated UUID),
-/// padding and byte runs up to 4.25 times (127 bytes of one byte: a 36-byte
-/// envelope became 153 bytes), and random bytes not at all. The cost is
-/// bounded: at most 117 bytes per value, since the literal envelope of a
-/// 127-byte input is 153 bytes. The bench corpus (MessagePack records about
+/// padding and byte runs up to about 4.5 times, and random bytes not at all.
+/// Envelope lengths vary by a few bytes with the checksum, whose bytes
+/// MessagePack writes in 1 or 2 bytes each, so these are examples: 127 bytes of
+/// one byte went from 34 to 36 bytes to 151 to 158. The growth itself is at
+/// most 117 bytes per value, the most a sweep of every repeated-byte input
+/// from 64 to 127 bytes reached. The bench corpus (MessagePack records about
 /// 130 bytes long, `benches/common`) shows only +0.2% below 128 bytes,
 /// because a slice that short sits inside one record; past one record it
 /// shows +4% at 144 bytes and +28% at 256.
