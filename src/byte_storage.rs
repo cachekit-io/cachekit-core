@@ -83,13 +83,21 @@ pub(crate) const LARGE_PAYLOAD: usize = 64 * 1024;
 /// are not canonical (protocol `spec/wire-format.md`, "Compressed-byte
 /// reproducibility"), and every reader decodes a literals-only block.
 ///
-/// The threshold sits where that price starts. On the bench corpus (a stream
-/// of MessagePack records about 130 bytes long, `benches/common`), a value
-/// under 128 bytes rarely repeats anything LZ4 can match: its envelope was
-/// 0.2% bigger on average as a literal block, while the store took about a
-/// fifth of the encoder path's wall time from 64 to 127 bytes. From the second
-/// record on, the encoder finds matches: the literal block would cost 4% at
-/// 144 bytes and 28% at 256, so the encoder keeps those.
+/// From 64 to 127 bytes the literal block takes about a fifth of the encoder
+/// path's wall time, and a compressible value pays for it in size. Measured
+/// against the encoder, small structured values grew 16% to 84% (a JSON
+/// record, feature flags, a MessagePack list of maps, a repeated UUID),
+/// padding and byte runs up to 4.25 times (127 bytes of one byte: a 36-byte
+/// envelope became 153 bytes), and random bytes not at all. The cost is
+/// bounded: at most 117 bytes per value, since the literal envelope of a
+/// 127-byte input is 153 bytes. The bench corpus (MessagePack records about
+/// 130 bytes long, `benches/common`) shows only +0.2% below 128 bytes,
+/// because a slice that short sits inside one record; past one record it
+/// shows +4% at 144 bytes and +28% at 256.
+///
+/// 128 is also the most `encode_literal_envelope`'s fixed widths allow (the
+/// `<= 0x80` assert below): a higher threshold needs a wider envelope writer
+/// as well as a size decision, so do not tune it up on corpus figures alone.
 #[cfg(feature = "compression")]
 const LITERAL_BLOCK_THRESHOLD: usize = 128;
 
@@ -220,7 +228,8 @@ fn compress_with_thread_table(data: &[u8]) -> Result<Vec<u8>, ByteStorageError> 
 // `retrieve`, `retrieve_data` and `validate` decode into its private borrowing twin,
 // `borrowed::StorageEnvelope`, whose `decode_one_pass` hard-codes this field
 // order and these encodings. `store` encodes from another, `EnvelopeRef`,
-// and writes the same bytes by hand for an input under 128 bytes with a format
+// and writes the same bytes by hand for an input under
+// `LITERAL_BLOCK_THRESHOLD` with a format
 // of at most 255 bytes (`encode_literal_envelope`, sized by
 // `envelope_encoded_len`). Change all of them together;
 // `literal_envelope_matches_rmp_serde`, `encoded_len_matches_rmp_serde` and
@@ -244,6 +253,9 @@ pub struct StorageEnvelope {
 
 impl StorageEnvelope {
     /// Create new envelope with data compression and checksum.
+    ///
+    /// An input under 128 bytes is not compressed: it is written as one
+    /// literals-only LZ4 block, the input plus 1 or 2 bytes.
     ///
     /// Takes the input by shared slice: it is only compressed and hashed (both
     /// borrow), never retained, so there is no reason to own it. Avoids a
@@ -328,7 +340,7 @@ impl StorageEnvelope {
 
 /// `data`'s LZ4 block and checksum, with the input and block size checks.
 /// `StorageEnvelope::new` and `store`'s general path call it; the
-/// sub-128-byte envelope `encode_literal_envelope` writes is too small to need
+/// sub-[`LITERAL_BLOCK_THRESHOLD`] envelope `encode_literal_envelope` writes is too small to need
 /// them.
 #[cfg(all(feature = "compression", feature = "checksum"))]
 fn compress_and_checksum(data: &[u8]) -> Result<(Vec<u8>, [u8; 8]), ByteStorageError> {
@@ -462,7 +474,7 @@ fn envelope_encoded_len(
 /// far below every size cap, so it needs none of `compress_and_checksum`'s
 /// checks.
 ///
-/// `None` for an input of 128 bytes or more, or a format string longer than
+/// `None` for an input of [`LITERAL_BLOCK_THRESHOLD`] bytes or more, or a format string longer than
 /// 255 bytes: `store` then takes its general path, which writes the same
 /// bytes.
 #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
@@ -602,7 +614,10 @@ impl ByteStorage {
 
     /// Store arbitrary bytes with compression and checksums
     ///
-    /// Returns serialized StorageEnvelope bytes
+    /// Returns serialized StorageEnvelope bytes. An input under 128 bytes is
+    /// not compressed: it is written as one literals-only LZ4 block, the input
+    /// plus 1 or 2 bytes, which is faster than running the compressor and
+    /// costs at most 117 bytes of envelope over it.
     #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
     pub fn store(&self, data: &[u8], format: Option<String>) -> Result<Vec<u8>, ByteStorageError> {
         // Security: Check input size before processing

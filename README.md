@@ -471,12 +471,13 @@ pull request.
 **Give small values their own path.** Most cached values are small, and a fixed per-call cost
 dominates them. Below 128 B, `store` writes one literals-only LZ4 block instead of running the
 compressor, which zeroes its 8 KiB hash table on every call and then searches for matches: −80.8%
-instructions on a 63 B store ([#128]), and −95.0% instructions and about −81% wall time on a
-64 B store when the threshold rose from 64 B to 128 B ([#156]). The trade: compressible inputs
-under 128 B are stored uncompressed and grow; the threshold sits where the bench corpus shows that
-starting to cost (`LITERAL_BLOCK_THRESHOLD`'s rustdoc, [#156]). From 128 B to under 4 KiB, the
-compressor reuses one hash table and one output scratch per thread ([#144]). A change that branches
-on a size threshold measures each side of it, adding `make perf-ir` cases where the
+instructions on a 63 B store ([#128]), and −95.1% on a 64 B store (10,551 → 515 Ir/op) when the
+threshold rose from 64 B to 128 B ([#156]). The trade: compressible inputs under 128 B are stored
+uncompressed and grow, by 16% to 84% for small JSON and MessagePack records and up to 4.25 times
+for padding and byte runs, at most 117 B per value (`LITERAL_BLOCK_THRESHOLD`'s rustdoc). 128 B is
+also the most the one-pass literal envelope writer allows. From 128 B to under 4 KiB, the
+compressor reuses one hash table and one output scratch per thread ([#144]). A change that
+branches on a size threshold measures each side of it, adding `make perf-ir` cases where the
 [size list](#instruction-counts) misses one, as [#128], [#144] and [#156] did.
 Per-thread reuse has its own traps, all from [#144]:
 
