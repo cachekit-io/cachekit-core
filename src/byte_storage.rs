@@ -87,8 +87,7 @@ pub(crate) const LARGE_PAYLOAD: usize = 64 * 1024;
 /// of MessagePack records about 130 bytes long, `benches/common`), a value
 /// under 128 bytes rarely repeats anything LZ4 can match: its envelope was
 /// 0.2% bigger on average as a literal block, while the store took about a
-/// fifth of the encoder path's wall time from 64 to 127 bytes (515 against
-/// 10,398 instructions at 64 bytes, `make perf-ir`). From the second
+/// fifth of the encoder path's wall time from 64 to 127 bytes. From the second
 /// record on, the encoder finds matches: the literal block would cost 4% at
 /// 144 bytes and 28% at 256, so the encoder keeps those.
 #[cfg(feature = "compression")]
@@ -1100,7 +1099,7 @@ mod tests {
             LITERAL_BLOCK_THRESHOLD - 1,
             LITERAL_BLOCK_THRESHOLD,
             LITERAL_BLOCK_THRESHOLD + 1,
-            100,
+            200,
             1000,
             4103,
         ] {
@@ -1554,7 +1553,14 @@ mod tests {
         }
         // `store` itself, either side of its hand-written literal envelope.
         let storage = ByteStorage::new(None);
-        for len in [0, 1, 40, 63, 64, 1024] {
+        for len in [
+            0,
+            1,
+            40,
+            LITERAL_BLOCK_THRESHOLD - 1,
+            LITERAL_BLOCK_THRESHOLD,
+            1024,
+        ] {
             let stored = storage.store(&xorshift_bytes(len), None).unwrap();
             assert!(
                 borrowed::StorageEnvelope::decode_one_pass(&stored).is_some(),
@@ -1793,8 +1799,8 @@ mod tests {
         // (input, whether its envelope is at or above LARGE_PAYLOAD)
         for (data, large) in [
             (vec![], false),
-            (vec![b'a'; 63], false),
-            (vec![b'a'; 64], false),
+            (vec![b'a'; LITERAL_BLOCK_THRESHOLD - 1], false),
+            (vec![b'a'; LITERAL_BLOCK_THRESHOLD], false),
             ((0..70_000).map(|i| (i * 7919 % 251) as u8).collect(), false),
             // either side of the gate: LZ4 adds ~257 length bytes to a literal run
             (xorshift_bytes(LARGE_PAYLOAD - 512), false),
@@ -1879,7 +1885,15 @@ mod tests {
         let storage = ByteStorage::new(None);
         // Warm this thread's LZ4 table and scratch, allocated on first use
         storage.store(&xorshift_bytes(1024), None).unwrap();
-        for len in [0, 14, 15, 40, 63, 64, 1024] {
+        for len in [
+            0,
+            14,
+            15,
+            40,
+            LITERAL_BLOCK_THRESHOLD - 1,
+            LITERAL_BLOCK_THRESHOLD,
+            1024,
+        ] {
             let data = xorshift_bytes(len);
             for format in [None, Some("msgpack".to_string())] {
                 let (stored, requested) = bytes_requested(|| storage.store(&data, format).unwrap());

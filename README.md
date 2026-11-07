@@ -473,13 +473,11 @@ dominates them. Below 128 B, `store` writes one literals-only LZ4 block instead 
 compressor, which zeroes its 8 KiB hash table on every call and then searches for matches: −80.8%
 instructions on a 63 B store ([#128]), and −95.0% instructions and about −81% wall time on a
 64 B store when the threshold rose from 64 B to 128 B ([#156]). The trade: compressible inputs
-under 128 B are stored uncompressed and grow. The threshold sits where that trade starts to cost:
-on the bench corpus a value under 128 B rarely holds a repeat, and its envelope grew 0.2% on
-average, while the literal block would cost 4% at 144 B and 28% at 256 B. From 128 B to under
-4 KiB, the compressor reuses one hash table and one output scratch per thread: −27.5% on a 64 B
-store ([#144]), which then still took that path. `make perf-ir` measures `store`, `retrieve` and
-`retrieve_data` at 40 B, 64 B, 128 B, 1 KiB, 64 KiB and 1 MiB, so a change that branches on a
-size threshold adds a case on any side of it those sizes miss, as [#128] and [#144] did.
+under 128 B are stored uncompressed and grow; the threshold sits where the bench corpus shows that
+starting to cost (`LITERAL_BLOCK_THRESHOLD`'s rustdoc, [#156]). From 128 B to under 4 KiB, the
+compressor reuses one hash table and one output scratch per thread ([#144]). A change that branches
+on a size threshold measures each side of it, adding `make perf-ir` cases where the
+[size list](#instruction-counts) misses one, as [#128], [#144] and [#156] did.
 Per-thread reuse has its own traps, all from [#144]:
 
 - Reuse stopped paying at about 6 KiB, because the copy out grows with the block while the saving
