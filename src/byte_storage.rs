@@ -72,17 +72,36 @@ const MAX_COMPRESSION_RATIO: u64 = 1000;
 pub(crate) const LARGE_PAYLOAD: usize = 64 * 1024;
 
 /// Inputs shorter than this are written as one literals-only LZ4 block instead
-/// of going through `lz4_flex::compress`.
+/// of going through the LZ4 encoder.
 ///
-/// `lz4_flex::compress` zeroes an 8 KiB hash table on every call, which costs
-/// more than the whole store for a tiny value, and below LZ4's 13-byte minimum
-/// its output is literals-only anyway. The price is stored size: a compressible
-/// input under the threshold is no longer shrunk; its block is the input plus
-/// 1 byte (plus 2 from 15 bytes up). Compressed bytes are not canonical
-/// (protocol `spec/wire-format.md`, "Compressed-byte reproducibility"), and
-/// every reader decodes a literals-only block.
+/// The encoder zeroes an 8 KiB hash table on every call, even the reused one
+/// (`compress_into_with_table` clears it), then searches for matches. For a
+/// small value both cost more than the rest of the store, and below LZ4's
+/// 13-byte minimum its output is literals-only anyway. The price is stored
+/// size: a compressible input under the threshold is no longer shrunk; its
+/// block is the input plus 1 byte (plus 2 from 15 bytes up). Compressed bytes
+/// are not canonical (protocol `spec/wire-format.md`, "Compressed-byte
+/// reproducibility"), and every reader decodes a literals-only block.
+///
+/// From 64 to 127 bytes the literal block takes about a fifth of the encoder
+/// path's wall time, and a compressible value pays for it in size. Measured
+/// against the encoder, small structured values grew 16% to 84% (a JSON
+/// record, feature flags, a MessagePack list of maps, a repeated UUID),
+/// padding and byte runs up to about 4.5 times, and random bytes not at all.
+/// Envelope lengths vary by a few bytes with the checksum, whose bytes
+/// MessagePack writes in 1 or 2 bytes each, so these are examples: 127 bytes of
+/// one byte went from 34 to 36 bytes to 151 to 158. The growth itself is at
+/// most 117 bytes per value, the most a sweep of every repeated-byte input
+/// from 64 to 127 bytes reached. The bench corpus (MessagePack records about
+/// 130 bytes long, `benches/common`) shows only +0.2% below 128 bytes,
+/// because a slice that short sits inside one record; past one record it
+/// shows +4% at 144 bytes and +28% at 256.
+///
+/// 128 is also the most `encode_literal_envelope`'s fixed widths allow (the
+/// `<= 0x80` assert below): a higher threshold needs a wider envelope writer
+/// as well as a size decision, so do not tune it up on corpus figures alone.
 #[cfg(feature = "compression")]
-const LITERAL_BLOCK_THRESHOLD: usize = 64;
+const LITERAL_BLOCK_THRESHOLD: usize = 128;
 
 // The literal block writes the length in at most one extra byte, which holds
 // for literal lengths up to 15 + 254.
@@ -211,7 +230,8 @@ fn compress_with_thread_table(data: &[u8]) -> Result<Vec<u8>, ByteStorageError> 
 // `retrieve`, `retrieve_data` and `validate` decode into its private borrowing twin,
 // `borrowed::StorageEnvelope`, whose `decode_one_pass` hard-codes this field
 // order and these encodings. `store` encodes from another, `EnvelopeRef`,
-// and writes the same bytes by hand for an input under 64 bytes with a format
+// and writes the same bytes by hand for an input under
+// `LITERAL_BLOCK_THRESHOLD` with a format
 // of at most 255 bytes (`encode_literal_envelope`, sized by
 // `envelope_encoded_len`). Change all of them together;
 // `literal_envelope_matches_rmp_serde`, `encoded_len_matches_rmp_serde` and
@@ -235,6 +255,9 @@ pub struct StorageEnvelope {
 
 impl StorageEnvelope {
     /// Create new envelope with data compression and checksum.
+    ///
+    /// An input under 128 bytes is not compressed: it is written as one
+    /// literals-only LZ4 block, the input plus 1 or 2 bytes.
     ///
     /// Takes the input by shared slice: it is only compressed and hashed (both
     /// borrow), never retained, so there is no reason to own it. Avoids a
@@ -319,7 +342,7 @@ impl StorageEnvelope {
 
 /// `data`'s LZ4 block and checksum, with the input and block size checks.
 /// `StorageEnvelope::new` and `store`'s general path call it; the
-/// sub-64-byte envelope `encode_literal_envelope` writes is too small to need
+/// sub-[`LITERAL_BLOCK_THRESHOLD`] envelope `encode_literal_envelope` writes is too small to need
 /// them.
 #[cfg(all(feature = "compression", feature = "checksum"))]
 fn compress_and_checksum(data: &[u8]) -> Result<(Vec<u8>, [u8; 8]), ByteStorageError> {
@@ -449,11 +472,11 @@ fn envelope_encoded_len(
 /// written in one pass into a `Vec` allocated once at its final length: the
 /// literals-only block goes straight into the `bin` field, so no block is
 /// allocated and copied. The bytes are `rmp_serde`'s for the same envelope
-/// (`literal_envelope_matches_rmp_serde`). The envelope is at most 343 bytes,
+/// (`literal_envelope_matches_rmp_serde`). The envelope is at most 407 bytes,
 /// far below every size cap, so it needs none of `compress_and_checksum`'s
 /// checks.
 ///
-/// `None` for an input of 64 bytes or more, or a format string longer than
+/// `None` for an input of [`LITERAL_BLOCK_THRESHOLD`] bytes or more, or a format string longer than
 /// 255 bytes: `store` then takes its general path, which writes the same
 /// bytes.
 #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
@@ -593,7 +616,10 @@ impl ByteStorage {
 
     /// Store arbitrary bytes with compression and checksums
     ///
-    /// Returns serialized StorageEnvelope bytes
+    /// Returns serialized StorageEnvelope bytes. An input under 128 bytes is
+    /// not compressed: it is written as one literals-only LZ4 block, the input
+    /// plus 1 or 2 bytes, which is faster than running the compressor and
+    /// costs at most 117 bytes of envelope over it.
     #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
     pub fn store(&self, data: &[u8], format: Option<String>) -> Result<Vec<u8>, ByteStorageError> {
         // Security: Check input size before processing
@@ -1090,7 +1116,7 @@ mod tests {
             LITERAL_BLOCK_THRESHOLD - 1,
             LITERAL_BLOCK_THRESHOLD,
             LITERAL_BLOCK_THRESHOLD + 1,
-            100,
+            200,
             1000,
             4103,
         ] {
@@ -1114,7 +1140,7 @@ mod tests {
         // class input: the shared table must not have been upgraded by it.
         let sizes = [
             LITERAL_BLOCK_THRESHOLD,
-            100,
+            200,
             1024,
             2048,
             TABLE_REUSE_LIMIT - 1,
@@ -1544,7 +1570,14 @@ mod tests {
         }
         // `store` itself, either side of its hand-written literal envelope.
         let storage = ByteStorage::new(None);
-        for len in [0, 1, 40, 63, 64, 1024] {
+        for len in [
+            0,
+            1,
+            40,
+            LITERAL_BLOCK_THRESHOLD - 1,
+            LITERAL_BLOCK_THRESHOLD,
+            1024,
+        ] {
             let stored = storage.store(&xorshift_bytes(len), None).unwrap();
             assert!(
                 borrowed::StorageEnvelope::decode_one_pass(&stored).is_some(),
@@ -1783,8 +1816,8 @@ mod tests {
         // (input, whether its envelope is at or above LARGE_PAYLOAD)
         for (data, large) in [
             (vec![], false),
-            (vec![b'a'; 63], false),
-            (vec![b'a'; 64], false),
+            (vec![b'a'; LITERAL_BLOCK_THRESHOLD - 1], false),
+            (vec![b'a'; LITERAL_BLOCK_THRESHOLD], false),
             ((0..70_000).map(|i| (i * 7919 % 251) as u8).collect(), false),
             // either side of the gate: LZ4 adds ~257 length bytes to a literal run
             (xorshift_bytes(LARGE_PAYLOAD - 512), false),
@@ -1869,7 +1902,15 @@ mod tests {
         let storage = ByteStorage::new(None);
         // Warm this thread's LZ4 table and scratch, allocated on first use
         storage.store(&xorshift_bytes(1024), None).unwrap();
-        for len in [0, 14, 15, 40, 63, 64, 1024] {
+        for len in [
+            0,
+            14,
+            15,
+            40,
+            LITERAL_BLOCK_THRESHOLD - 1,
+            LITERAL_BLOCK_THRESHOLD,
+            1024,
+        ] {
             let data = xorshift_bytes(len);
             for format in [None, Some("msgpack".to_string())] {
                 let (stored, requested) = bytes_requested(|| storage.store(&data, format).unwrap());
