@@ -341,7 +341,7 @@ Single-threaded time per call of cachekit-core's own operations, and the payload
 | `encrypt_aes_gcm` | 526 ns · 1.95 GB/s | 13.79 µs · 4.75 GB/s |
 | `decrypt_aes_gcm` | 568 ns · 1.80 GB/s | 13.26 µs · 4.94 GB/s |
 
-- `store` compresses with LZ4 (an input under 64 bytes is written as one literals-only LZ4 block, without running the compressor; with a format of at most 255 bytes it goes straight into the envelope, so its store allocates only the returned bytes; from 64 bytes to under 4 KiB the compressor reuses one 8 KiB hash table and one 4,524-byte output buffer per thread, kept for the life of the thread), checksums with xxHash3-64 and wraps both in the MessagePack envelope. `retrieve` checks the envelope, decompresses and verifies the checksum.
+- `store` compresses with LZ4 (an input under 128 bytes is written as one literals-only LZ4 block, without running the compressor; with a format of at most 255 bytes it goes straight into the envelope, so its store allocates only the returned bytes; from 128 bytes to under 4 KiB the compressor reuses one 8 KiB hash table and one 4,524-byte output buffer per thread, kept for the life of the thread), checksums with xxHash3-64 and wraps both in the MessagePack envelope. `retrieve` checks the envelope, decompresses and verifies the checksum.
 - `encrypt_aes_gcm` and `decrypt_aes_gcm` are `ZeroKnowledgeEncryptor`'s AES-256-GCM calls with a 34-byte AAD.
 - The payload is MessagePack-encoded records (`benches/common/mod.rs`), the corpus `hot_path` and `perf_ir` also use. LZ4 compresses it to 0.57 of its size at 1 KiB and to 0.38 at 64 KiB.
 - Each figure is the median of 21 timed batches, from one run on the CPU named. Two runs of this code on the EPYC 7763 agreed within 2% on every cell but one (`decrypt_aes_gcm` at 64 KiB, 23%); three arm64 runs varied by up to 30% on a cell.
@@ -371,7 +371,7 @@ The Criterion suite in `benches/hot_path.rs` needs the `encryption` feature (`ma
 | `tenant_keyring_decrypt/<size>` | `TenantKeyring::decrypt_indexed`, key derived once at `for_tenant` |
 | `hkdf` | `derive_domain_key` (takes no payload, so it has no size) |
 
-Sizes are 64 B, 1 KiB and 64 KiB. `store`, `retrieve` and `retrieve_data` also run at 40 B, below the 64-byte literals-only block threshold, and at 1 MiB. `ByteStorage` switches to its copying allocation pattern once the envelope or the compressed payload reaches 64 KiB. The 64 KiB payload compresses to a 24,702-byte envelope and never gets there; the 1 MiB one compresses to 383,893 bytes. One case at a time: `make perf-ir ARGS="--case store/1024"`. The bench binary is built with fat LTO, so its cases shape each other's code. Because both `retrieve` and `retrieve_data` call the envelope decode, it stays out of line, and `retrieve` costs 26 to 27 Ir/op more at 40 B to 1 KiB (2.8% at 40 B, rustc 1.99.1) than in a binary that calls `retrieve` alone. A consumer that calls only one of the two gets the decode inlined.
+Sizes are 64 B, 1 KiB and 64 KiB. `store`, `retrieve` and `retrieve_data` also run at 40 B and at 128 B, the first size the LZ4 encoder takes (40 B and 64 B sit below the 128-byte literals-only block threshold), and at 1 MiB. `ByteStorage` switches to its copying allocation pattern once the envelope or the compressed payload reaches 64 KiB. The 64 KiB payload compresses to a 24,702-byte envelope and never gets there; the 1 MiB one compresses to 383,893 bytes. One case at a time: `make perf-ir ARGS="--case store/1024"`. The bench binary is built with fat LTO, so its cases shape each other's code. Because both `retrieve` and `retrieve_data` call the envelope decode, it stays out of line, and `retrieve` costs 26 to 27 Ir/op more at 40 B to 1 KiB (2.8% at 40 B, rustc 1.99.1) than in a binary that calls `retrieve` alone. A consumer that calls only one of the two gets the decode inlined.
 
 **Method** (`benches/perf_ir.rs`): each case runs in its own process under `valgrind --tool=cachegrind --cache-sim=no`, once with N calls and once with none, after the same setup and one warm-up call. N is 1,000, or 20 for a 1 MiB case. Ir/op is `(Ir[N] - Ir[0]) / N`, so process start, setup and exit cancel. The counts are exact, so N sets the run time, not the precision. The measured process gets an empty environment, so neither the shell nor a `VALGRIND_OPTS` changes what is counted.
 
@@ -469,12 +469,17 @@ it. Measure as [Instruction counts](#instruction-counts) describes, and put the 
 pull request.
 
 **Give small values their own path.** Most cached values are small, and a fixed per-call cost
-dominates them. Below 64 B, `store` writes one literals-only LZ4 block instead of running the
-compressor, which zeroes its hash table on every call: −80.8% instructions on a 63 B store
-([#128]). The trade: compressible inputs under 64 B are stored uncompressed and grow. From 64 B
-to under 4 KiB, the compressor reuses one hash table and one output scratch per thread: −27.5% on
-a 64 B store ([#144]). `make perf-ir` has no case below 64 B or above 64 KiB, so a change that
-branches on size also measures each side of its threshold and 1 MiB, as [#128] and [#144] did.
+dominates them. Below 128 B, `store` writes one literals-only LZ4 block instead of running the
+compressor, which zeroes its 8 KiB hash table on every call and then searches for matches: −80.8%
+instructions on a 63 B store ([#128]), and −95.0% instructions and about −81% wall time on a
+64 B store when the threshold rose from 64 B to 128 B ([#156]). The trade: compressible inputs
+under 128 B are stored uncompressed and grow. The threshold sits where that trade starts to cost:
+on the bench corpus a value under 128 B rarely holds a repeat, and its envelope grew 0.2% on
+average, while the literal block would cost 4% at 144 B and 28% at 256 B. From 128 B to under
+4 KiB, the compressor reuses one hash table and one output scratch per thread: −27.5% on a 64 B
+store ([#144]), which then still took that path. `make perf-ir` measures `store`, `retrieve` and
+`retrieve_data` at 40 B, 64 B, 128 B, 1 KiB, 64 KiB and 1 MiB, so a change that branches on a
+size threshold adds a case on any side of it those sizes miss, as [#128] and [#144] did.
 Per-thread reuse has its own traps, all from [#144]:
 
 - Reuse stopped paying at about 6 KiB, because the copy out grows with the block while the saving
@@ -550,6 +555,7 @@ change. [#131] changed `store` and [#132] `retrieve`. [#144] says wasm32 was not
 [#131]: https://github.com/cachekit-io/cachekit-core/pull/131
 [#132]: https://github.com/cachekit-io/cachekit-core/pull/132
 [#144]: https://github.com/cachekit-io/cachekit-core/pull/144
+[#156]: https://github.com/cachekit-io/cachekit-core/pull/156
 [cachekit-rs#185]: https://github.com/cachekit-io/cachekit-rs/pull/185
 
 ## License

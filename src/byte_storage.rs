@@ -72,17 +72,27 @@ const MAX_COMPRESSION_RATIO: u64 = 1000;
 pub(crate) const LARGE_PAYLOAD: usize = 64 * 1024;
 
 /// Inputs shorter than this are written as one literals-only LZ4 block instead
-/// of going through `lz4_flex::compress`.
+/// of going through the LZ4 encoder.
 ///
-/// `lz4_flex::compress` zeroes an 8 KiB hash table on every call, which costs
-/// more than the whole store for a tiny value, and below LZ4's 13-byte minimum
-/// its output is literals-only anyway. The price is stored size: a compressible
-/// input under the threshold is no longer shrunk; its block is the input plus
-/// 1 byte (plus 2 from 15 bytes up). Compressed bytes are not canonical
-/// (protocol `spec/wire-format.md`, "Compressed-byte reproducibility"), and
-/// every reader decodes a literals-only block.
+/// The encoder zeroes an 8 KiB hash table on every call, even the reused one
+/// (`compress_into_with_table` clears it), then searches for matches. For a
+/// small value both cost more than the rest of the store, and below LZ4's
+/// 13-byte minimum its output is literals-only anyway. The price is stored
+/// size: a compressible input under the threshold is no longer shrunk; its
+/// block is the input plus 1 byte (plus 2 from 15 bytes up). Compressed bytes
+/// are not canonical (protocol `spec/wire-format.md`, "Compressed-byte
+/// reproducibility"), and every reader decodes a literals-only block.
+///
+/// The threshold sits where that price starts. On the bench corpus (a stream
+/// of MessagePack records about 130 bytes long, `benches/common`), a value
+/// under 128 bytes rarely repeats anything LZ4 can match: its envelope was
+/// 0.2% bigger on average as a literal block, while the store took about a
+/// fifth of the encoder path's wall time from 64 to 127 bytes (515 against
+/// 10,398 instructions at 64 bytes, `make perf-ir`). From the second
+/// record on, the encoder finds matches: the literal block would cost 4% at
+/// 144 bytes and 28% at 256, so the encoder keeps those.
 #[cfg(feature = "compression")]
-const LITERAL_BLOCK_THRESHOLD: usize = 64;
+const LITERAL_BLOCK_THRESHOLD: usize = 128;
 
 // The literal block writes the length in at most one extra byte, which holds
 // for literal lengths up to 15 + 254.
@@ -211,7 +221,7 @@ fn compress_with_thread_table(data: &[u8]) -> Result<Vec<u8>, ByteStorageError> 
 // `retrieve`, `retrieve_data` and `validate` decode into its private borrowing twin,
 // `borrowed::StorageEnvelope`, whose `decode_one_pass` hard-codes this field
 // order and these encodings. `store` encodes from another, `EnvelopeRef`,
-// and writes the same bytes by hand for an input under 64 bytes with a format
+// and writes the same bytes by hand for an input under 128 bytes with a format
 // of at most 255 bytes (`encode_literal_envelope`, sized by
 // `envelope_encoded_len`). Change all of them together;
 // `literal_envelope_matches_rmp_serde`, `encoded_len_matches_rmp_serde` and
@@ -319,7 +329,7 @@ impl StorageEnvelope {
 
 /// `data`'s LZ4 block and checksum, with the input and block size checks.
 /// `StorageEnvelope::new` and `store`'s general path call it; the
-/// sub-64-byte envelope `encode_literal_envelope` writes is too small to need
+/// sub-128-byte envelope `encode_literal_envelope` writes is too small to need
 /// them.
 #[cfg(all(feature = "compression", feature = "checksum"))]
 fn compress_and_checksum(data: &[u8]) -> Result<(Vec<u8>, [u8; 8]), ByteStorageError> {
@@ -449,11 +459,11 @@ fn envelope_encoded_len(
 /// written in one pass into a `Vec` allocated once at its final length: the
 /// literals-only block goes straight into the `bin` field, so no block is
 /// allocated and copied. The bytes are `rmp_serde`'s for the same envelope
-/// (`literal_envelope_matches_rmp_serde`). The envelope is at most 343 bytes,
+/// (`literal_envelope_matches_rmp_serde`). The envelope is at most 407 bytes,
 /// far below every size cap, so it needs none of `compress_and_checksum`'s
 /// checks.
 ///
-/// `None` for an input of 64 bytes or more, or a format string longer than
+/// `None` for an input of 128 bytes or more, or a format string longer than
 /// 255 bytes: `store` then takes its general path, which writes the same
 /// bytes.
 #[cfg(all(feature = "compression", feature = "checksum", feature = "messagepack"))]
@@ -1114,7 +1124,7 @@ mod tests {
         // class input: the shared table must not have been upgraded by it.
         let sizes = [
             LITERAL_BLOCK_THRESHOLD,
-            100,
+            200,
             1024,
             2048,
             TABLE_REUSE_LIMIT - 1,
