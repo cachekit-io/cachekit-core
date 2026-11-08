@@ -271,12 +271,16 @@ impl StorageEnvelope {
     /// [`ByteStorage::store`] returns, into `out`, which must be exactly
     /// [`encoded_len`](Self::encoded_len) bytes long.
     ///
-    /// For a binding that owns the output memory (a Python `bytes`, say): it
-    /// sizes the buffer with `encoded_len` and writes once, with no
-    /// intermediate `Vec` and no MessagePack dependency of its own. Measure
-    /// before using it for envelopes of 64 KiB and up: removing a
-    /// payload-sized buffer there can make an operation slower under glibc's
-    /// malloc (see `ByteStorage::store`, which therefore does not).
+    /// It writes into memory the caller owns, so a binding needs no
+    /// MessagePack dependency of its own. It is not faster than
+    /// `ByteStorage::store` plus a copy: the slice writer makes one `memcpy`
+    /// call per field, and a zero-filled output buffer costs what the copy
+    /// saved. Measured in cachekit-py, it took more instructions per store at
+    /// most sizes below 32 KiB, saved at most 1.5% at any size, and made no
+    /// end-to-end difference. Measure before using it for envelopes of 64 KiB
+    /// and up: removing a payload-sized buffer there can make an operation
+    /// slower under glibc's malloc (see `ByteStorage::store`, which therefore
+    /// does not).
     ///
     /// # Errors
     ///
