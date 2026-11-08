@@ -76,13 +76,14 @@ const MIB: usize = 1024 * 1024;
 /// A small value, a typical value, a large object (as `hot_path`).
 const SIZES: &[usize] = &[64, 1024, 64 * 1024];
 /// ByteStorage picks its strategy by size, so store and retrieve (and
-/// retrieve_data, which decodes the same envelope) also measure
-/// 40 B, under the literals-only block threshold (64 B), and 1 MiB. Its
+/// retrieve_data, which decodes the same envelope) also measure 40 B, 128 B
+/// and 1 MiB. 40 B and 64 B sit under the literals-only block threshold
+/// (128 B), 128 B is the first size the LZ4 encoder takes. Its
 /// large-payload switch compares the envelope (store) or the compressed
 /// payload (retrieve) with 64 KiB: the 64 KiB payload stores as a
 /// 24,702-byte envelope and never reaches it, the 1 MiB one as 383,893 bytes,
 /// past glibc's default mmap threshold too.
-const STORAGE_SIZES: &[usize] = &[40, 64, 1024, 64 * 1024, MIB];
+const STORAGE_SIZES: &[usize] = &[40, 64, 128, 1024, 64 * 1024, MIB];
 
 /// Operations and their payload sizes. HKDF derives from the master key and
 /// tenant id alone, so it has one case with no size.
