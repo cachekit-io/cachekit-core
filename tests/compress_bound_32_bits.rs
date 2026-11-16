@@ -1,6 +1,6 @@
 //! The LZ4 encoder's output bound on 32-bit targets.
 //!
-//! `StorageEnvelope::new` sends every input of 64 B or more through
+//! `StorageEnvelope::new` sends every input of 128 B or more through
 //! `lz4_flex`, which sizes its output as `16 + 4 + input_len * 110 / 100`.
 //! lz4_flex 0.12 computed that product in `usize`, so on a 32-bit target it
 //! overflowed for any input above 39,045,157 B, far inside the crate's 512 MiB

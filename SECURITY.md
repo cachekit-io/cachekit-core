@@ -55,7 +55,7 @@ This crate protects against:
 This crate does **not** protect against:
 
 - Side-channel attacks on the host system
-- Payload bytes left in process memory: `store` compresses inputs from 64 B to under 4 KiB through a per-thread output buffer (4,524 B) that is not cleared between calls, so it holds bytes of earlier payloads for the life of the thread, as freed buffers do until they are reused
+- Payload bytes left in process memory: `store` compresses inputs from 128 B to under 4 KiB through a per-thread output buffer (4,524 B) that is not cleared between calls, so it holds bytes of earlier payloads for the life of the thread, as freed buffers do until they are reused
 - Compromise of the master key
 - Denial of service via resource exhaustion (partial protection only)
 - Attacks requiring physical access
@@ -113,7 +113,7 @@ the multiply, and a release build panicked when the compressed output outgrew
 the wrapped bound. This crate requires 0.13, which computes the bound in `u64`;
 the `wasm32` CI job stores and retrieves an input one byte past that boundary.
 
-Below 64 bytes, `StorageEnvelope::new` does not call the encoder at all. It
+Below 128 bytes, `StorageEnvelope::new` does not call the encoder at all. It
 writes the input as one literals-only LZ4 block, which every LZ4 block decoder
 reads.
 
