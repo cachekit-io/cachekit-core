@@ -86,7 +86,7 @@ bench-quick: ## Quick bench run for CI (1s warmup, 2s measurement, 10 samples)
 
 # Per-op instruction counts (benches/perf_ir.rs) against the budgets in
 # benches/perf_ir_baselines.json. Needs valgrind. Pass gate options through
-# ARGS, e.g. make perf-ir ARGS="--case store/1024". See README, "Instruction counts".
+# ARGS, e.g. make perf-ir ARGS="--case store/1024". See CONTRIBUTING.md, "Instruction counts".
 perf-ir: ## Instruction-count gate: fail on >=1% Ir/op regression (needs valgrind)
 	$(call require_binary,cargo,Install Rust: https://rustup.rs)
 	@cargo bench -p cachekit-core --features encryption --bench perf_ir -- $(ARGS)
